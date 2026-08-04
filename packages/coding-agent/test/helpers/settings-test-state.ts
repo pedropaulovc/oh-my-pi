@@ -1,4 +1,5 @@
 import { vi } from "bun:test";
+import { closeSharedModelCacheDb } from "@oh-my-pi/pi-catalog";
 import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { isTuiTight, setTuiTight } from "@oh-my-pi/pi-tui";
@@ -36,6 +37,9 @@ export function restoreSettingsTestState(state: SettingsTestState | undefined): 
 	// evicts. A test that pointed the agent dir at a temp tree leaves that
 	// database open, which on Windows makes the directory undeletable (EBUSY).
 	AgentStorage.resetInstance();
+	// models.db is cached process-wide and only dropped when its path changes,
+	// so the last temp agent dir stays open too.
+	closeSharedModelCacheDb();
 	if (!state) return;
 
 	restoreEnv(state.env);

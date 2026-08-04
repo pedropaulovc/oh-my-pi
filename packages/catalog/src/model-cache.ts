@@ -105,6 +105,21 @@ function getSharedDb(): Database {
 	return db;
 }
 
+/**
+ * Close the process-wide models.db handle.
+ *
+ * {@link getSharedDb} caches one connection per resolved path and only drops it
+ * when the path changes, so the last-used database stays open for the lifetime
+ * of the process. That is fine for the real cache; it is not fine for a test
+ * that pointed the agent dir at a temp tree, which Windows then refuses to
+ * remove (`EBUSY`).
+ */
+export function closeSharedModelCacheDb(): void {
+	sharedDb?.close();
+	sharedDb = null;
+	sharedDbPath = null;
+}
+
 function withModelCacheDb<T>(dbPath: string | undefined, useDb: (db: Database) => T): T {
 	if (!dbPath) return useDb(getSharedDb());
 	const db = openDb(dbPath);
