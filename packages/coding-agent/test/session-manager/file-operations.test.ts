@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -188,6 +188,7 @@ describe("SessionManager temp cwd session dirs", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		if (originalAgentDir) {
 			setAgentDir(originalAgentDir);
 		} else {
@@ -225,6 +226,23 @@ describe("SessionManager temp cwd session dirs", () => {
 		expect(fs.existsSync(legacyDir)).toBe(false);
 		expect(path.dirname(sessionFile)).toBe(expectedDir);
 		expect(fs.existsSync(path.join(expectedDir, "carried.jsonl"))).toBe(true);
+	});
+
+	it("scopes a temp-root cwd to tmp even when the temp root is nested inside home", () => {
+		// The shape Windows always has (`%LOCALAPPDATA%\Temp` lives under the
+		// profile dir) and POSIX has whenever TMPDIR points inside $HOME.
+		const fakeHome = path.join(testAgentDir, "home");
+		const fakeTemp = path.join(fakeHome, "AppData", "Local", "Temp");
+		const tempCwd = path.join(fakeTemp, `nested-cwd-${Snowflake.next()}`);
+		fs.mkdirSync(tempCwd, { recursive: true });
+
+		vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
+		vi.spyOn(os, "tmpdir").mockReturnValue(fakeTemp);
+
+		const sessionFile = SessionManager.create(tempCwd).getSessionFile();
+		if (!sessionFile) throw new Error("Expected session file path");
+
+		expect(path.basename(path.dirname(sessionFile))).toBe(expectedTempSessionDirName(tempCwd));
 	});
 
 	it("separates colliding legacy cwd buckets into safe directories", () => {

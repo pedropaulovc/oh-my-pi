@@ -7,6 +7,9 @@
 ### Changed
 
 - Version bump only. The work released here landed in sibling packages (`@oh-my-pi/omptype` schema operators, JSON Schema `io` options, and Standard Schema interop; a snapcompact benchmark) and is recorded in their own changelogs; `git diff a5090f1f8..003bb5548` contains no coding-agent implementation changes.
+### Fixed
+
+- Session directories now classify a cwd against the most specific scope root instead of testing `home` before `tmp`. On Windows `os.tmpdir()` (`%LOCALAPPDATA%\Temp`) is nested inside `os.homedir()`, so every temp-root cwd was bucketed as home-scoped and the `tmp` scope was unreachable; the same happened on POSIX with `TMPDIR=$HOME/tmp`.
 
 ## [17.2.7] - 2026-08-03
 

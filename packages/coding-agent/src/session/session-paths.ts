@@ -47,6 +47,46 @@ function encodeLegacyRelativeSessionDirName(prefix: string, relative: string): s
 	return encoded ? (prefix.endsWith("-") ? `${prefix}${encoded}` : `${prefix}-${encoded}`) : prefix;
 }
 
+interface SessionScopeRoot {
+	scope: "home" | "tmp";
+	legacyPrefix: string;
+	canonical: string;
+}
+
+/**
+ * Classify a cwd against the scope roots, **most specific root wins** — the
+ * ordering of the candidates below is deliberately not the tie-break.
+ *
+ * The roots nest on real machines: on Windows `os.tmpdir()` is
+ * `%LOCALAPPDATA%\Temp`, i.e. inside `os.homedir()`, and `TMPDIR=$HOME/tmp`
+ * does the same on POSIX. Testing `home` first there swallows every temp-root
+ * cwd into the home bucket and encodes its legacy name as
+ * `-AppData-Local-Temp-…`, so the `tmp` scope is unreachable on Windows.
+ */
+function classifySessionScope(canonicalCwd: string): {
+	scope: "home" | "tmp" | "abs";
+	legacyRelativeDirName: string | undefined;
+} {
+	const roots: SessionScopeRoot[] = [
+		{ scope: "home", legacyPrefix: "-", canonical: resolveEquivalentPath(os.homedir()) },
+		{ scope: "tmp", legacyPrefix: "-tmp", canonical: resolveEquivalentPath(os.tmpdir()) },
+	];
+
+	let match: { root: SessionScopeRoot; relative: string } | undefined;
+	for (const root of roots) {
+		const relative = path.relative(root.canonical, canonicalCwd);
+		if (relative !== "" && (relative.startsWith("..") || path.isAbsolute(relative))) continue;
+		if (match && match.root.canonical.length >= root.canonical.length) continue;
+		match = { root, relative };
+	}
+
+	if (!match) return { scope: "abs", legacyRelativeDirName: undefined };
+	return {
+		scope: match.root.scope,
+		legacyRelativeDirName: encodeLegacyRelativeSessionDirName(match.root.legacyPrefix, match.relative),
+	};
+}
+
 function getDefaultSessionDirName(cwd: string): {
 	encodedDirName: string;
 	legacyRelativeDirName: string | undefined;
@@ -54,24 +94,7 @@ function getDefaultSessionDirName(cwd: string): {
 } {
 	const resolvedCwd = path.resolve(cwd);
 	const canonicalCwd = resolveEquivalentPath(resolvedCwd);
-	const home = os.homedir();
-	const canonicalHome = resolveEquivalentPath(home);
-	const tempRoot = os.tmpdir();
-	const canonicalTempRoot = resolveEquivalentPath(tempRoot);
-	const homeRelative = path.relative(canonicalHome, canonicalCwd);
-	const tempRelative = path.relative(canonicalTempRoot, canonicalCwd);
-
-	let scope: "home" | "tmp" | "abs";
-	let legacyRelativeDirName: string | undefined;
-	if (homeRelative === "" || (!homeRelative.startsWith("..") && !path.isAbsolute(homeRelative))) {
-		scope = "home";
-		legacyRelativeDirName = encodeLegacyRelativeSessionDirName("-", homeRelative);
-	} else if (tempRelative === "" || (!tempRelative.startsWith("..") && !path.isAbsolute(tempRelative))) {
-		scope = "tmp";
-		legacyRelativeDirName = encodeLegacyRelativeSessionDirName("-tmp", tempRelative);
-	} else {
-		scope = "abs";
-	}
+	const { scope, legacyRelativeDirName } = classifySessionScope(canonicalCwd);
 
 	const normalized = canonicalCwd.replaceAll("\\", "/");
 	const readable = path
