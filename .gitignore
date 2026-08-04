@@ -89,3 +89,6 @@ packages/coding-agent/bench/boot-baseline.json
 /bazel-testlogs
 /bazel-pi
 /.bazelrc.user
+
+# Bazel workspace convenience symlink (named after the workspace)
+/bazel-oh-my-pi
