@@ -54,6 +54,23 @@ interface ProgressEmitState {
  * {@link AsyncJobManager.setProgressPolicy} so a caller can arm, retune, or
  * stop a monitor without disturbing the work itself.
  */
+/**
+ * The caller's raw trigger spec, carried on the job so a retune reaches the
+ * producer. The manager stores and returns it without interpreting it: what
+ * counts as "progress" is the producer's business (bash samples output lines;
+ * another job type might report differently), while the manager owns only the
+ * rate and delivery decisions in {@link AsyncJobProgressPolicy}.
+ */
+export interface AsyncJobProgressRequest {
+	/** Seconds between heartbeat updates. */
+	every?: number;
+	/** Regex source matched against new output lines. */
+	match?: string;
+	wake?: boolean;
+	stopOnMatch?: boolean;
+	lines?: number;
+}
+
 export interface AsyncJobProgressPolicy {
 	/**
 	 * Deliver even when the owning session is idle, as a follow-up turn. When
@@ -83,6 +100,8 @@ export interface AsyncJob {
 	 * {@link AsyncJobProgressPolicy}.
 	 */
 	progressPolicy?: AsyncJobProgressPolicy;
+	/** Producer-interpreted trigger spec; see {@link AsyncJobProgressRequest}. */
+	progressRequest?: AsyncJobProgressRequest;
 	/**
 	 * Registry id of the agent that registered the job (e.g. "Main",
 	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
@@ -183,6 +202,8 @@ export interface AsyncJobRegisterOptions {
 	 * off; it can be armed later with {@link AsyncJobManager.setProgressPolicy}.
 	 */
 	progressPolicy?: AsyncJobProgressPolicy;
+	/** Producer-interpreted trigger spec; see {@link AsyncJobProgressRequest}. */
+	progressRequest?: AsyncJobProgressRequest;
 }
 
 /**
@@ -313,6 +334,7 @@ export class AsyncJobManager {
 			agentId: options?.agentId,
 			queued: options?.queued === true,
 			progressPolicy: options?.progressPolicy,
+			progressRequest: options?.progressRequest,
 		};
 
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
