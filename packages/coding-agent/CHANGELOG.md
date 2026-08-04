@@ -405,6 +405,10 @@
 ### Changed
 
 - Upgraded the bundled omptype schema engine: intersection and pipe operators, bigint and RegExp literals in the string DSL, Standard Schema V1 interop, JSON Schema import via fromJsonSchema(), and richer union/collection error reporting.
+- Version bump only. The work released here landed in sibling packages (`@oh-my-pi/omptype` schema operators, JSON Schema `io` options, and Standard Schema interop; a snapcompact benchmark) and is recorded in their own changelogs; `git diff a5090f1f8..003bb5548` contains no coding-agent implementation changes.
+### Added
+
+- Background jobs can now report progress to the agent while they run, instead of only on completion ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)). Opt in per call with the bash `progress` parameter (`every` seconds, `match` regex, `stopOnMatch`, `wake`, `lines`), or arm, retune, and stop a running job's monitor with `hub` `{"op":"monitor"}`. Updates are coalesced to the newest per job and, by default, ride the next step boundary of an active run without starting a turn; `wake: true` opts one job into waking an idle agent. Default off — a job with no monitor behaves exactly as before.
 
 ## [17.2.7] - 2026-08-03
 

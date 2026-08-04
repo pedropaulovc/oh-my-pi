@@ -68,6 +68,43 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 }
 
 /**
+ * Render an `async-progress` / `async-progress-wake` custom message — an update
+ * from a job that is *still running* — as a dim row per job plus its sampled
+ * output. Visually distinct from the completion row so a glance does not read a
+ * progress tick as a finished job.
+ */
+export function buildAsyncProgressBlock(message: CustomOrHookMessage): TranscriptBlock {
+	const details = (
+		message as CustomMessage<{
+			jobs?: Array<{ jobId?: string; type?: "bash" | "task"; label?: string; elapsedMs?: number; text?: string }>;
+			wake?: boolean;
+		}>
+	).details;
+	const block = new TranscriptBlock();
+	for (const job of details?.jobs ?? []) {
+		const jobId = job.jobId ?? "unknown";
+		const elapsed = typeof job.elapsedMs === "number" ? formatDuration(job.elapsedMs) : undefined;
+		const header = [
+			theme.fg("dim", `${theme.status.running} Background job progress`),
+			theme.fg("dim", job.type ? `[${job.type}]` : "[job]"),
+			theme.fg("accent", jobId),
+			elapsed ? theme.fg("dim", `(${elapsed})`) : undefined,
+			details?.wake ? theme.fg("dim", "· wakes") : undefined,
+		]
+			.filter(Boolean)
+			.join(" ");
+		block.addChild(new Text(header, 1, 0));
+		for (const line of (job.text ?? "").split("\n")) {
+			if (line.trim().length === 0) continue;
+			block.addChild(
+				new Text(theme.fg("dim", `  ${truncateToWidth(replaceTabs(line), TRUNCATE_LENGTHS.LINE)}`), 1, 0),
+			);
+		}
+	}
+	return block;
+}
+
+/**
  * Render a live IRC traffic custom message (`irc:incoming` / `irc:autoreply` /
  * `irc:relay`) as a transcript card. `getExpanded` supplies the live
  * expanded-state getter for the cached card.

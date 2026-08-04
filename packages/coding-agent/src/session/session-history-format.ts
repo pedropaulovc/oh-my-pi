@@ -284,6 +284,17 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
 				.join(", ");
 			return `[async-result] ${oneLine(labels)}`;
 		}
+		case "async-progress":
+		case "async-progress-wake": {
+			const jobs = Array.isArray(details.jobs) ? details.jobs : [];
+			const parts = jobs.map(job => {
+				const j = (job ?? {}) as Record<string, unknown>;
+				const id = typeof j.jobId === "string" ? j.jobId : "job";
+				const text = typeof j.text === "string" ? j.text : "";
+				return text ? `${id}: ${oneLine(text)}` : id;
+			});
+			return `[${msg.customType}] ${parts.join("; ")}`;
+		}
 		default:
 			return `[${msg.customType}] ${oneLine(contentToText(msg.content))}`;
 	}
