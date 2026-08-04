@@ -1,5 +1,6 @@
 import { vi } from "bun:test";
 import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { isTuiTight, setTuiTight } from "@oh-my-pi/pi-tui";
 import { getAgentDir, getProjectDir, setAgentDir, setProjectDir } from "@oh-my-pi/pi-utils";
 
@@ -31,6 +32,10 @@ export function beginSettingsTest(): SettingsTestState {
 export function restoreSettingsTestState(state: SettingsTestState | undefined): void {
 	vi.restoreAllMocks();
 	resetSettingsForTest();
+	// Settings opens an AgentStorage per agent.db path and the cache never
+	// evicts. A test that pointed the agent dir at a temp tree leaves that
+	// database open, which on Windows makes the directory undeletable (EBUSY).
+	AgentStorage.resetInstance();
 	if (!state) return;
 
 	restoreEnv(state.env);

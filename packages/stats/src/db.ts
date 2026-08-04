@@ -84,7 +84,7 @@ export async function initDb(): Promise<Database> {
 	// Whether `messages` predates this init — drives the one-time agent_type
 	// backfill below, so it must be sampled before CREATE TABLE adds the table.
 	const messagesTableExisted =
-		db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() !== undefined;
+		db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() !== undefined;
 
 	// Create tables
 	db.run(`
@@ -179,7 +179,7 @@ export async function initDb(): Promise<Database> {
 		);
 	`);
 
-	const messageColumns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+	const messageColumns = db.query("PRAGMA table_info(messages)").all() as { name: string }[];
 	if (!messageColumns.some(column => column.name === "premium_requests")) {
 		db.run("ALTER TABLE messages ADD COLUMN premium_requests REAL NOT NULL DEFAULT 0");
 	}
@@ -199,7 +199,7 @@ export async function initDb(): Promise<Database> {
 	// sentinel write (process killed in between) still reclassifies on the next
 	// init instead of silently leaving every row as the 'main' default. A
 	// brand-new empty table has nothing to reclassify, so it settles COMPLETE.
-	db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run(
+	db.query("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run(
 		AGENT_TYPE_BACKFILL_KEY,
 		messagesTableExisted ? BACKFILL_PENDING : BACKFILL_COMPLETE,
 	);
@@ -224,7 +224,7 @@ export async function initDb(): Promise<Database> {
 	//   v7 -> v8: `no-op` compounds no longer count as negation; recovered
 	//             measured false negatives: `:(` emoticons -> anguish,
 	//             `why (would|did) you` -> blame, `makes no sense` -> negation.
-	const userMessageColumns = db.prepare("PRAGMA table_info(user_messages)").all() as {
+	const userMessageColumns = db.query("PRAGMA table_info(user_messages)").all() as {
 		name: string;
 	}[];
 	const hasStaleColumn =
@@ -325,7 +325,7 @@ function resolveStoredCost(stats: MessageStats): UsageCost {
 
 function backfillMissingCatalogCosts(database: Database): void {
 	const rows = database
-		.prepare(`
+		.query(`
 			SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
 			FROM messages
 			WHERE cost_total = 0 AND total_tokens > 0
@@ -334,7 +334,7 @@ function backfillMissingCatalogCosts(database: Database): void {
 
 	if (rows.length === 0) return;
 
-	const update = database.prepare(`
+	const update = database.query(`
 		UPDATE messages
 		SET cost_input = ?, cost_output = ?, cost_cache_read = ?, cost_cache_write = ?, cost_total = ?
 		WHERE id = ?
@@ -364,7 +364,7 @@ function backfillMissingCatalogCosts(database: Database): void {
 export function getFileOffset(sessionFile: string): { offset: number; lastModified: number } | null {
 	if (!db) return null;
 
-	const stmt = db.prepare("SELECT offset, last_modified FROM file_offsets WHERE session_file = ?");
+	const stmt = db.query("SELECT offset, last_modified FROM file_offsets WHERE session_file = ?");
 	const row = stmt.get(sessionFile) as { offset: number; last_modified: number } | undefined;
 
 	return row ? { offset: row.offset, lastModified: row.last_modified } : null;
@@ -376,7 +376,7 @@ export function getFileOffset(sessionFile: string): { offset: number; lastModifi
 export function setFileOffset(sessionFile: string, offset: number, lastModified: number): void {
 	if (!db) return;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		INSERT OR REPLACE INTO file_offsets (session_file, offset, last_modified)
 		VALUES (?, ?, ?)
 	`);
@@ -401,7 +401,7 @@ export function setFileOffset(sessionFile: string, offset: number, lastModified:
 export function insertMessageStats(stats: MessageStats[]): number {
 	if (!db || stats.length === 0) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		INSERT INTO messages (
 			session_file, entry_id, folder, model, provider, api, timestamp,
 			duration, ttft, stop_reason, error_message,
@@ -523,7 +523,7 @@ export function getOverallStats(cutoff?: number): AggregatedStats {
 	if (!db) return buildAggregatedStats([]);
 
 	const hasCutoff = cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			COUNT(*) as total_requests,
 			SUM(CASE WHEN stop_reason = 'error' THEN 1 ELSE 0 END) as failed_requests,
@@ -552,7 +552,7 @@ export function getStatsByModel(cutoff?: number): ModelStats[] {
 	if (!db) return [];
 
 	const hasCutoff = cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			model,
 			provider,
@@ -590,7 +590,7 @@ export function getStatsByFolder(cutoff?: number): FolderStats[] {
 	if (!db) return [];
 
 	const hasCutoff = cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			folder,
 			COUNT(*) as total_requests,
@@ -628,7 +628,7 @@ export function getStatsByAgentType(cutoff?: number): AgentTypeStats[] {
 	if (!db) return [];
 
 	const hasCutoff = cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			agent_type,
 			COUNT(*) as total_requests,
@@ -663,7 +663,7 @@ export function getTimeSeries(hours = 24, cutoff?: number | null, bucketMs = 60 
 	const hasCutoff = cutoff !== null;
 	const seriesCutoff = hasCutoff ? (cutoff ?? Date.now() - hours * 60 * 60 * 1000) : 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			(timestamp / ?) * ? as bucket,
 			COUNT(*) as requests,
@@ -704,7 +704,7 @@ export function getModelTimeSeries(
 	const hasCutoff = cutoff !== null;
 	const seriesCutoff = hasCutoff ? (cutoff ?? Date.now() - days * 24 * 60 * 60 * 1000) : 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			(timestamp / ?) * ? as bucket,
 			model,
@@ -733,7 +733,7 @@ export function getStatsByProvider(cutoff?: number | null): ProviderAggregate[] 
 	if (!db) return [];
 
 	const hasCutoff = cutoff !== undefined && cutoff !== null && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			provider,
 			COUNT(*) as total_requests,
@@ -792,7 +792,7 @@ export function getProviderHourlyBurn(cutoff?: number | null): ProviderHourlyPoi
 	if (!db) return [];
 
 	const hasCutoff = cutoff !== undefined && cutoff !== null && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			provider,
 			CAST(strftime('%H', timestamp / 1000, 'unixepoch', 'localtime') AS INTEGER) as hour,
@@ -834,7 +834,7 @@ export function getProviderTimeSeries(
 	const hasCutoff = cutoff !== null;
 	const seriesCutoff = hasCutoff ? (cutoff ?? Date.now() - days * 24 * 60 * 60 * 1000) : 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			(timestamp / ?) * ? as bucket,
 			provider,
@@ -877,7 +877,7 @@ export function getModelPerformanceSeries(
 	const hasCutoff = cutoff !== null;
 	const seriesCutoff = hasCutoff ? (cutoff ?? Date.now() - days * 24 * 60 * 60 * 1000) : 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			(timestamp / ?) * ? as bucket,
 			model,
@@ -915,7 +915,7 @@ export function getModelPerformanceSeries(
  */
 export function getMessageCount(): number {
 	if (!db) return 0;
-	const stmt = db.prepare("SELECT COUNT(*) as count FROM messages");
+	const stmt = db.query("SELECT COUNT(*) as count FROM messages");
 	const row = stmt.get() as { count: number };
 	return row.count;
 }
@@ -965,7 +965,7 @@ function rowToMessageStats(row: any): MessageStats {
 
 export function getRecentRequests(limit = 100): MessageStats[] {
 	if (!db) return [];
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT * FROM messages 
 		ORDER BY timestamp DESC 
 		LIMIT ?
@@ -976,7 +976,7 @@ export function getRecentRequests(limit = 100): MessageStats[] {
 export function getRecentErrors(limit = 100, cutoff?: number | null): MessageStats[] {
 	if (!db) return [];
 	const hasCutoff = cutoff !== undefined && cutoff !== null;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT * FROM messages
 		WHERE stop_reason = 'error'
 		${hasCutoff ? "AND timestamp >= ?" : ""}
@@ -989,7 +989,7 @@ export function getRecentErrors(limit = 100, cutoff?: number | null): MessageSta
 
 export function getMessageById(id: number): MessageStats | null {
 	if (!db) return null;
-	const stmt = db.prepare("SELECT * FROM messages WHERE id = ?");
+	const stmt = db.query("SELECT * FROM messages WHERE id = ?");
 	const row = stmt.get(id);
 	return row ? rowToMessageStats(row) : null;
 }
@@ -1003,7 +1003,7 @@ export function getCostTimeSeries(days = 90, cutoff?: number | null): CostTimeSe
 	const hasCutoff = cutoff !== null;
 	const seriesCutoff = hasCutoff ? (cutoff ?? Date.now() - days * 24 * 60 * 60 * 1000) : 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			(timestamp / 86400000) * 86400000 as bucket,
 			model,
@@ -1074,7 +1074,7 @@ export function getCostTimeSeries(days = 90, cutoff?: number | null): CostTimeSe
  * Existing `messages` rows are unaffected - `INSERT OR IGNORE` keeps them.
  */
 function backfillUserMessages(database: Database): void {
-	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(USER_MESSAGES_BACKFILL_KEY) as
+	const row = database.query("SELECT value FROM meta WHERE key = ?").get(USER_MESSAGES_BACKFILL_KEY) as
 		| { value: string }
 		| undefined;
 	if (!shouldResetBackfill(row?.value)) return;
@@ -1082,7 +1082,7 @@ function backfillUserMessages(database: Database): void {
 	database.run("DELETE FROM user_messages");
 	database.run("DELETE FROM file_offsets");
 	database
-		.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+		.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
 		.run(USER_MESSAGES_BACKFILL_KEY, BACKFILL_PENDING);
 }
 
@@ -1095,7 +1095,7 @@ function backfillUserMessages(database: Database): void {
  * written here prevents re-wiping on subsequent inits.
  */
 function backfillToolCalls(database: Database): void {
-	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(TOOL_CALLS_BACKFILL_KEY) as
+	const row = database.query("SELECT value FROM meta WHERE key = ?").get(TOOL_CALLS_BACKFILL_KEY) as
 		| { value: string }
 		| undefined;
 	if (!shouldResetBackfill(row?.value)) return;
@@ -1103,7 +1103,7 @@ function backfillToolCalls(database: Database): void {
 	database.run("DELETE FROM tool_calls");
 	database.run("DELETE FROM file_offsets");
 	database
-		.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+		.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
 		.run(TOOL_CALLS_BACKFILL_KEY, BACKFILL_PENDING);
 }
 
@@ -1117,16 +1117,16 @@ function backfillToolCalls(database: Database): void {
  * interrupted run rolls back and retries on the next init.
  */
 function backfillAgentType(database: Database): void {
-	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(AGENT_TYPE_BACKFILL_KEY) as
+	const row = database.query("SELECT value FROM meta WHERE key = ?").get(AGENT_TYPE_BACKFILL_KEY) as
 		| { value: string }
 		| undefined;
 	if (row?.value !== BACKFILL_PENDING) return;
 
-	const sessionFiles = database.prepare("SELECT DISTINCT session_file FROM messages").all() as {
+	const sessionFiles = database.query("SELECT DISTINCT session_file FROM messages").all() as {
 		session_file: string;
 	}[];
-	const update = database.prepare("UPDATE messages SET agent_type = ? WHERE session_file = ?");
-	const markComplete = database.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
+	const update = database.query("UPDATE messages SET agent_type = ? WHERE session_file = ?");
+	const markComplete = database.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
 	const apply = database.transaction(() => {
 		for (const { session_file } of sessionFiles) {
 			const agentType = classifyAgentType(session_file);
@@ -1154,12 +1154,12 @@ function backfillAgentType(database: Database): void {
  * retries on the next init.
  */
 function backfillForkDuplicates(database: Database): void {
-	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(FORK_DEDUPE_KEY) as
+	const row = database.query("SELECT value FROM meta WHERE key = ?").get(FORK_DEDUPE_KEY) as
 		| { value: string }
 		| undefined;
 	if (row?.value === BACKFILL_COMPLETE) return;
 
-	const markComplete = database.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
+	const markComplete = database.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
 	const apply = database.transaction(() => {
 		database.run(`
 			DELETE FROM messages
@@ -1187,14 +1187,14 @@ function backfillForkDuplicates(database: Database): void {
  * sentinel row in `meta`.
  */
 function repairUserMessageLinks(database: Database): void {
-	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(USER_MESSAGE_LINKS_REPAIR_KEY) as
+	const row = database.query("SELECT value FROM meta WHERE key = ?").get(USER_MESSAGE_LINKS_REPAIR_KEY) as
 		| { value: string }
 		| undefined;
 	if (!shouldResetBackfill(row?.value)) return;
 
 	database.run("DELETE FROM file_offsets");
 	database
-		.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+		.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
 		.run(USER_MESSAGE_LINKS_REPAIR_KEY, BACKFILL_PENDING);
 }
 
@@ -1209,14 +1209,14 @@ function repairUserMessageLinks(database: Database): void {
  * column. Idempotent: gated by a sentinel row in `meta`.
  */
 function backfillPriorityPremiumRequests(database: Database): void {
-	const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY) as
+	const row = database.query("SELECT value FROM meta WHERE key = ?").get(PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY) as
 		| { value: string }
 		| undefined;
 	if (!shouldResetBackfill(row?.value)) return;
 
 	database.run("DELETE FROM file_offsets");
 	database
-		.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+		.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
 		.run(PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY, BACKFILL_PENDING);
 }
 
@@ -1225,7 +1225,7 @@ function backfillPriorityPremiumRequests(database: Database): void {
  */
 export function markSessionBackfillsComplete(): void {
 	if (!db) return;
-	const markComplete = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
+	const markComplete = db.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
 	const apply = db.transaction(() => {
 		for (const key of [
 			USER_MESSAGES_BACKFILL_KEY,
@@ -1248,7 +1248,7 @@ export function markSessionBackfillsComplete(): void {
 export function insertUserMessageStats(stats: UserMessageStats[]): number {
 	if (!db || stats.length === 0) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		INSERT OR IGNORE INTO user_messages (
 			session_file, entry_id, folder, timestamp, model, provider,
 			chars, words, yelling, profanity, anguish,
@@ -1304,7 +1304,7 @@ export function insertUserMessageStats(stats: UserMessageStats[]): number {
 export function updateUserMessageLinks(links: UserMessageLink[]): number {
 	if (!db || links.length === 0) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		UPDATE user_messages
 		   SET model = ?, provider = ?
 		 WHERE session_file = ? AND entry_id = ? AND model IS NULL
@@ -1343,7 +1343,7 @@ interface BehaviorSeriesRow {
 export function getBehaviorTimeSeries(cutoff?: number | null): BehaviorTimeSeriesPoint[] {
 	if (!db) return [];
 	const hasCutoff = cutoff !== null && cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			(timestamp / 86400000) * 86400000 as bucket,
 			COALESCE(model, ?) as model,
@@ -1410,7 +1410,7 @@ export function getBehaviorOverall(cutoff?: number | null): BehaviorOverallStats
 	};
 	if (!db) return empty;
 	const hasCutoff = cutoff !== null && cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			COUNT(*) as total_messages,
 			SUM(yelling) as total_yelling,
@@ -1462,7 +1462,7 @@ interface BehaviorByModelRow {
 export function getBehaviorByModel(cutoff?: number | null): BehaviorModelStats[] {
 	if (!db) return [];
 	const hasCutoff = cutoff !== null && cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			COALESCE(model, ?) as model,
 			COALESCE(provider, ?) as provider,
@@ -1510,7 +1510,7 @@ export function getBehaviorByModel(cutoff?: number | null): BehaviorModelStats[]
 export function insertToolCalls(calls: ToolCallStats[]): number {
 	if (!db || calls.length === 0) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		INSERT OR IGNORE INTO tool_calls (
 			session_file, entry_id, tool_call_id, folder, tool_name,
 			model, provider, timestamp, agent_type, calls_in_turn, args_chars
@@ -1561,7 +1561,7 @@ export function insertToolCalls(calls: ToolCallStats[]): number {
 export function updateToolResults(links: ToolResultLink[]): number {
 	if (!db || links.length === 0) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		UPDATE tool_calls
 		SET result_chars = ?, is_error = ?
 		WHERE session_file = ? AND tool_call_id = ? AND result_chars IS NULL
@@ -1629,7 +1629,7 @@ export function getToolStats(cutoff?: number): ToolUsageStats[] {
 	if (!db) return [];
 
 	const hasCutoff = cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT t.tool_name, ${TOOL_AGGREGATE_COLUMNS}
 		FROM tool_calls t
 		LEFT JOIN messages m ON m.session_file = t.session_file AND m.entry_id = t.entry_id
@@ -1649,7 +1649,7 @@ export function getToolStatsByModel(cutoff?: number): ToolModelStats[] {
 	if (!db) return [];
 
 	const hasCutoff = cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT t.tool_name, t.model, t.provider, ${TOOL_AGGREGATE_COLUMNS}
 		FROM tool_calls t
 		LEFT JOIN messages m ON m.session_file = t.session_file AND m.entry_id = t.entry_id
@@ -1679,7 +1679,7 @@ export function getToolTimeSeries(
 	const hasCutoff = cutoff !== null;
 	const seriesCutoff = hasCutoff ? (cutoff ?? Date.now() - days * 24 * 60 * 60 * 1000) : 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		SELECT
 			(timestamp / ?) * ? as bucket,
 			tool_name,

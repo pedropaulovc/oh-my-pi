@@ -5,8 +5,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { withStatsSyncLock } from "@oh-my-pi/omp-stats/aggregator";
+import { closeDb } from "@oh-my-pi/omp-stats/db";
 import { type GcResult, runGcCommand } from "@oh-my-pi/pi-coding-agent/cli/gc-cli";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storage";
 import {
 	getAgentDir,
 	getBlobsDir,
@@ -50,6 +52,10 @@ afterEach(async () => {
 	process.exitCode = originalExitCode;
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
+	// gc opens stats.db/history.db under the temp agent dir; Windows refuses to
+	// remove a directory whose files are still open.
+	closeDb();
+	HistoryStorage.resetInstance();
 	await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -420,7 +426,11 @@ describe("runGcCommand history checkpoint", () => {
 
 		expect(result.wal?.checkpointed).toBe(true);
 		expect(result.wal?.walBytes).toBe(0);
-		expect((await fs.stat(`${dbPath}-wal`)).size).toBe(0);
+		// gc is the only connection, so its close is the last one and SQLite
+		// removes the sidecars outright. This previously asserted a surviving
+		// zero-length `-wal`, which only held because gc's `close()` was
+		// deferred by unfinalized statements and never actually released the db.
+		expect(await Bun.file(`${dbPath}-wal`).exists()).toBe(false);
 	});
 
 	test("--apply propagates WAL checkpoint failures and releases the gc lock", async () => {

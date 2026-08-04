@@ -404,7 +404,7 @@ export class AutoresearchStorage {
 		}
 		if (setClauses.length > 0) {
 			values.push(sessionId);
-			this.#db.prepare(`UPDATE sessions SET ${setClauses.join(", ")} WHERE id = ?`).run(...(values as never[]));
+			this.#db.query(`UPDATE sessions SET ${setClauses.join(", ")} WHERE id = ?`).run(...(values as never[]));
 		}
 		const session = this.getSessionById(sessionId);
 		if (!session) throw new Error(`Session ${sessionId} not found after update`);
@@ -412,14 +412,14 @@ export class AutoresearchStorage {
 	}
 
 	bumpSegment(sessionId: number): SessionRow {
-		this.#db.prepare("UPDATE sessions SET current_segment = current_segment + 1 WHERE id = ?").run(sessionId);
+		this.#db.query("UPDATE sessions SET current_segment = current_segment + 1 WHERE id = ?").run(sessionId);
 		const session = this.getSessionById(sessionId);
 		if (!session) throw new Error(`Session ${sessionId} not found after bumping segment`);
 		return session;
 	}
 
 	closeSession(sessionId: number): void {
-		this.#db.prepare("UPDATE sessions SET closed_at = ? WHERE id = ?").run(Date.now(), sessionId);
+		this.#db.query("UPDATE sessions SET closed_at = ? WHERE id = ?").run(Date.now(), sessionId);
 	}
 
 	insertRun(params: InsertRunParams): RunRow {
@@ -441,18 +441,18 @@ export class AutoresearchStorage {
 	}
 
 	updateRunLogPath(runId: number, logPath: string): RunRow {
-		this.#db.prepare("UPDATE runs SET log_path = ? WHERE id = ?").run(logPath, runId);
+		this.#db.query("UPDATE runs SET log_path = ? WHERE id = ?").run(logPath, runId);
 		return this.getRunByIdRequired(runId);
 	}
 
 	updateRunConfidence(runId: number, confidence: number | null): RunRow {
-		this.#db.prepare("UPDATE runs SET confidence = ? WHERE id = ?").run(confidence, runId);
+		this.#db.query("UPDATE runs SET confidence = ? WHERE id = ?").run(confidence, runId);
 		return this.getRunByIdRequired(runId);
 	}
 
 	markRunCompleted(params: MarkRunCompletedParams): RunRow {
 		this.#db
-			.prepare(
+			.query(
 				`UPDATE runs SET
 					completed_at = ?, duration_ms = ?, exit_code = ?, timed_out = ?,
 					parsed_primary = ?, parsed_metrics_json = ?, parsed_asi_json = ?
@@ -473,7 +473,7 @@ export class AutoresearchStorage {
 
 	markRunLogged(params: MarkRunLoggedParams): RunRow {
 		this.#db
-			.prepare(
+			.query(
 				`UPDATE runs SET
 					status = ?, description = ?, metric = ?, metrics_json = ?, asi_json = ?,
 					commit_hash = ?, confidence = ?, modified_paths_json = ?, scope_deviations_json = ?,
@@ -498,7 +498,7 @@ export class AutoresearchStorage {
 	}
 
 	flagRun(runId: number, reason: string): RunRow {
-		this.#db.prepare("UPDATE runs SET flagged = 1, flagged_reason = ? WHERE id = ?").run(reason, runId);
+		this.#db.query("UPDATE runs SET flagged = 1, flagged_reason = ? WHERE id = ?").run(reason, runId);
 		return this.getRunByIdRequired(runId);
 	}
 
@@ -511,7 +511,7 @@ export class AutoresearchStorage {
 		const before = beforeRow?.n ?? 0;
 		if (before === 0) return 0;
 		this.#db
-			.prepare("UPDATE runs SET abandoned_at = ? WHERE session_id = ? AND status IS NULL AND abandoned_at IS NULL")
+			.query("UPDATE runs SET abandoned_at = ? WHERE session_id = ? AND status IS NULL AND abandoned_at IS NULL")
 			.run(Date.now(), sessionId);
 		return before;
 	}
