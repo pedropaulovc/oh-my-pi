@@ -33,16 +33,28 @@ describe("IdleTimeout", () => {
 	});
 
 	it("ignores elapsed time while paused and resumes with a fresh window", async () => {
-		using idle = new IdleTimeout(80);
+		const idleMs = 80;
+		using idle = new IdleTimeout(idleMs);
 		idle.pause();
-		await Bun.sleep(160);
+		await Bun.sleep(idleMs * 2);
+		// Safe under any scheduling delay: while paused the watchdog cannot fire,
+		// so a slow event loop only strengthens this.
 		expect(idle.signal.aborted).toBe(false);
 
 		idle.resume();
-		const firedEarly = await abortedWithin(idle.signal, 30);
-		expect(firedEarly).toBe(false);
-		const fired = await abortedWithin(idle.signal, 500);
+		const resumedAt = Date.now();
+		const fired = await abortedWithin(idle.signal, 5_000);
 		expect(fired).toBe(true);
+
+		// The fresh-window contract, asserted in the one direction a stalled event
+		// loop cannot break. Measuring "it did NOT fire within a short slice after
+		// resume" is the opposite: a >80ms stall there legitimately exhausts the
+		// new window and the timer fires, so that phrasing failed under full-suite
+		// load. Elapsed time can only grow when the loop is busy, so a lower bound
+		// holds regardless — and it still distinguishes a fresh window from a
+		// resumed stale one, which would abort ~immediately with the deadline
+		// already 160ms in the past.
+		expect(Date.now() - resumedAt).toBeGreaterThanOrEqual(idleMs - 10);
 	});
 
 	it("reference-counts overlapping pauses", async () => {
