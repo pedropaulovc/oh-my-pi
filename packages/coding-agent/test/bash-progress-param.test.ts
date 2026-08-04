@@ -6,6 +6,7 @@ import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 const SETTINGS: Record<string, unknown> = {
 	"async.enabled": true,
 	"async.progress.minIntervalMs": 0,
+	"async.progress.wakeMinIntervalMs": 0,
 	"async.progress.maxLines": 20,
 	"bash.autoBackground.enabled": false,
 	"bash.autoBackground.thresholdMs": 60_000,
@@ -157,6 +158,67 @@ describe("bash progress parameter", () => {
 		const text = start.content.find(block => block.type === "text")?.text ?? "";
 		expect(text).toContain("progress.every raised to 5s");
 		expect(text).toContain("progress.lines lowered to 20");
+		await manager.waitForAll();
+	});
+
+	it("holds a waking cadence to the higher wake floor, and reports the clamp", async () => {
+		const manager = new AsyncJobManager({});
+		const tool = new BashTool(
+			makeSession(manager, {
+				"async.progress.minIntervalMs": 1_000,
+				"async.progress.wakeMinIntervalMs": 30_000,
+			}),
+		);
+
+		// Each waking update can start a model turn on an idle agent, so a 2s
+		// waking cadence must be raised to the wake floor rather than accepted.
+		const start = await tool.execute("call-wake-floor", {
+			command: "echo hi",
+			async: true,
+			progress: { every: 2, wake: true },
+		});
+
+		const text = start.content.find(block => block.type === "text")?.text ?? "";
+		expect(text).toContain("progress.every raised to 30s");
+		expect(text).toContain("for a waking monitor");
+		await manager.waitForAll();
+	});
+
+	it("leaves a match trigger at the ambient floor even when it wakes", async () => {
+		const manager = new AsyncJobManager({});
+		const tool = new BashTool(
+			makeSession(manager, {
+				"async.progress.minIntervalMs": 1_000,
+				"async.progress.wakeMinIntervalMs": 30_000,
+			}),
+		);
+
+		// A match is a rare, high-signal event; holding it to the wake floor
+		// would defeat the abort-on-first-failure case the channel exists for.
+		const start = await tool.execute("call-wake-match", {
+			command: "echo hi",
+			async: true,
+			progress: { match: "^error", wake: true },
+		});
+
+		const text = start.content.find(block => block.type === "text")?.text ?? "";
+		expect(text).not.toContain("progress.every raised");
+		await manager.waitForAll();
+	});
+
+	it("rejects a match pattern longer than the cap", async () => {
+		const manager = new AsyncJobManager({});
+		const tool = new BashTool(makeSession(manager));
+
+		// The pattern is evaluated against every new output line of a running
+		// job, so an unbounded model-authored regex sits on the hot path.
+		await expect(
+			tool.execute("call-long-match", {
+				command: "echo hi",
+				async: true,
+				progress: { match: "a".repeat(500) },
+			}),
+		).rejects.toThrow(/the maximum is 200/);
 		await manager.waitForAll();
 	});
 

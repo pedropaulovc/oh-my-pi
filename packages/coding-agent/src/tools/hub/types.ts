@@ -71,7 +71,7 @@ export interface MonitorPolicySnapshot {
 	wake: boolean;
 }
 
-export type MonitorStatus = "armed" | "stopped" | "unchanged" | "not_found" | "already_completed";
+export type MonitorStatus = "armed" | "stopped" | "unchanged" | "not_found" | "already_completed" | "invalid";
 
 export interface MonitorOutcome {
 	id: string;

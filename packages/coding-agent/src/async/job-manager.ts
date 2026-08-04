@@ -62,7 +62,11 @@ interface ProgressEmitState {
  * rate and delivery decisions in {@link AsyncJobProgressPolicy}.
  */
 export interface AsyncJobProgressRequest {
-	/** Seconds between heartbeat updates. */
+	/**
+	 * Minimum seconds between periodic updates. This throttles output-driven
+	 * sampling; it is not a wall-clock heartbeat. A job that produces no output
+	 * produces no samples, so a silent job emits nothing however small this is.
+	 */
 	every?: number;
 	/** Regex source matched against new output lines. */
 	match?: string;

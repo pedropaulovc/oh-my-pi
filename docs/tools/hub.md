@@ -87,7 +87,7 @@ Smart-ladder bookkeeping (`recordPollWaitEnd`) runs only when the smart window w
 {"op":"monitor"}
 ```
 
-- **Arm/retune** — `ids` + `progress` replaces the job's policy wholesale. `every` (seconds) heartbeats, `match` (regex over new output lines) fires on a line, `wake` decides whether an update may start a turn while the agent is idle, `lines` caps how much output rides along.
+- **Arm/retune** — `ids` + `progress` replaces the job's policy wholesale. `every` sets the minimum seconds between updates — it throttles output-driven sampling rather than acting as a wall-clock heartbeat, so a job that prints nothing reports nothing — `match` (regex over new output lines) fires on a line, `wake` decides whether an update may start a turn while the agent is idle, `lines` caps how much output rides along.
 - **Stop** — `ids` with no `progress` clears the policy; the job keeps running, it just stops reporting.
 - **Report** — no `ids` lists every running job the caller owns with its current policy.
 

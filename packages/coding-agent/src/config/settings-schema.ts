@@ -4248,6 +4248,17 @@ export const SETTINGS_SCHEMA = {
 		default: 1_000,
 	},
 
+	// A waking monitor starts a follow-up turn on an idle agent, so its cadence
+	// costs a whole model turn rather than a few lines of context. It gets its
+	// own, much higher floor: at the ambient 1s floor a `wake` monitor would
+	// start a turn every second. Only the periodic `every` cadence is held to
+	// this — a `match` still fires at the ambient floor, because delaying a
+	// match would defeat the abort-on-first-failure case the channel exists for.
+	"async.progress.wakeMinIntervalMs": {
+		type: "number",
+		default: 15_000,
+	},
+
 	"async.progress.maxLines": {
 		type: "number",
 		default: 20,

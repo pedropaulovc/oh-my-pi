@@ -10,7 +10,13 @@ import type {
 import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
-import type { AsyncJobProgressRequest } from "../async";
+import {
+	type AsyncJobProgressRequest,
+	DEFAULT_PROGRESS_LINES,
+	type ProgressRequestLimits,
+	progressLimitsFrom,
+	resolveProgressRequest,
+} from "../async";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -301,9 +307,6 @@ async function saveBashOriginalArtifact(session: ToolSession, originalText: stri
 	}
 }
 
-/** Lines carried in one progress update when the caller doesn't say. */
-const DEFAULT_PROGRESS_LINES = 3;
-
 /** Resolved, validated form of {@link BashProgressInput}. */
 interface ResolvedBashProgress {
 	intervalMs: number;
@@ -413,8 +416,7 @@ class BashProgressSampler {
  */
 function createProgressResolver(
 	getRequest: () => AsyncJobProgressRequest | undefined,
-	minIntervalMs: number,
-	maxLines: number,
+	limits: ProgressRequestLimits,
 ): () => ResolvedBashProgress | undefined {
 	let cachedRequest: AsyncJobProgressRequest | undefined;
 	let cached: ResolvedBashProgress | undefined;
@@ -427,19 +429,25 @@ function createProgressResolver(
 			try {
 				match = new RegExp(request.match);
 			} catch {
-				// A retune through `hub` is validated there; ignore an unusable
-				// pattern rather than killing the job over it.
+				// Both entry points validate through resolveProgressRequest, so
+				// reaching here means the spec was mutated past them; ignore an
+				// unusable pattern rather than killing the job over it.
 				match = undefined;
 			}
 		}
+		const wake = request.wake === true;
+		// Re-apply the floors against the live spec. Both entry points clamp
+		// before storing, but the floor must hold even if a spec reaches the job
+		// another way — the cost of a waking cadence is a model turn each time.
+		const floorMs = wake ? Math.max(limits.minIntervalMs, limits.wakeMinIntervalMs) : limits.minIntervalMs;
 		const requestedIntervalMs = request.every === undefined ? 0 : Math.round(request.every * 1000);
 		cachedRequest = request;
 		cached = {
-			intervalMs: requestedIntervalMs > 0 ? Math.max(minIntervalMs, requestedIntervalMs) : 0,
+			intervalMs: requestedIntervalMs > 0 ? Math.max(floorMs, requestedIntervalMs) : 0,
 			match,
-			wake: request.wake === true,
+			wake,
 			stopOnMatch: request.stopOnMatch === true,
-			lines: Math.min(maxLines, Math.max(1, Math.floor(request.lines ?? DEFAULT_PROGRESS_LINES))),
+			lines: Math.min(limits.maxLines, Math.max(1, Math.floor(request.lines ?? DEFAULT_PROGRESS_LINES))),
 		};
 		return cached;
 	};
@@ -456,7 +464,7 @@ const bashSchemaBase = type({
 });
 
 const bashProgressSchema = type({
-	"every?": type("number").describe("seconds between updates"),
+	"every?": type("number").describe("min seconds between updates; throttles output, not a heartbeat"),
 	"match?": type("string").describe("regex over new output lines; reports as soon as a line matches"),
 	"wake?": type("boolean").describe("report even while idle, as a new turn; default false"),
 	"stopOnMatch?": type("boolean").describe("stop the command once `match` fires"),
@@ -974,42 +982,13 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	 */
 	#resolveProgress(input: BashProgressInput | undefined, notices: string[]): AsyncJobProgressRequest | undefined {
 		if (!input) return undefined;
-		const hasTrigger = (input.every !== undefined && input.every > 0) || (input.match?.trim().length ?? 0) > 0;
-		if (!hasTrigger) {
-			throw new ToolError("progress requires `every` (seconds) or `match` (regex); neither was set.");
-		}
-
-		let match: string | undefined;
-		if (input.match !== undefined && input.match.trim().length > 0) {
-			try {
-				// Compiled only to validate; the sampler compiles the live spec.
-				new RegExp(input.match);
-				match = input.match;
-			} catch (error) {
-				throw new ToolError(
-					`progress.match is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
-		}
-
-		const settings = this.session.settings;
-		const minIntervalSec = Math.max(0, settings.get("async.progress.minIntervalMs")) / 1000;
-		const requestedEvery = input.every !== undefined && input.every > 0 ? input.every : undefined;
-		const every = requestedEvery === undefined ? undefined : Math.max(minIntervalSec, requestedEvery);
-		if (requestedEvery !== undefined && every !== requestedEvery) {
-			notices.push(
-				`progress.every raised to ${every?.toLocaleString()}s (minimum ${minIntervalSec.toLocaleString()}s).`,
-			);
-		}
-
-		const maxLines = Math.max(1, settings.get("async.progress.maxLines"));
-		const requestedLines = Math.max(1, Math.floor(input.lines ?? DEFAULT_PROGRESS_LINES));
-		const lines = Math.min(maxLines, requestedLines);
-		if (lines !== requestedLines) {
-			notices.push(`progress.lines lowered to ${lines} (maximum ${maxLines}).`);
-		}
-
-		return { every, match, wake: input.wake === true, stopOnMatch: input.stopOnMatch === true, lines };
+		const resolution = resolveProgressRequest(
+			input,
+			progressLimitsFrom(path => this.session.settings.get(path)),
+		);
+		if (resolution.kind === "invalid") throw new ToolError(resolution.reason);
+		notices.push(...resolution.notices);
+		return resolution.request;
 	}
 
 	#extractTextResult(result: AgentToolResult<BashToolDetails>): string {
@@ -1038,8 +1017,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		let latestText = "";
 		let forwardUpdates = options.forwardUpdates;
 		const completion = Promise.withResolvers<ManagedBashJobCompletion>();
-		const minIntervalMs = Math.max(0, this.session.settings.get("async.progress.minIntervalMs"));
-		const maxLines = Math.max(1, this.session.settings.get("async.progress.maxLines"));
+		const progressLimits = progressLimitsFrom(path => this.session.settings.get(path));
 		// `stopOnMatch` aborts THIS controller, never `manager.cancel(jobId)`:
 		// cancelling marks the job `cancelled`, and the manager skips delivery for
 		// cancelled jobs — the agent would get the trigger line and never the
@@ -1057,7 +1035,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 				const wallTimeStart = performance.now();
 				const sampler = new BashProgressSampler(
-					createProgressResolver(() => manager.getJob(jobId)?.progressRequest, minIntervalMs, maxLines),
+					createProgressResolver(() => manager.getJob(jobId)?.progressRequest, progressLimits),
 					reportAgentProgress,
 					() => {
 						stoppedOnMatch = true;
@@ -1121,7 +1099,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 							intervalMs:
 								options.progress.every === undefined
 									? 0
-									: Math.max(minIntervalMs, options.progress.every * 1000),
+									: Math.max(progressLimits.minIntervalMs, options.progress.every * 1000),
 						}
 					: undefined,
 				progressRequest: options.progress,
