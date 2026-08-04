@@ -4269,6 +4269,15 @@ export const SETTINGS_SCHEMA = {
 		default: 4_000,
 	},
 
+	// Every ambient update is a persisted CustomMessage, so an unbounded monitor
+	// grows the transcript for the rest of the session. This caps updates per
+	// job; the job keeps running and its result is still delivered normally.
+	// 0 disables the cap.
+	"async.progress.maxUpdates": {
+		type: "number",
+		default: 200,
+	},
+
 	"async.progress.wakeReminderAfter": {
 		type: "number",
 		default: 10,

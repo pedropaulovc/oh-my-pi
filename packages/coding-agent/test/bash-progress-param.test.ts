@@ -7,6 +7,7 @@ const SETTINGS: Record<string, unknown> = {
 	"async.enabled": true,
 	"async.progress.minIntervalMs": 0,
 	"async.progress.wakeMinIntervalMs": 0,
+	"async.progress.maxUpdates": 0,
 	"async.progress.maxLines": 20,
 	"bash.autoBackground.enabled": false,
 	"bash.autoBackground.thresholdMs": 60_000,
@@ -219,6 +220,18 @@ describe("bash progress parameter", () => {
 				progress: { match: "a".repeat(500) },
 			}),
 		).rejects.toThrow(/the maximum is 200/);
+		await manager.waitForAll();
+	});
+
+	it("rejects a nested-quantifier match, which length alone cannot bound", async () => {
+		const manager = new AsyncJobManager({});
+		const tool = new BashTool(makeSession(manager));
+
+		// `/(a+)+$/` is six characters and backtracks catastrophically, so the
+		// 200-char cap is no defence; the shape has to be rejected.
+		await expect(
+			tool.execute("call-redos", { command: "echo hi", async: true, progress: { match: "(a+)+$" } }),
+		).rejects.toThrow(/nested quantifier/);
 		await manager.waitForAll();
 	});
 
