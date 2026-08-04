@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type } from "../src/type";
-import { type Static, Type } from "../src/typebox";
+import { type Static, type TNumber, Type } from "../src/typebox";
 
 type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Assert<T extends true> = T;
@@ -145,6 +145,46 @@ describe("TypeBox adapter", () => {
 		expect(Object.keys(schema)).not.toContain("__validator");
 		expect(Object.getOwnPropertyDescriptor(schema, "safeParse")?.enumerable).toBe(false);
 		expect(Object.getOwnPropertyDescriptor(schema, "__validator")?.enumerable).toBe(false);
+	});
+
+	test("Type.Optional over a schema with a default applies the default when the key is absent", () => {
+		// `Type.Optional(X({ default }))` is idiomatic TypeBox for "may be
+		// absent, and here is the value to use when it is". The IR rejects a
+		// key that is both `?`-suffixed and defaulted, so the adapter must emit
+		// only the default and let it carry the input-optionality.
+		const schema = Type.Object({
+			direction: Type.String(),
+			depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, default: 3 })),
+		});
+
+		expect(schema({ direction: "up" })).toEqual({ direction: "up", depth: 3 });
+		expect(schema({ direction: "up", depth: 7 })).toEqual({ direction: "up", depth: 7 });
+		// The default must not disable validation of a supplied value.
+		expect(valid(schema, { direction: "up", depth: 99 })).toBe(false);
+
+		const json = schema.toJsonSchema() as {
+			required?: string[];
+			properties?: Record<string, { default?: unknown }>;
+		};
+		expect(json.required).toEqual(["direction"]);
+		expect(json.properties?.depth?.default).toBe(3);
+	});
+
+	test("a default is honored wherever it is attached to an optional key", () => {
+		// The adapter must read the schema's own `hasDefault` rather than a
+		// marker it stamps itself: a default can arrive by a route no adapter
+		// helper observes. Stamping only in the options path let
+		// `.default()` throw and silently dropped a default passed to
+		// Type.Optional's own options.
+		const fluent = Type.Object({ a: Type.String(), d: Type.Optional(type.number.default(3) as unknown as TNumber) });
+		expect(fluent({ a: "x" })).toEqual({ a: "x", d: 3 });
+
+		const onWrapper = Type.Object({ a: Type.String(), d: Type.Optional(Type.Integer(), { default: 3 }) });
+		expect(onWrapper({ a: "x" })).toEqual({ a: "x", d: 3 });
+
+		// A Type.Optional with no default anywhere stays genuinely absent.
+		const plain = Type.Object({ a: Type.String(), d: Type.Optional(Type.Integer()) });
+		expect(plain({ a: "x" })).toEqual({ a: "x" });
 	});
 
 	test("Static infers builder outputs", () => {

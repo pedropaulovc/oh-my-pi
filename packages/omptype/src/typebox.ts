@@ -400,8 +400,29 @@ function tObject<const P extends Record<string, AnySchema>>(properties: P, opts?
 	const props: Record<string, AnySchema> = {};
 	for (const key in properties) {
 		const schema = properties[key];
-		const inner = asRuntime<unknown>(schema)[OPTIONAL_INNER];
-		def[inner ? `${key}?` : key] = inner ?? schema;
+		const runtime = asRuntime<unknown>(schema);
+		const inner = runtime[OPTIONAL_INNER];
+		// `Type.Optional(X({ default }))` is the idiomatic TypeBox way to say
+		// "may be absent, and here is the value to use when it is". A default
+		// already carries that input-optionality, so the key must NOT also be
+		// suffixed `?` — the IR rejects that pair as contradictory.
+		//
+		// The default may sit on either side of the wrapper: on the inner schema
+		// (`Type.Optional(Type.Integer({ default }))`) or on the wrapper itself
+		// (`Type.Optional(Type.Integer(), { default })`). Emit whichever side
+		// carries it, or the unwrapped inner schema when neither does. Read the
+		// schema's own `hasDefault` rather than a locally stamped marker, so
+		// every construction path is covered — including `.default()` applied
+		// fluently, which no adapter helper observes.
+		if (inner === undefined) {
+			def[key] = schema;
+		} else if (asRuntime<unknown>(inner).hasDefault === true) {
+			def[key] = inner;
+		} else if (runtime.hasDefault === true) {
+			def[key] = schema;
+		} else {
+			def[`${key}?`] = inner;
+		}
 		props[key] = schema;
 	}
 	if (opts?.additionalProperties === false) def["+"] = "reject";
