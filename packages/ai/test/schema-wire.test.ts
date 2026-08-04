@@ -384,27 +384,36 @@ describe("arkToWireSchema — undefined-union branch pruning", () => {
 });
 
 // ---------------------------------------------------------------------------
-// arkToWireSchema — authored property order (guards the @ark/schema patch)
+// toolWireSchema — authored property order
 // ---------------------------------------------------------------------------
 
-describe("arkToWireSchema — authored property order", () => {
+describe("toolWireSchema — authored property order", () => {
 	function arkTool(parameters: unknown): Tool {
 		return { name: "t", description: "d", parameters } as Tool;
 	}
 
 	it("preserves declaration order rather than alphabetizing keys", () => {
-		// Without the @ark/schema patch, ArkType canonicalizes keys by hash
-		// (alphabetical): `zebra, content, path`. Streaming renderers and prompt
-		// caching depend on the authored order being preserved on the wire.
+		// Key order is not cosmetic: streaming renderers and prompt caching
+		// depend on the authored order surviving onto the wire. ArkType used to
+		// canonicalize keys by hash here (`zebra, content, path`), which is what
+		// patches/@ark%2Fschema@*.patch exists to suppress.
 		const wire = toolWireSchema(arkTool(type({ path: "string", content: "string", zebra: "string" })));
 		expect(Object.keys(wire.properties as Record<string, unknown>)).toEqual(["path", "content", "zebra"]);
 	});
 
-	it("emits required props before optional props, each in declaration order", () => {
+	it("keeps optional props in declaration order rather than grouping them last", () => {
+		// This asserted `[pattern, i, paths, skip]` until bc39ffa26 repointed the
+		// suite from `arktype` to `@oh-my-pi/omptype` with a one-line import swap.
+		// Grouping required props ahead of optional ones was never the goal — it
+		// fell out of ArkType's constraint `precedence`, which omptype (a separate
+		// implementation, untouched by the @ark/schema patch) does not reproduce.
+		// Plain declaration order is what the sibling case above asks for.
 		const wire = toolWireSchema(
 			arkTool(type({ pattern: "string", "paths?": "string", i: "boolean", "skip?": "number" })),
 		);
-		expect(Object.keys(wire.properties as Record<string, unknown>)).toEqual(["pattern", "i", "paths", "skip"]);
+		expect(Object.keys(wire.properties as Record<string, unknown>)).toEqual(["pattern", "paths", "i", "skip"]);
+		// Optionality itself must still be carried by `required`, not by position.
+		expect(wire.required).toEqual(["pattern", "i"]);
 	});
 });
 
