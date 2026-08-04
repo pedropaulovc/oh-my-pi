@@ -71,6 +71,12 @@ export interface AsyncJobProgressRequest {
 	wake?: boolean;
 	stopOnMatch?: boolean;
 	lines?: number;
+	/**
+	 * Minimum ms between repeat emissions for a waking `match`. The first fire is
+	 * never delayed; this only stops a broad pattern from starting a model turn
+	 * on every matching line.
+	 */
+	wakeRepeatFloorMs?: number;
 }
 
 export interface AsyncJobProgressPolicy {
@@ -165,6 +171,12 @@ export interface AsyncJobManagerOptions {
 	 * a policy: callers pick their own cadence above it.
 	 */
 	progressMinIntervalMs?: number;
+	/**
+	 * Cap on agent-facing progress updates per job. Every update is a persisted
+	 * message, so an unbounded monitor grows the transcript for the rest of the
+	 * session. 0 disables the cap.
+	 */
+	progressMaxUpdates?: number;
 }
 
 interface AsyncJobDelivery {
@@ -243,6 +255,7 @@ export class AsyncJobManager {
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
 	readonly #progressMinIntervalMs: number;
+	readonly #progressMaxUpdates: number;
 	#deliveryLoop: Promise<void> | undefined;
 	#disposed = false;
 
@@ -264,6 +277,7 @@ export class AsyncJobManager {
 			0,
 			Math.floor(options.progressMinIntervalMs ?? DEFAULT_PROGRESS_MIN_INTERVAL_MS),
 		);
+		this.#progressMaxUpdates = Math.max(0, Math.floor(options.progressMaxUpdates ?? 0));
 	}
 
 	/** True when the running-job count has reached the configured cap. */
@@ -460,13 +474,20 @@ export class AsyncJobManager {
 		if (this.isDeliverySuppressed(job.id)) return;
 
 		let state = this.#progressState.get(job.id);
+		// Stop emitting once the per-job cap is reached. The job keeps running and
+		// its completion is delivered as usual; only the running commentary stops,
+		// so a long monitor cannot grow the transcript without bound.
+		if (this.#progressMaxUpdates > 0 && (state?.emitted ?? 0) >= this.#progressMaxUpdates) return;
 		if (!state) {
 			state = { lastEmitAt: 0, seq: 0, emitted: 0 };
 			this.#progressState.set(job.id, state);
 		}
 		state.pendingText = text;
 
-		const intervalMs = Math.max(this.#progressMinIntervalMs, job.progressPolicy.intervalMs ?? 0);
+		// A waking match is prompt on its first fire, then rate-limited, so a
+		// pattern matching most lines cannot start a turn per line.
+		const repeatFloorMs = (state.emitted > 0 ? job.progressRequest?.wakeRepeatFloorMs : undefined) ?? 0;
+		const intervalMs = Math.max(this.#progressMinIntervalMs, job.progressPolicy.intervalMs ?? 0, repeatFloorMs);
 		const waitMs = state.lastEmitAt + intervalMs - Date.now();
 		if (waitMs <= 0) {
 			this.#flushAgentProgress(job.id);

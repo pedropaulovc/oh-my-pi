@@ -17,6 +17,15 @@ import type { AsyncJobProgressRequest } from "./job-manager";
  */
 export const MAX_PROGRESS_MATCH_LENGTH = 200;
 
+/**
+ * Nested quantifiers — `(a+)+`, `(a*)*`, `(?:a+)+?` and friends — are the shape
+ * that turns a short pattern into a backtracking bomb. Length is no defence:
+ * `/(a+)+$/` is six characters and takes ~500ms on a 29-character line. Since
+ * the pattern runs against every output line of a running job, reject the shape
+ * outright rather than hope the input stays short.
+ */
+const NESTED_QUANTIFIER = /\([^)]*[+*][^)]*\)\s*[+*]/;
+
 /** Lines carried per update when the caller does not say. */
 export const DEFAULT_PROGRESS_LINES = 3;
 
@@ -86,6 +95,14 @@ export function resolveProgressRequest(
 		};
 	}
 
+	if (NESTED_QUANTIFIER.test(rawMatch)) {
+		return {
+			kind: "invalid",
+			reason:
+				"progress.match contains a nested quantifier (e.g. `(a+)+`), which can backtrack catastrophically on a long output line. Rewrite it without the nesting.",
+		};
+	}
+
 	let match: string | undefined;
 	if (rawMatch.length > 0) {
 		try {
@@ -103,9 +120,12 @@ export function resolveProgressRequest(
 	const notices: string[] = [];
 	const wake = input.wake === true;
 
-	// `match` deliberately does not take the wake floor: a match is a rare,
-	// high-signal event and delaying it would defeat the abort-on-first-failure
-	// case the channel exists for. Only the periodic cadence is throttled.
+	// `match` deliberately does not take the wake floor for its FIRST fire: a
+	// match is a high-signal event and delaying it would defeat the
+	// abort-on-first-failure case the channel exists for. The floor still bounds
+	// how often a waking match may repeat (see wakeRepeatFloorMs below) — a
+	// broad pattern matching most lines would otherwise start a model turn every
+	// ambient interval, which is the same turn spam the cadence floor prevents.
 	const floorMs = wake ? Math.max(limits.minIntervalMs, limits.wakeMinIntervalMs) : limits.minIntervalMs;
 	const floorSec = Math.max(0, floorMs) / 1000;
 	const requestedEvery = hasEvery ? (input.every as number) : undefined;
@@ -124,9 +144,23 @@ export function resolveProgressRequest(
 		notices.push(`progress.lines lowered to ${lines} (maximum ${maxLines}).`);
 	}
 
+	if (wake && match !== undefined && input.stopOnMatch !== true) {
+		notices.push(
+			`A waking match fires promptly the first time, then at most once every ${(limits.wakeMinIntervalMs / 1000).toLocaleString()}s. Set stopOnMatch to end the job on the first hit instead.`,
+		);
+	}
+
 	return {
 		kind: "ok",
-		request: { every, match, wake, stopOnMatch: input.stopOnMatch === true, lines },
+		request: {
+			every,
+			match,
+			wake,
+			stopOnMatch: input.stopOnMatch === true,
+			lines,
+			// Repeat floor for a waking match; the first fire is never delayed.
+			...(wake && match !== undefined ? { wakeRepeatFloorMs: limits.wakeMinIntervalMs } : {}),
+		},
 		notices,
 	};
 }

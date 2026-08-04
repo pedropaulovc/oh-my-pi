@@ -1648,6 +1648,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			? new AsyncJobManager({
 					maxRunningJobs: asyncMaxJobs,
 					progressMinIntervalMs: settings.get("async.progress.minIntervalMs"),
+					progressMaxUpdates: settings.get("async.progress.maxUpdates"),
 				})
 			: undefined;
 

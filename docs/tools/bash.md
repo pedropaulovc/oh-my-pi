@@ -36,7 +36,7 @@ Without `progress`, a background command's output reaches the TUI while it runs 
 | Field | Meaning |
 | --- | --- |
 | `every` | Minimum seconds between periodic updates. Floored by `async.progress.minIntervalMs`, or by `async.progress.wakeMinIntervalMs` when `wake` is set; a raised value is reported as a notice, not applied silently. |
-| `match` | Regex over new output lines. A matching line reports immediately, bypassing the cadence and the wake floor. An invalid or over-long pattern is rejected. |
+| `match` | Regex over new output lines. Nested quantifiers (`(a+)+`) are rejected: they backtrack catastrophically and length is no defence. A matching line reports immediately, bypassing the cadence and the wake floor. An invalid or over-long pattern is rejected. |
 | `wake` | `true` reports even while the agent is idle, as a follow-up turn. Default `false`: updates ride the next step boundary of an active run and are not emitted at all while idle. |
 | `stopOnMatch` | End the command when `match` fires. |
 | `lines` | Output lines carried per update. Default 3, capped by `async.progress.maxLines`. |
@@ -44,6 +44,8 @@ Without `progress`, a background command's output reaches the TUI while it runs 
 At least one of `every` or `match` is required — a policy with neither has no trigger and is rejected.
 
 `every` throttles **output-driven** sampling; it is not a wall-clock heartbeat. Sampling happens as the command produces output, so a job that prints nothing reports nothing however small `every` is. To confirm a silent job is alive, use `hub` `{"op":"jobs"}`.
+
+A waking `match` fires promptly the first time, then repeats at most once per wake floor, so a broad pattern cannot start a turn per matching line; `stopOnMatch` ends the job on the first hit instead.
 
 `wake` takes a higher floor than ambient updates because each waking update can start a model turn on an idle agent. `match` is exempt: it is a rare, high-signal event, and delaying it would defeat the abort-on-first-failure case the channel exists for.
 
