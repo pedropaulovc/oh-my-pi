@@ -134,6 +134,21 @@ const tabs = new Map<string, TabSession>();
 // awaits) cannot interleave and leak a worker + browser refCount.
 const acquireChains = new Map<string, Promise<void>>();
 const GRACE_MS = 750;
+/**
+ * Floor on the worker-startup budget, independent of the caller's navigation
+ * deadline. Startup (spawning the worker, loading its modules, the init
+ * handshake) happens BEFORE the navigation the caller's timeout describes, so
+ * charging it to that timeout means a short navigation deadline starves
+ * startup: `timeoutMs: 100` left only 850ms to spawn a worker cold, and when
+ * that overran, a navigation failure was reported as
+ * "Failed to start browser tab worker" — the wrong phase entirely.
+ */
+const WORKER_STARTUP_MIN_MS = 10_000;
+
+/** Startup budget: the caller's deadline plus grace, but never below the floor. */
+function workerStartupBudgetMs(navigationTimeoutMs: number): number {
+	return Math.max(navigationTimeoutMs + GRACE_MS, WORKER_STARTUP_MIN_MS);
+}
 // Names of tabs the supervisor force-killed (timeout past grace, failed recycle),
 // mapped to the kill reason. Lets the next `run` on that name explain WHY the tab
 // vanished instead of a bare "not alive". Cleared when the name is opened again.
@@ -272,7 +287,7 @@ async function acquireTabImpl(
 	}
 	let info: ReadyInfo;
 	try {
-		info = await initializeTabWorker(worker, initPayload, opts.timeoutMs + GRACE_MS);
+		info = await initializeTabWorker(worker, initPayload, workerStartupBudgetMs(opts.timeoutMs));
 	} catch (error) {
 		// `BuildMessage`-class failures arrive asynchronously via the worker's `error` event,
 		// after `spawnTabWorker`'s synchronous try/catch has already returned. Fall back to
@@ -287,7 +302,7 @@ async function acquireTabImpl(
 		});
 		worker = await spawnInlineWorker();
 		try {
-			info = await initializeTabWorker(worker, initPayload, opts.timeoutMs + GRACE_MS);
+			info = await initializeTabWorker(worker, initPayload, workerStartupBudgetMs(opts.timeoutMs));
 		} catch (inlineError) {
 			await worker.terminate().catch(() => undefined);
 			if (tempHold || browser.refCount === 0) await releaseBrowser(browser, { kill: false });
