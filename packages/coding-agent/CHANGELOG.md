@@ -12,6 +12,9 @@
 ### Changed
 
 - Version bump only. The work released here landed in sibling packages (`@oh-my-pi/omptype` schema operators, JSON Schema `io` options, and Standard Schema interop; a snapcompact benchmark) and is recorded in their own changelogs; `git diff a5090f1f8..003bb5548` contains no coding-agent implementation changes.
+### Fixed
+
+- Stats sync now lists session files in a stable, sorted order. `fs.readdir` returns filesystem order, and sync's fork dedupe is first-write-wins across a lineage, so the *owner* of a deduplicated provider request was arbitrary — a forked session could be credited with a turn that was made in its parent.
 
 ## [17.2.7] - 2026-08-03
 
