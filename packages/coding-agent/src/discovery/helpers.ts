@@ -821,6 +821,10 @@ export function parseClaudePluginsRegistry(content: string): ClaudePluginsRegist
 export async function resolveActiveProjectRegistryPath(cwd: string): Promise<string | null> {
 	// Pass 1: walk up looking for an existing .omp/ directory (nearest wins).
 	// Stop before os.homedir() — ~/.omp/ is the user-level config dir, not a project root.
+	// Stop at the repository root too: a project must not inherit its plugin registry
+	// from an .omp/ that lives outside its own repo. Without that bound the walk runs to
+	// the filesystem root, so a stray directory anywhere above — /tmp/.omp from a process
+	// that logged there, say — silently captures every project beneath it.
 	const homeDir = os.homedir();
 	let dir = path.resolve(cwd);
 	while (dir !== homeDir) {
@@ -831,6 +835,14 @@ export async function resolveActiveProjectRegistryPath(cwd: string): Promise<str
 			}
 		} catch {
 			// not found at this level — continue up
+		}
+		if (
+			await fs.promises.stat(path.join(dir, ".git")).then(
+				() => true,
+				() => false,
+			)
+		) {
+			break; // repo root reached with no .omp/ — pass 2 anchors here
 		}
 		const parent = path.dirname(dir);
 		if (parent === dir) break; // filesystem root

@@ -143,10 +143,18 @@ export function resolveWindowsShell(env: Record<string, string | undefined> = Bu
 		if (fs.existsSync(candidate)) return candidate;
 	}
 
-	const bashOnPath = $which("bash.exe");
+	// `env` is the authority for this resolution — the git-root probes above and
+	// the ComSpec fallback below all read it — so PATH discovery must scope to it
+	// too. Letting $which fall back to the process PATH made the result depend on
+	// the host rather than the argument: under WSL, /mnt/c/WINDOWS/system32 is on
+	// PATH, so `bash.exe` always resolved and the ComSpec fallback was
+	// unreachable no matter what the caller passed.
+	const onPath = { PATH: env.PATH ?? env.Path ?? "" };
+
+	const bashOnPath = $which("bash.exe", onPath);
 	if (bashOnPath) return bashOnPath;
 
-	const shOnPath = $which("sh.exe");
+	const shOnPath = $which("sh.exe", onPath);
 	if (shOnPath) {
 		const siblingBash = path.join(path.dirname(shOnPath), "bash.exe");
 		return fs.existsSync(siblingBash) ? siblingBash : shOnPath;
