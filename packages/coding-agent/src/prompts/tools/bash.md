@@ -10,7 +10,7 @@ Use ONLY for one binary or a short pipeline that computes a fact (`wc -l`, `sort
 - Internal URIs (`skill://`, `agent://`, …) auto-resolve to paths.
 {{#if hasShellBuiltins}}- aux utils available: mkdir, wc, sort, comm, diff, uniq, base64, cmp, md5sum, sha{1,224,256,384,512}sum, b2sum, basename, dirname, readlink, realpath, touch, stat, date, mktemp, seq, yes, printenv, truncate, tac, nproc, uname, whoami, hostname, which, ps, pgrep, pkill, pidwait, top, cut, tee, tr, paste, sed, xargs, jq, rm, mv, ln, ts, sponge, ifne, isutf8, combine{{#unless isWindows}}, errno{{/unless}}{{/if}}
 {{#if asyncEnabled}}- `async: true` defers a finite command's result; it does not extend `timeout`.
-- `progress` (async only) reports while the command runs: `every` (min seconds between updates; it throttles output, so a silent job reports nothing), `match` (regex) to fire on a line, `stopOnMatch` to end the command there, `wake: true` to be told even while idle. Retune or stop it later with `hub` `{"op":"monitor"}`.{{/if}}
+- `progress` (async only) reports mid-run: `every` (min seconds between updates — throttled, so a silent job says nothing), `match` regex fires on a line, `stopOnMatch` ends it there, `wake` delivers while idle. Retune/stop via `hub` `{"op":"monitor"}`.{{/if}}
 </instruction>
 
 <critical>
