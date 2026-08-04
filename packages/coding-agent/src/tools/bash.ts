@@ -10,6 +10,7 @@ import type {
 import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
+import type { AsyncJobProgressRequest } from "../async";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -300,6 +301,150 @@ async function saveBashOriginalArtifact(session: ToolSession, originalText: stri
 	}
 }
 
+/** Lines carried in one progress update when the caller doesn't say. */
+const DEFAULT_PROGRESS_LINES = 3;
+
+/** Resolved, validated form of {@link BashProgressInput}. */
+interface ResolvedBashProgress {
+	intervalMs: number;
+	match?: RegExp;
+	wake: boolean;
+	stopOnMatch: boolean;
+	lines: number;
+}
+
+/**
+ * Samples a command's output stream into progress updates for the model.
+ *
+ * Deliberately *not* a passthrough of the tail buffer: it consumes whole lines
+ * and reports only what the caller asked for — a line matching `match`, or the
+ * newest `lines` on the `every` cadence. Partial trailing text is held back
+ * until its newline arrives, so a report is never a half-line.
+ */
+class BashProgressSampler {
+	/**
+	 * Read live, not captured: `hub` `op:"monitor"` can arm, retune, or stop
+	 * reporting mid-run, and a sampler holding the spec it started with would
+	 * silently ignore that.
+	 */
+	readonly #getProgress: () => ResolvedBashProgress | undefined;
+	readonly #report: (text: string) => void;
+	readonly #onStop: () => void;
+	#partial = "";
+	#pending: string[] = [];
+	#lastCadenceAt = Date.now();
+	#stopped = false;
+
+	constructor(
+		getProgress: () => ResolvedBashProgress | undefined,
+		report: (text: string) => void,
+		onStop: () => void,
+	) {
+		this.#getProgress = getProgress;
+		this.#report = report;
+		this.#onStop = onStop;
+	}
+
+	/** Feed one raw output chunk. */
+	append(chunk: string): void {
+		if (this.#stopped) return;
+		const progress = this.#getProgress();
+		// Buffered lines belong to the policy that collected them; a stop clears
+		// them so a later re-arm starts from fresh output.
+		if (!progress) {
+			this.#partial = "";
+			this.#pending = [];
+			return;
+		}
+		const combined = this.#partial + chunk;
+		const segments = combined.split("\n");
+		// The final segment has no newline yet — hold it for the next chunk.
+		this.#partial = segments.pop() ?? "";
+		for (const line of segments) {
+			if (this.#stopped) return;
+			this.#consumeLine(progress, line);
+		}
+		this.#maybeReportCadence(progress);
+	}
+
+	/** Flush any held-back partial line once the stream ends. */
+	finish(): void {
+		if (this.#stopped || this.#partial.length === 0) return;
+		const progress = this.#getProgress();
+		const line = this.#partial;
+		this.#partial = "";
+		if (progress) this.#consumeLine(progress, line);
+	}
+
+	#consumeLine(progress: ResolvedBashProgress, rawLine: string): void {
+		const line = rawLine.replace(/\r$/, "");
+		if (progress.match?.test(line)) {
+			// A match is the signal the caller is waiting for, so it bypasses the
+			// cadence entirely; the manager's rate floor still applies.
+			this.#report(line.trim().length > 0 ? line : rawLine);
+			this.#lastCadenceAt = Date.now();
+			this.#pending = [];
+			if (progress.stopOnMatch) {
+				this.#stopped = true;
+				this.#onStop();
+			}
+			return;
+		}
+		if (progress.intervalMs <= 0) return;
+		if (line.trim().length === 0) return;
+		this.#pending.push(line);
+		if (this.#pending.length > progress.lines) this.#pending.shift();
+	}
+
+	#maybeReportCadence(progress: ResolvedBashProgress): void {
+		if (progress.intervalMs <= 0 || this.#pending.length === 0) return;
+		if (Date.now() - this.#lastCadenceAt < progress.intervalMs) return;
+		this.#report(this.#pending.join("\n"));
+		this.#pending = [];
+		this.#lastCadenceAt = Date.now();
+	}
+}
+
+/**
+ * Compile a job's live trigger spec into matcher form, memoised on the spec
+ * object so the regex is not rebuilt on every output chunk. `hub`
+ * `op:"monitor"` replaces the object wholesale on a retune, which is exactly
+ * what invalidates the memo.
+ */
+function createProgressResolver(
+	getRequest: () => AsyncJobProgressRequest | undefined,
+	minIntervalMs: number,
+	maxLines: number,
+): () => ResolvedBashProgress | undefined {
+	let cachedRequest: AsyncJobProgressRequest | undefined;
+	let cached: ResolvedBashProgress | undefined;
+	return () => {
+		const request = getRequest();
+		if (!request) return undefined;
+		if (request === cachedRequest) return cached;
+		let match: RegExp | undefined;
+		if (request.match !== undefined && request.match.trim().length > 0) {
+			try {
+				match = new RegExp(request.match);
+			} catch {
+				// A retune through `hub` is validated there; ignore an unusable
+				// pattern rather than killing the job over it.
+				match = undefined;
+			}
+		}
+		const requestedIntervalMs = request.every === undefined ? 0 : Math.round(request.every * 1000);
+		cachedRequest = request;
+		cached = {
+			intervalMs: requestedIntervalMs > 0 ? Math.max(minIntervalMs, requestedIntervalMs) : 0,
+			match,
+			wake: request.wake === true,
+			stopOnMatch: request.stopOnMatch === true,
+			lines: Math.min(maxLines, Math.max(1, Math.floor(request.lines ?? DEFAULT_PROGRESS_LINES))),
+		};
+		return cached;
+	};
+}
+
 const BASH_TIMEOUT_DESCRIPTION = `timeout in seconds; 0 disables the command deadline; nonzero values are clamped to ${TOOL_TIMEOUTS.bash.min}-${TOOL_TIMEOUTS.bash.max}`;
 
 const bashSchemaBase = type({
@@ -310,6 +455,14 @@ const bashSchemaBase = type({
 	"pty?": type("boolean").describe("run in pty mode"),
 });
 
+const bashProgressSchema = type({
+	"every?": type("number").describe("seconds between updates"),
+	"match?": type("string").describe("regex over new output lines; reports as soon as a line matches"),
+	"wake?": type("boolean").describe("report even while idle, as a new turn; default false"),
+	"stopOnMatch?": type("boolean").describe("stop the command once `match` fires"),
+	"lines?": type("number").describe("output lines per update; default 3"),
+}).describe("report progress while this background command runs");
+
 const bashSchemaWithAsync = type({
 	command: "string",
 	"env?": { "[string]": "string" },
@@ -317,9 +470,23 @@ const bashSchemaWithAsync = type({
 	"cwd?": "string",
 	"pty?": "boolean",
 	"async?": type("boolean").describe("run in background"),
+	"progress?": bashProgressSchema,
 });
 
 type BashToolSchema = typeof bashSchemaBase | typeof bashSchemaWithAsync;
+
+/**
+ * Opt-in progress reporting for a background command. Absent means the job
+ * behaves exactly as before: output streams to the TUI and the model sees
+ * nothing until the command finishes.
+ */
+export interface BashProgressInput {
+	every?: number;
+	match?: string;
+	wake?: boolean;
+	stopOnMatch?: boolean;
+	lines?: number;
+}
 
 export interface BashToolInput {
 	command: string;
@@ -329,6 +496,7 @@ export interface BashToolInput {
 
 	async?: boolean;
 	pty?: boolean;
+	progress?: BashProgressInput;
 }
 
 export interface BashToolDetails {
@@ -669,6 +837,13 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			notices?: readonly string[];
 			terminalId?: string;
 			wallTimeMs?: number;
+			/**
+			 * The command was stopped deliberately by `progress.stopOnMatch`. The
+			 * executor reports that as a cancellation, but it is a success from the
+			 * caller's point of view — the trigger fired — so the partial output is
+			 * returned as a normal result instead of the cancelled-command error.
+			 */
+			stoppedEarly?: boolean;
 		} = {},
 	): Promise<AgentToolResult<BashToolDetails>> {
 		const exitCode = result.exitCode;
@@ -743,8 +918,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				.done();
 		}
 
-		// Non-timeout cancellations and missing exit status still propagate as thrown errors.
-		this.#throwIfUnfinished(result, timeoutSec, outputText);
+		// Non-timeout cancellations and missing exit status still propagate as
+		// thrown errors — except a deliberate `stopOnMatch` stop, which is the
+		// caller getting exactly what it asked for.
+		if (!(options.stoppedEarly === true && result.cancelled === true)) {
+			this.#throwIfUnfinished(result, timeoutSec, outputText);
+		}
 
 		// No-op for already-bounded output; see `inlineCap` above.
 		const cappedOutputText = await enforceInlineByteCap(outputText, inlineCap);
@@ -788,6 +967,51 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		};
 	}
 
+	/**
+	 * Validate and clamp a `progress` param. Returns undefined when the channel
+	 * stays off. Clamps append a notice rather than applying silently — an
+	 * ignored cadence looks identical to a broken monitor from the model's side.
+	 */
+	#resolveProgress(input: BashProgressInput | undefined, notices: string[]): AsyncJobProgressRequest | undefined {
+		if (!input) return undefined;
+		const hasTrigger = (input.every !== undefined && input.every > 0) || (input.match?.trim().length ?? 0) > 0;
+		if (!hasTrigger) {
+			throw new ToolError("progress requires `every` (seconds) or `match` (regex); neither was set.");
+		}
+
+		let match: string | undefined;
+		if (input.match !== undefined && input.match.trim().length > 0) {
+			try {
+				// Compiled only to validate; the sampler compiles the live spec.
+				new RegExp(input.match);
+				match = input.match;
+			} catch (error) {
+				throw new ToolError(
+					`progress.match is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+
+		const settings = this.session.settings;
+		const minIntervalSec = Math.max(0, settings.get("async.progress.minIntervalMs")) / 1000;
+		const requestedEvery = input.every !== undefined && input.every > 0 ? input.every : undefined;
+		const every = requestedEvery === undefined ? undefined : Math.max(minIntervalSec, requestedEvery);
+		if (requestedEvery !== undefined && every !== requestedEvery) {
+			notices.push(
+				`progress.every raised to ${every?.toLocaleString()}s (minimum ${minIntervalSec.toLocaleString()}s).`,
+			);
+		}
+
+		const maxLines = Math.max(1, settings.get("async.progress.maxLines"));
+		const requestedLines = Math.max(1, Math.floor(input.lines ?? DEFAULT_PROGRESS_LINES));
+		const lines = Math.min(maxLines, requestedLines);
+		if (lines !== requestedLines) {
+			notices.push(`progress.lines lowered to ${lines} (maximum ${maxLines}).`);
+		}
+
+		return { every, match, wake: input.wake === true, stopOnMatch: input.stopOnMatch === true, lines };
+	}
+
 	#extractTextResult(result: AgentToolResult<BashToolDetails>): string {
 		return result.content.find(block => block.type === "text")?.text ?? "";
 	}
@@ -803,6 +1027,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		resolvedEnv?: Record<string, string>;
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
 		forwardUpdates: boolean;
+		progress?: AsyncJobProgressRequest;
 	}): ManagedBashJobHandle {
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
@@ -813,20 +1038,38 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		let latestText = "";
 		let forwardUpdates = options.forwardUpdates;
 		const completion = Promise.withResolvers<ManagedBashJobCompletion>();
+		const minIntervalMs = Math.max(0, this.session.settings.get("async.progress.minIntervalMs"));
+		const maxLines = Math.max(1, this.session.settings.get("async.progress.maxLines"));
+		// `stopOnMatch` aborts THIS controller, never `manager.cancel(jobId)`:
+		// cancelling marks the job `cancelled`, and the manager skips delivery for
+		// cancelled jobs — the agent would get the trigger line and never the
+		// output. Aborting locally makes executeBash return a structured cancelled
+		// result instead of throwing, so the job settles `completed` and delivers
+		// normally.
+		const stopController = new AbortController();
+		let stoppedOnMatch = false;
 
 		const jobId = manager.register(
 			"bash",
 			label,
-			async ({ jobId, signal: runSignal, reportProgress }) => {
+			async ({ jobId, signal: runSignal, reportProgress, reportAgentProgress }) => {
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 				const wallTimeStart = performance.now();
+				const sampler = new BashProgressSampler(
+					createProgressResolver(() => manager.getJob(jobId)?.progressRequest, minIntervalMs, maxLines),
+					reportAgentProgress,
+					() => {
+						stoppedOnMatch = true;
+						stopController.abort();
+					},
+				);
 				try {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
 						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
 						timeout: options.timeoutMs ?? 0,
-						signal: runSignal,
+						signal: AbortSignal.any([runSignal, stopController.signal]),
 						env: options.resolvedEnv,
 						artifactPath,
 						artifactId,
@@ -834,14 +1077,19 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 							tailBuffer.append(chunk);
 							latestText = tailBuffer.text();
 							void reportProgress(latestText, { async: { state: "running", jobId, type: "bash" } });
+							sampler.append(chunk);
 						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					});
+					sampler.finish();
 					const wallTimeMs = performance.now() - wallTimeStart;
 					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
 						requestedTimeoutSec: options.requestedTimeoutSec,
-						notices: options.notices ?? [],
+						notices: stoppedOnMatch
+							? [...(options.notices ?? []), "Stopped early: progress match fired."]
+							: (options.notices ?? []),
 						wallTimeMs,
+						stoppedEarly: stoppedOnMatch,
 					});
 					const finalText = this.#extractTextResult(finalResult);
 					latestText = finalText;
@@ -867,6 +1115,16 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			},
 			{
 				ownerId: this.session.getAgentId?.() ?? undefined,
+				progressPolicy: options.progress
+					? {
+							wake: options.progress.wake === true,
+							intervalMs:
+								options.progress.every === undefined
+									? 0
+									: Math.max(minIntervalMs, options.progress.every * 1000),
+						}
+					: undefined,
+				progressRequest: options.progress,
 				onProgress: async text => {
 					latestText = text;
 					if (!forwardUpdates) return;
@@ -952,6 +1210,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 			async: asyncRequested = false,
 			pty = false,
+			progress: rawProgress,
 		}: BashToolInput,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
@@ -975,6 +1234,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 		if (asyncRequested && !this.#asyncEnabled) {
 			throw new ToolError("Async bash execution is disabled. Enable async.enabled to use async mode.");
+		}
+		// Progress reporting only means something for a job the model can outlive.
+		// Reject it on a foreground call rather than accepting it and doing
+		// nothing, so a mistaken call is visible instead of silently inert.
+		if (rawProgress && !asyncRequested) {
+			throw new ToolError("progress requires `async: true`; a foreground command returns its output directly.");
 		}
 
 		// Check both the original command and the cwd-normalized command so
@@ -1058,6 +1323,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			if (!this.session.asyncJobManager) {
 				throw new ToolError("Async job manager unavailable for this session.");
 			}
+			// Resolved here rather than at the top so clamp notices join the ones
+			// already collected for the background-start result.
+			const progress = this.#resolveProgress(rawProgress, pendingNotices);
 			const job = this.#startManagedBashJob({
 				command,
 				commandCwd,
@@ -1069,6 +1337,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				resolvedEnv,
 				onUpdate,
 				forwardUpdates: false,
+				progress,
 			});
 			return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
 				requestedTimeoutSec,
