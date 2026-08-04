@@ -76,15 +76,32 @@ interface RevivingAgent {
 export class AgentLifecycleManager {
 	static #global: AgentLifecycleManager | undefined;
 
+	/**
+	 * The global manager, guaranteed to manage the *current* global registry.
+	 *
+	 * {@link AgentRegistry.resetGlobalForTests} can replace the registry global
+	 * under a live manager, and `#registry` is captured at construction. A
+	 * manager left bound to the discarded registry does not fail loudly — every
+	 * lookup simply misses, so {@link release} returns `false` without marking
+	 * the ref `aborted`. Anything awaiting that transition then waits forever,
+	 * surfacing as an unrelated timeout far from the reset that caused it.
+	 * Rebinding here keeps the two globals in step by construction. In
+	 * production the registry global is never replaced, so this is one identity
+	 * comparison and never rebuilds.
+	 */
 	static global(): AgentLifecycleManager {
+		const registry = AgentRegistry.global();
+		if (AgentLifecycleManager.#global && !AgentLifecycleManager.#global.manages(registry)) {
+			AgentLifecycleManager.#discardGlobal();
+		}
 		if (!AgentLifecycleManager.#global) {
-			AgentLifecycleManager.#global = new AgentLifecycleManager();
+			AgentLifecycleManager.#global = new AgentLifecycleManager(registry);
 		}
 		return AgentLifecycleManager.#global;
 	}
 
-	/** Reset the global manager. Test-only. */
-	static resetGlobalForTests(): void {
+	/** Tear down the global manager's timers and subscriptions, then drop it. */
+	static #discardGlobal(): void {
 		const current = AgentLifecycleManager.#global;
 		if (current) {
 			current.#unsubscribe?.();
@@ -98,6 +115,11 @@ export class AgentLifecycleManager {
 			current.#persistedReviverFactory = undefined;
 		}
 		AgentLifecycleManager.#global = undefined;
+	}
+
+	/** Reset the global manager. Test-only. */
+	static resetGlobalForTests(): void {
+		AgentLifecycleManager.#discardGlobal();
 	}
 
 	readonly #registry: AgentRegistry;
