@@ -10,10 +10,21 @@
  * out in full-suite runs while passing in isolation — the reset lived in an
  * entirely different test file.
  */
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+
+/**
+ * These tests deliberately swap the registry global, which is exactly the
+ * cross-file pollution the fix exists to survive. Put both globals back so the
+ * pollution does not outlive the file.
+ */
+afterEach(() => {
+	AgentRegistry.global().unregister("Rebind-Sub");
+	AgentLifecycleManager.resetGlobalForTests();
+	AgentRegistry.resetGlobalForTests();
+});
 
 function fakeSession(counter: { aborts: number }): AgentSession {
 	return {
