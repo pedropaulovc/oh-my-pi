@@ -411,7 +411,17 @@ describe("SessionManager legacy session migration persistence", () => {
 		expect(persistedEntries[1].id).toBeDefined();
 		expect(persistedEntries[1].parentId).toBeNull();
 	});
-	it("keeps the last non-empty session resumable after starting a fresh session", async () => {
+	/**
+	 * `continueRecent` must honor a `/new` boundary rather than resuming across
+	 * it. `447eb51f2` ("persist /new boundary so autoResume does not resume
+	 * pre-/new transcript") made that explicit: when the breadcrumb marks a
+	 * fresh boundary whose JSONL was never materialized, resuming starts a new
+	 * session instead of falling back to the most recent one.
+	 *
+	 * The previous transcript is still preserved on disk and reachable through
+	 * the session list — it is simply not what an implicit resume picks up.
+	 */
+	it("starts a new session across a /new boundary and preserves the previous transcript", async () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		session.appendMessage({ role: "user", content: "hello", timestamp: Date.now() - 1 });
 		session.appendMessage(makeAssistantMessage());
@@ -426,7 +436,15 @@ describe("SessionManager legacy session migration persistence", () => {
 
 		const resumed = await SessionManager.continueRecent(tempDir, tempDir);
 		try {
-			expect(resumed.getSessionFile()).toBe(previousSessionFile);
+			// The boundary is honored: neither the pre-`/new` transcript nor the
+			// unmaterialized fresh file is adopted.
+			expect(resumed.getSessionFile()).not.toBe(previousSessionFile);
+
+			// The half of the original contract that still holds: `/new` must not
+			// destroy the prior transcript, and it stays explicitly resumable.
+			expect(fs.existsSync(previousSessionFile)).toBe(true);
+			const listed = await SessionManager.list(tempDir, tempDir);
+			expect(listed.map(entry => entry.path)).toContain(previousSessionFile);
 		} finally {
 			await resumed.close();
 			await session.close();
