@@ -4,12 +4,9 @@
 
 ## [17.2.8] - 2026-08-04
 
-### Added
+### Changed
 
-- omptype gained Standard Schema interop and JSON Schema parsing, so schemas can be consumed by any Standard Schema client and round-tripped from existing JSON Schema documents.
-- omptype `toJsonSchema` accepts `io` options to emit the input or output view of a schema, which differ wherever a default or a transform applies.
-- omptype gained advanced schema operators and type features.
-- Added a squad context compression benchmark to snapcompact.
+- Version bump only. The work released here landed in sibling packages (`@oh-my-pi/omptype` schema operators, JSON Schema `io` options, and Standard Schema interop; a snapcompact benchmark) and is recorded in their own changelogs; `git diff a5090f1f8..003bb5548` contains no coding-agent implementation changes.
 
 ## [17.2.7] - 2026-08-03
 
