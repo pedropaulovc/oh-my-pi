@@ -412,16 +412,18 @@ describe("SessionManager legacy session migration persistence", () => {
 		expect(persistedEntries[1].parentId).toBeNull();
 	});
 	/**
-	 * `continueRecent` must honor a `/new` boundary rather than resuming across
-	 * it. `447eb51f2` ("persist /new boundary so autoResume does not resume
-	 * pre-/new transcript") made that explicit: when the breadcrumb marks a
-	 * fresh boundary whose JSONL was never materialized, resuming starts a new
-	 * session instead of falling back to the most recent one.
+	 * `/new` must not destroy the prior transcript: it stays on disk and
+	 * explicitly resumable. That is the half of the original assertion which
+	 * survives 447eb51f2 ("persist /new boundary so autoResume does not resume
+	 * pre-/new transcript"), whose commit message and code comment state that
+	 * an implicit resume must NOT cross the boundary.
 	 *
-	 * The previous transcript is still preserved on disk and reachable through
-	 * the session list — it is simply not what an implicit resume picks up.
+	 * Whether `continueRecent` itself crosses the boundary is covered by
+	 * new-session-boundary.test.ts, which pins a deterministic terminal id;
+	 * asserting it here as well was redundant and, without that pinning, it
+	 * depended on the ambient terminal environment.
 	 */
-	it("starts a new session across a /new boundary and preserves the previous transcript", async () => {
+	it("preserves the previous transcript across a /new boundary", async () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		session.appendMessage({ role: "user", content: "hello", timestamp: Date.now() - 1 });
 		session.appendMessage(makeAssistantMessage());
@@ -432,21 +434,15 @@ describe("SessionManager legacy session migration persistence", () => {
 
 		const freshSessionFile = await session.newSession();
 		expect(freshSessionFile).toBeDefined();
+		expect(freshSessionFile).not.toBe(previousSessionFile);
+		// The fresh session stays lazy until something is written to it.
 		expect(fs.existsSync(freshSessionFile!)).toBe(false);
 
-		const resumed = await SessionManager.continueRecent(tempDir, tempDir);
 		try {
-			// The boundary is honored: neither the pre-`/new` transcript nor the
-			// unmaterialized fresh file is adopted.
-			expect(resumed.getSessionFile()).not.toBe(previousSessionFile);
-
-			// The half of the original contract that still holds: `/new` must not
-			// destroy the prior transcript, and it stays explicitly resumable.
 			expect(fs.existsSync(previousSessionFile)).toBe(true);
 			const listed = await SessionManager.list(tempDir, tempDir);
 			expect(listed.map(entry => entry.path)).toContain(previousSessionFile);
 		} finally {
-			await resumed.close();
 			await session.close();
 		}
 	});
