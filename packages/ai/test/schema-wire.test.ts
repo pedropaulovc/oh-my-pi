@@ -388,16 +388,14 @@ describe("arkToWireSchema — undefined-union branch pruning", () => {
 // ---------------------------------------------------------------------------
 
 describe("toolWireSchema — authored property order", () => {
-	function arkTool(parameters: unknown): Tool {
+	function makeTool(parameters: unknown): Tool {
 		return { name: "t", description: "d", parameters } as Tool;
 	}
 
 	it("preserves declaration order rather than alphabetizing keys", () => {
 		// Key order is not cosmetic: streaming renderers and prompt caching
-		// depend on the authored order surviving onto the wire. ArkType used to
-		// canonicalize keys by hash here (`zebra, content, path`), which is what
-		// patches/@ark%2Fschema@*.patch exists to suppress.
-		const wire = toolWireSchema(arkTool(type({ path: "string", content: "string", zebra: "string" })));
+		// depend on the authored order surviving onto the wire.
+		const wire = toolWireSchema(makeTool(type({ path: "string", content: "string", zebra: "string" })));
 		expect(Object.keys(wire.properties as Record<string, unknown>)).toEqual(["path", "content", "zebra"]);
 	});
 
@@ -406,10 +404,11 @@ describe("toolWireSchema — authored property order", () => {
 		// suite from `arktype` to `@oh-my-pi/omptype` with a one-line import swap.
 		// Grouping required props ahead of optional ones was never the goal — it
 		// fell out of ArkType's constraint `precedence`, which omptype (a separate
-		// implementation, untouched by the @ark/schema patch) does not reproduce.
-		// Plain declaration order is what the sibling case above asks for.
+		// implementation) does not reproduce. Plain declaration order is what the
+		// sibling case above asks for. Kept as the record of why the expectation
+		// changed, so the old order does not get "restored" as a regression fix.
 		const wire = toolWireSchema(
-			arkTool(type({ pattern: "string", "paths?": "string", i: "boolean", "skip?": "number" })),
+			makeTool(type({ pattern: "string", "paths?": "string", i: "boolean", "skip?": "number" })),
 		);
 		expect(Object.keys(wire.properties as Record<string, unknown>)).toEqual(["pattern", "paths", "i", "skip"]);
 		// Optionality itself must still be carried by `required`, not by position.
