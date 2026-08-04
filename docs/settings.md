@@ -559,6 +559,7 @@ lsp:
 | `bash.autoBackground.enabled`     | boolean | `false`   | Auto-background long-running commands.                                                                                                                      |
 | `bash.autoBackground.thresholdMs` | number  | `60000`   | Threshold before auto-backgrounding.                                                                                                                        |
 | `async.progress.minIntervalMs`    | number  | `1000`    | Floor between progress updates from one background job. A safety rail against sub-second spam — the agent picks its own cadence above it.                    |
+| `async.progress.wakeMinIntervalMs`| number  | `15000`   | Floor on the `every` cadence when `wake` is set, since each waking update can start a model turn on an idle agent. `match` is exempt so a trigger still fires promptly.  |
 | `async.progress.maxLines`         | number  | `20`      | Ceiling on `progress.lines`; output lines carried per job per update.                                                                                       |
 | `async.progress.maxChars`         | number  | `4000`    | Character budget for one progress update, split across the jobs it covers.                                                                                  |
 | `async.progress.wakeReminderAfter`| number  | `10`      | Wake updates between reminders telling the agent the monitor is still armed and how to stop it. `0` disables the reminder.                                   |

@@ -7,7 +7,7 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import type { AsyncJob, AsyncJobManager } from "../../async";
+import { type AsyncJob, type AsyncJobManager, progressLimitsFrom, resolveProgressRequest } from "../../async";
 import { settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
@@ -26,14 +26,15 @@ import {
 	type ToolUIColor,
 	type ToolUIStatus,
 } from "../render-utils";
-import type {
-	AgentActivitySnapshot,
-	CancelOutcome,
-	CoordinationDetails,
-	HubRenderArgs,
-	JobSnapshot,
-	MonitorOutcome,
-	MonitorPolicySnapshot,
+import {
+	type AgentActivitySnapshot,
+	type CancelOutcome,
+	type CoordinationDetails,
+	type HubRenderArgs,
+	hubErrorResult,
+	type JobSnapshot,
+	type MonitorOutcome,
+	type MonitorPolicySnapshot,
 } from "./types";
 
 const WAIT_DURATION_MS: Record<string, number> = {
@@ -416,7 +417,25 @@ export function executeMonitor(
 		};
 	}
 
-	const minIntervalMs = Math.max(0, session.settings.get("async.progress.minIntervalMs"));
+	// Validate once, up front, with the same rules `bash` applies. Without this
+	// an unusable spec reaches the sampler, which can only ignore it — arming a
+	// monitor that silently never fires.
+	const resolution = request
+		? resolveProgressRequest(
+				request,
+				progressLimitsFrom(path => session.settings.get(path)),
+			)
+		: undefined;
+	if (resolution?.kind === "invalid") {
+		return hubErrorResult(resolution.reason, {
+			op: "monitor",
+			monitors: ids.map(id => ({ id, status: "invalid" as const, message: resolution.reason })),
+			jobs: [],
+		});
+	}
+	const resolved = resolution?.kind === "ok" ? resolution.request : undefined;
+	const clampNotices = resolution?.kind === "ok" ? resolution.notices : [];
+
 	const outcomes: MonitorOutcome[] = [];
 	for (const id of ids) {
 		const job = manager.getJob(id);
@@ -434,10 +453,10 @@ export function executeMonitor(
 			outcomes.push({ id, status: "stopped", message: `Stopped reporting on ${id}; the job keeps running.` });
 			continue;
 		}
-		const requestedIntervalMs = request.every === undefined ? 0 : Math.round(request.every * 1000);
-		const intervalMs = requestedIntervalMs > 0 ? Math.max(minIntervalMs, requestedIntervalMs) : 0;
-		manager.setProgressPolicy(id, { wake: request.wake === true, intervalMs }, ownerFilter);
-		job.progressRequest = { ...request, every: intervalMs > 0 ? intervalMs / 1000 : undefined };
+		if (!resolved) continue;
+		const intervalMs = resolved.every === undefined ? 0 : Math.round(resolved.every * 1000);
+		manager.setProgressPolicy(id, { wake: resolved.wake === true, intervalMs }, ownerFilter);
+		job.progressRequest = resolved;
 		const snapshot = monitorSnapshot(manager, id);
 		outcomes.push({
 			id,
@@ -447,7 +466,9 @@ export function executeMonitor(
 		});
 	}
 
-	const text = ["## Monitors", ...outcomes.map(outcome => `- ${outcome.message}`)].join("\n");
+	// Report clamps rather than applying them silently: an ignored cadence is
+	// indistinguishable from a monitor that never fired.
+	const text = ["## Monitors", ...outcomes.map(outcome => `- ${outcome.message}`), ...clampNotices].join("\n");
 	return {
 		content: [{ type: "text", text }],
 		details: { op: "monitor", monitors: outcomes, jobs: snapshotJobs(session, visibleJobs(manager, ids, ownerId)) },

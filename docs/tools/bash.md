@@ -35,13 +35,17 @@ Without `progress`, a background command's output reaches the TUI while it runs 
 
 | Field | Meaning |
 | --- | --- |
-| `every` | Seconds between heartbeat updates. Floored by `async.progress.minIntervalMs`; a raised value is reported as a notice, not applied silently. |
-| `match` | Regex over new output lines. A matching line reports immediately, bypassing the cadence. An invalid pattern throws `ToolError`. |
+| `every` | Minimum seconds between periodic updates. Floored by `async.progress.minIntervalMs`, or by `async.progress.wakeMinIntervalMs` when `wake` is set; a raised value is reported as a notice, not applied silently. |
+| `match` | Regex over new output lines. A matching line reports immediately, bypassing the cadence and the wake floor. An invalid or over-long pattern is rejected. |
 | `wake` | `true` reports even while the agent is idle, as a follow-up turn. Default `false`: updates ride the next step boundary of an active run and are not emitted at all while idle. |
 | `stopOnMatch` | End the command when `match` fires. |
 | `lines` | Output lines carried per update. Default 3, capped by `async.progress.maxLines`. |
 
 At least one of `every` or `match` is required — a policy with neither has no trigger and is rejected.
+
+`every` throttles **output-driven** sampling; it is not a wall-clock heartbeat. Sampling happens as the command produces output, so a job that prints nothing reports nothing however small `every` is. To confirm a silent job is alive, use `hub` `{"op":"jobs"}`.
+
+`wake` takes a higher floor than ambient updates because each waking update can start a model turn on an idle agent. `match` is exempt: it is a rare, high-signal event, and delaying it would defeat the abort-on-first-failure case the channel exists for.
 
 Sampling runs beside the existing per-chunk TUI stream rather than on top of it: the sampler consumes whole lines (a partial trailing line is held until its newline arrives, so an update is never half a line) and reports only the matched line or the newest `lines` on the cadence — never the raw tail buffer.
 

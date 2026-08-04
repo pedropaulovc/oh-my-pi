@@ -84,7 +84,7 @@ const hubSchema = type({
 		"wait: job ids to watch (omit = all running jobs); cancel: job ids to kill; monitor: job ids to arm (omit = report all)",
 	),
 	"progress?": type({
-		"every?": type("number").describe("seconds between updates"),
+		"every?": type("number").describe("min seconds between updates; throttles output, not a heartbeat"),
 		"match?": type("string").describe("regex over new output lines; reports as soon as a line matches"),
 		"wake?": type("boolean").describe("report even while idle, as a new turn; default false"),
 		"lines?": type("number").describe("output lines per update; default 3"),
@@ -303,27 +303,9 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 			case "monitor": {
 				const manager = this.session.asyncJobManager;
 				if (!manager) return this.#asyncDisabled("monitor");
-				if (params.progress?.match !== undefined && params.progress.match.trim().length > 0) {
-					try {
-						new RegExp(params.progress.match);
-					} catch (error) {
-						return hubErrorResult(
-							`progress.match is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`,
-							{ op: "monitor", jobs: [] },
-						);
-					}
-				}
-				const requested = params.progress;
-				const hasTrigger =
-					requested !== undefined &&
-					((requested.every !== undefined && requested.every > 0) || (requested.match?.trim().length ?? 0) > 0);
-				if (requested !== undefined && !hasTrigger) {
-					return hubErrorResult("`progress` needs `every` or `match`; omit it entirely to stop reporting.", {
-						op: "monitor",
-						jobs: [],
-					});
-				}
-				return executeMonitor(this.session, manager, this.#ownerId(), params.ids, requested);
+				// Validation lives in executeMonitor, which shares one resolver
+				// with `bash` `progress` so the two surfaces cannot drift.
+				return executeMonitor(this.session, manager, this.#ownerId(), params.ids, params.progress);
 			}
 			case "start":
 			case "ps":
