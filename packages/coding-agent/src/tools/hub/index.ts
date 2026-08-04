@@ -36,6 +36,7 @@ import {
 	buildJobResult,
 	executeCancel,
 	executeJobsSnapshot,
+	executeMonitor,
 	jobsRenderCall,
 	jobsRenderResult,
 	noMatchingJobsResult,
@@ -72,14 +73,22 @@ export * from "./types";
 
 const hubSchema = type({
 	op: type(
-		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
+		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'monitor' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
 	).describe("hub operation"),
 	"to?": type("string").describe('send: recipient agent id or "all"'),
 	"message?": type("string").describe("send: message body"),
 	"replyTo?": type("string").describe("send: message id being answered"),
 	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with to:"all")'),
 	"from?": type("string").describe("wait: only accept a message from this agent id"),
-	"ids?": type("string[]").describe("wait: job ids to watch (omit = all running jobs); cancel: job ids to kill"),
+	"ids?": type("string[]").describe(
+		"wait: job ids to watch (omit = all running jobs); cancel: job ids to kill; monitor: job ids to arm (omit = report all)",
+	),
+	"progress?": type({
+		"every?": type("number").describe("min seconds between updates; throttles output, not a heartbeat"),
+		"match?": type("string").describe("regex over new output lines; reports as soon as a line matches"),
+		"wake?": type("boolean").describe("report even while idle, as a new turn; default false"),
+		"lines?": type("number").describe("output lines per update; default 3"),
+	}).describe("monitor: reporting policy to apply; omit to stop reporting while leaving the job running"),
 	"timeoutMs?": type("number").describe("wait (messages/jobs): timeout in milliseconds (0 waits indefinitely)"),
 	"peek?": type("boolean").describe("inbox: list messages without consuming them"),
 	"name?": type("string <= 48").describe("process ops: stable project-scoped launch name"),
@@ -135,6 +144,7 @@ function hubApproval(params: unknown): ToolApprovalDecision {
 		case "list":
 		case "jobs":
 		case "cancel":
+		case "monitor":
 		case "ps":
 		case "logs":
 		case "describe":
@@ -290,6 +300,13 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 				if (!manager) return this.#asyncDisabled("jobs");
 				return executeJobsSnapshot(this.session, manager, this.#ownerId());
 			}
+			case "monitor": {
+				const manager = this.session.asyncJobManager;
+				if (!manager) return this.#asyncDisabled("monitor");
+				// Validation lives in executeMonitor, which shares one resolver
+				// with `bash` `progress` so the two surfaces cannot drift.
+				return executeMonitor(this.session, manager, this.#ownerId(), params.ids, params.progress);
+			}
 			case "start":
 			case "ps":
 			case "logs":
@@ -307,7 +324,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		return this.session.getAgentId?.() ?? undefined;
 	}
 
-	#asyncDisabled(op: "cancel" | "jobs"): AgentToolResult<HubDetails> {
+	#asyncDisabled(op: "cancel" | "jobs" | "monitor"): AgentToolResult<HubDetails> {
 		return {
 			content: [{ type: "text", text: "Async execution is disabled; no background jobs are available." }],
 			details: { op, jobs: [] },

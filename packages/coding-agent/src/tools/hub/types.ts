@@ -20,6 +20,7 @@ export type HubOp =
 	| "list"
 	| "jobs"
 	| "cancel"
+	| "monitor"
 	| "start"
 	| "ps"
 	| "logs"
@@ -60,6 +61,25 @@ export interface CancelOutcome {
 	message: string;
 }
 
+/** Progress-reporting policy for one job, as surfaced by `op:"monitor"`. */
+export interface MonitorPolicySnapshot {
+	/** Seconds between heartbeat updates; absent when only `match` is armed. */
+	every?: number;
+	/** Regex fired against new output lines. */
+	match?: string;
+	/** Whether an update may start a turn while the agent is idle. */
+	wake: boolean;
+}
+
+export type MonitorStatus = "armed" | "stopped" | "unchanged" | "not_found" | "already_completed" | "invalid";
+
+export interface MonitorOutcome {
+	id: string;
+	status: MonitorStatus;
+	message: string;
+	policy?: MonitorPolicySnapshot;
+}
+
 /**
  * A live subagent from the AgentRegistry that has no backing job in the
  * AsyncJobManager — e.g. an idle agent woken (or a parked agent revived) via
@@ -88,6 +108,8 @@ export interface CoordinationDetails {
 	peers?: HubPeerInfo[];
 	jobs?: JobSnapshot[];
 	cancelled?: { id: string; status: CancelStatus }[];
+	/** Per-job outcomes of `op:"monitor"`. */
+	monitors?: MonitorOutcome[];
 	/** Running subagents not represented by a job row in this result. */
 	agents?: AgentActivitySnapshot[];
 }

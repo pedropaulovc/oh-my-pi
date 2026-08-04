@@ -4236,6 +4236,50 @@ export const SETTINGS_SCHEMA = {
 		default: 100,
 	},
 
+	// Agent-facing progress channel for running background jobs. These are
+	// safety rails, not policy: the agent chooses its own cadence and triggers
+	// per call (`bash` `progress`, `hub` `op: "monitor"`), and the defaults are
+	// deliberately loose so a deliberate choice is not silently overridden.
+	"async.progress.minIntervalMs": {
+		type: "number",
+		default: 1_000,
+	},
+
+	// A waking monitor starts a follow-up turn on an idle agent, so its cadence
+	// costs a whole model turn rather than a few lines of context. It gets its
+	// own, much higher floor: at the ambient 1s floor a `wake` monitor would
+	// start a turn every second. Only the periodic `every` cadence is held to
+	// this — a `match` still fires at the ambient floor, because delaying a
+	// match would defeat the abort-on-first-failure case the channel exists for.
+	"async.progress.wakeMinIntervalMs": {
+		type: "number",
+		default: 15_000,
+	},
+
+	"async.progress.maxLines": {
+		type: "number",
+		default: 20,
+	},
+
+	"async.progress.maxChars": {
+		type: "number",
+		default: 4_000,
+	},
+
+	// Every ambient update is a persisted CustomMessage, so an unbounded monitor
+	// grows the transcript for the rest of the session. This caps updates per
+	// job; the job keeps running and its result is still delivered normally.
+	// 0 disables the cap.
+	"async.progress.maxUpdates": {
+		type: "number",
+		default: 200,
+	},
+
+	"async.progress.wakeReminderAfter": {
+		type: "number",
+		default: 10,
+	},
+
 	"async.pollWaitDuration": {
 		type: "enum",
 		values: ["5s", "10s", "30s", "1m", "5m", "smart"] as const,

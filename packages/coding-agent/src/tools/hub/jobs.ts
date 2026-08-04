@@ -7,7 +7,7 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import type { AsyncJob, AsyncJobManager } from "../../async";
+import { type AsyncJob, type AsyncJobManager, progressLimitsFrom, resolveProgressRequest } from "../../async";
 import { settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
@@ -26,7 +26,16 @@ import {
 	type ToolUIColor,
 	type ToolUIStatus,
 } from "../render-utils";
-import type { AgentActivitySnapshot, CancelOutcome, CoordinationDetails, HubRenderArgs, JobSnapshot } from "./types";
+import {
+	type AgentActivitySnapshot,
+	type CancelOutcome,
+	type CoordinationDetails,
+	type HubRenderArgs,
+	hubErrorResult,
+	type JobSnapshot,
+	type MonitorOutcome,
+	type MonitorPolicySnapshot,
+} from "./types";
 
 const WAIT_DURATION_MS: Record<string, number> = {
 	"5s": 5_000,
@@ -347,6 +356,134 @@ export async function executeCancel(
 		);
 	}
 	return buildJobResult(session, manager, "cancel", visibleJobs(manager, ids, ownerId), cancelOutcomes);
+}
+
+/** Requested reporting policy for `op:"monitor"`, before validation. */
+export interface MonitorRequest {
+	every?: number;
+	match?: string;
+	wake?: boolean;
+	lines?: number;
+}
+
+function describePolicy(policy: MonitorPolicySnapshot): string {
+	const parts: string[] = [];
+	if (policy.every !== undefined) parts.push(`every ${policy.every}s`);
+	if (policy.match !== undefined) parts.push(`match /${policy.match}/`);
+	parts.push(policy.wake ? "wakes when idle" : "reports between steps");
+	return parts.join(", ");
+}
+
+/**
+ * `monitor`: arm, retune, or stop progress reporting on running jobs without
+ * touching the work itself. With no `ids`, reports the caller's running jobs and
+ * their current policies; with `ids` and no `progress`, stops reporting on them.
+ *
+ * The trigger details (`match` regex, cadence, line count) stay with the job's
+ * output sampler, which the manager does not own — so a retune records the
+ * policy the manager enforces (interval, wake) and stores the caller's raw
+ * request alongside it for the sampler to pick up.
+ */
+export function executeMonitor(
+	session: ToolSession,
+	manager: AsyncJobManager,
+	ownerId: string | undefined,
+	ids: string[] | undefined,
+	request: MonitorRequest | undefined,
+): AgentToolResult<CoordinationDetails> {
+	const ownerFilter = ownerId ? { ownerId } : undefined;
+
+	// No ids: report-only over everything the caller owns and is still running.
+	if (!ids || ids.length === 0) {
+		const running = manager.getRunningJobs(ownerFilter);
+		const outcomes: MonitorOutcome[] = running.map(job => {
+			const snapshot = monitorSnapshot(manager, job.id);
+			return snapshot
+				? {
+						id: job.id,
+						status: "unchanged" as const,
+						message: `${job.id}: ${describePolicy(snapshot)}`,
+						policy: snapshot,
+					}
+				: { id: job.id, status: "unchanged" as const, message: `${job.id}: not reporting` };
+		});
+		const text =
+			outcomes.length === 0
+				? "No running background jobs to monitor."
+				: ["## Monitors", ...outcomes.map(outcome => `- ${outcome.message}`)].join("\n");
+		return {
+			content: [{ type: "text", text }],
+			details: { op: "monitor", monitors: outcomes, jobs: [] },
+		};
+	}
+
+	// Validate once, up front, with the same rules `bash` applies. Without this
+	// an unusable spec reaches the sampler, which can only ignore it — arming a
+	// monitor that silently never fires.
+	const resolution = request
+		? resolveProgressRequest(
+				request,
+				progressLimitsFrom(path => session.settings.get(path)),
+			)
+		: undefined;
+	if (resolution?.kind === "invalid") {
+		return hubErrorResult(resolution.reason, {
+			op: "monitor",
+			monitors: ids.map(id => ({ id, status: "invalid" as const, message: resolution.reason })),
+			jobs: [],
+		});
+	}
+	const resolved = resolution?.kind === "ok" ? resolution.request : undefined;
+	const clampNotices = resolution?.kind === "ok" ? resolution.notices : [];
+
+	const outcomes: MonitorOutcome[] = [];
+	for (const id of ids) {
+		const job = manager.getJob(id);
+		if (!job || (ownerId && job.ownerId !== ownerId)) {
+			outcomes.push({ id, status: "not_found", message: `No background job ${id}; transcript at history://${id}` });
+			continue;
+		}
+		if (job.status !== "running") {
+			outcomes.push({ id, status: "already_completed", message: `Background job ${id} is already ${job.status}.` });
+			continue;
+		}
+		if (!request) {
+			manager.setProgressPolicy(id, undefined, ownerFilter);
+			job.progressRequest = undefined;
+			outcomes.push({ id, status: "stopped", message: `Stopped reporting on ${id}; the job keeps running.` });
+			continue;
+		}
+		if (!resolved) continue;
+		const intervalMs = resolved.every === undefined ? 0 : Math.round(resolved.every * 1000);
+		manager.setProgressPolicy(id, { wake: resolved.wake === true, intervalMs }, ownerFilter);
+		job.progressRequest = resolved;
+		const snapshot = monitorSnapshot(manager, id);
+		outcomes.push({
+			id,
+			status: "armed",
+			message: snapshot ? `Reporting on ${id}: ${describePolicy(snapshot)}` : `Reporting on ${id}.`,
+			policy: snapshot,
+		});
+	}
+
+	// Report clamps rather than applying them silently: an ignored cadence is
+	// indistinguishable from a monitor that never fired.
+	const text = ["## Monitors", ...outcomes.map(outcome => `- ${outcome.message}`), ...clampNotices].join("\n");
+	return {
+		content: [{ type: "text", text }],
+		details: { op: "monitor", monitors: outcomes, jobs: snapshotJobs(session, visibleJobs(manager, ids, ownerId)) },
+	};
+}
+
+function monitorSnapshot(manager: AsyncJobManager, id: string): MonitorPolicySnapshot | undefined {
+	const policy = manager.getProgressPolicy(id);
+	if (!policy) return undefined;
+	const request = manager.getJob(id)?.progressRequest;
+	return {
+		every: request?.every,
+		match: request?.match,
+		wake: policy.wake === true,
+	};
 }
 
 /**

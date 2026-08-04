@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Background jobs can now report progress to the agent while they run, instead of only on completion ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)). Opt in per call with the bash `progress` parameter (`every` seconds, `match` regex, `stopOnMatch`, `wake`, `lines`), or arm, retune, and stop a running job's monitor with `hub` `{"op":"monitor"}`. Updates are coalesced to the newest per job and, by default, ride the next step boundary of an active run without starting a turn; `wake: true` opts one job into waking an idle agent. Because each waking update can start a model turn, a waking `every` cadence takes the higher `async.progress.wakeMinIntervalMs` floor (default 15s); a `match` is exempt so a trigger still fires promptly. Note that `every` throttles output-driven sampling rather than acting as a wall-clock heartbeat, so a job that prints nothing reports nothing. Updates are capped per job by `async.progress.maxUpdates` (default 200) because each is a persisted message; `match` patterns with nested quantifiers are rejected as backtracking hazards. Default off — a job with no monitor behaves exactly as before.
+
 ### Fixed
 
 - Session directories now classify a cwd against the most specific scope root instead of testing `home` before `tmp`. On Windows `os.tmpdir()` (`%LOCALAPPDATA%\Temp`) is nested inside `os.homedir()`, so every temp-root cwd was bucketed as home-scoped and the `tmp` scope was unreachable; the same happened on POSIX with `TMPDIR=$HOME/tmp`.

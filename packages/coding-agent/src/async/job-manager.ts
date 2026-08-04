@@ -27,6 +27,70 @@ interface PollEscalationState {
 	lastPollEndAt: number;
 }
 
+/** Default floor between agent-facing progress emissions for one job. */
+const DEFAULT_PROGRESS_MIN_INTERVAL_MS = 1_000;
+
+/** Per-job bookkeeping for the coalesced agent-facing progress channel. */
+interface ProgressEmitState {
+	/** Timestamp (ms) of the last emission; 0 before the first. */
+	lastEmitAt: number;
+	/** Newest text awaiting emission, or undefined when nothing is pending. */
+	pendingText?: string;
+	/** Trailing-edge timer, armed only while `pendingText` is set. */
+	timer?: NodeJS.Timeout;
+	/** Monotonic counter so the consumer can keep the newest entry per job. */
+	seq: number;
+	/** Emissions delivered so far, for wake-monitor reminders. */
+	emitted: number;
+}
+
+/**
+ * Opt-in policy for the agent-facing progress channel. Absent means the channel
+ * is off for that job: the job still reports progress to the TUI through
+ * {@link AsyncJobRegisterOptions.onProgress}, but nothing reaches the model
+ * until the job settles. Mutable at runtime via
+ * {@link AsyncJobManager.setProgressPolicy} so a caller can arm, retune, or
+ * stop a monitor without disturbing the work itself.
+ */
+/**
+ * The caller's raw trigger spec, carried on the job so a retune reaches the
+ * producer. The manager stores and returns it without interpreting it: what
+ * counts as "progress" is the producer's business (bash samples output lines;
+ * another job type might report differently), while the manager owns only the
+ * rate and delivery decisions in {@link AsyncJobProgressPolicy}.
+ */
+export interface AsyncJobProgressRequest {
+	/**
+	 * Minimum seconds between periodic updates. This throttles output-driven
+	 * sampling; it is not a wall-clock heartbeat. A job that produces no output
+	 * produces no samples, so a silent job emits nothing however small this is.
+	 */
+	every?: number;
+	/** Regex source matched against new output lines. */
+	match?: string;
+	wake?: boolean;
+	stopOnMatch?: boolean;
+	lines?: number;
+	/**
+	 * Minimum ms between repeat emissions for a waking `match`. The first fire is
+	 * never delayed; this only stops a broad pattern from starting a model turn
+	 * on every matching line.
+	 */
+	wakeRepeatFloorMs?: number;
+}
+
+export interface AsyncJobProgressPolicy {
+	/**
+	 * Deliver even when the owning session is idle, as a follow-up turn. When
+	 * false (the default) progress rides the next step boundary of an active run
+	 * as a non-interrupting aside and is skipped entirely while the session is
+	 * idle — see {@link AsyncJobProgressSink.isActive}.
+	 */
+	wake?: boolean;
+	/** Minimum ms between emissions for this job; clamped to the manager floor. */
+	intervalMs?: number;
+}
+
 export interface AsyncJob {
 	id: string;
 	type: "bash" | "task";
@@ -39,6 +103,13 @@ export interface AsyncJob {
 	errorText?: string;
 	/** Latest tool-render details reported by the running job. */
 	latestDetails?: Record<string, unknown>;
+	/**
+	 * Agent-facing progress policy; undefined means the channel is off. See
+	 * {@link AsyncJobProgressPolicy}.
+	 */
+	progressPolicy?: AsyncJobProgressPolicy;
+	/** Producer-interpreted trigger spec; see {@link AsyncJobProgressRequest}. */
+	progressRequest?: AsyncJobProgressRequest;
 	/**
 	 * Registry id of the agent that registered the job (e.g. "Main",
 	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
@@ -63,6 +134,25 @@ export interface AsyncJob {
 /** Delivery callback for a settled job's result text. */
 export type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
 
+/**
+ * Owner-routed sink for the agent-facing progress channel. Best-effort and
+ * fire-and-forget: unlike {@link AsyncJobDeliverySink} there is no retry queue
+ * and no dead-lettering — a throw is logged and the update is dropped, because
+ * a stale progress line is worth less than the complexity of redelivering it.
+ */
+export interface AsyncJobProgressSink {
+	/** Deliver one coalesced progress update for a still-running job. */
+	deliver(jobId: string, text: string, job: AsyncJob): void | Promise<void>;
+	/**
+	 * True when the owning session is mid-run. Ambient (non-`wake`) updates are
+	 * only emitted while this holds: they are drained at a step boundary, so
+	 * emitting to an idle session would queue entries nothing will pick up,
+	 * growing without bound. `wake` updates ignore this — starting a turn is the
+	 * point.
+	 */
+	isActive(): boolean;
+}
+
 export interface AsyncJobManagerOptions {
 	/**
 	 * Delivery sink for UNOWNED completions (jobs registered without an
@@ -75,6 +165,18 @@ export interface AsyncJobManagerOptions {
 	onJobComplete?: AsyncJobDeliverySink;
 	maxRunningJobs?: number;
 	retentionMs?: number;
+	/**
+	 * Floor (ms) on the agent-facing progress emit interval, from
+	 * `async.progress.minIntervalMs`. A safety rail against sub-second spam, not
+	 * a policy: callers pick their own cadence above it.
+	 */
+	progressMinIntervalMs?: number;
+	/**
+	 * Cap on agent-facing progress updates per job. Every update is a persisted
+	 * message, so an unbounded monitor grows the transcript for the rest of the
+	 * session. 0 disables the cap.
+	 */
+	progressMaxUpdates?: number;
 }
 
 interface AsyncJobDelivery {
@@ -103,6 +205,13 @@ export interface AsyncJobRegisterOptions {
 	onProgress?: (text: string, details?: Record<string, unknown>) => void | Promise<void>;
 	/** Register the job in queued state; see {@link AsyncJob.queued}. */
 	queued?: boolean;
+	/**
+	 * Arm the agent-facing progress channel at registration. Omit to leave it
+	 * off; it can be armed later with {@link AsyncJobManager.setProgressPolicy}.
+	 */
+	progressPolicy?: AsyncJobProgressPolicy;
+	/** Producer-interpreted trigger spec; see {@link AsyncJobProgressRequest}. */
+	progressRequest?: AsyncJobProgressRequest;
 }
 
 /**
@@ -140,9 +249,13 @@ export class AsyncJobManager {
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
 	readonly #deliverySinks = new Map<string, AsyncJobDeliverySink>();
+	readonly #progressSinks = new Map<string, AsyncJobProgressSink>();
+	readonly #progressState = new Map<string, ProgressEmitState>();
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
+	readonly #progressMinIntervalMs: number;
+	readonly #progressMaxUpdates: number;
 	#deliveryLoop: Promise<void> | undefined;
 	#disposed = false;
 
@@ -160,6 +273,11 @@ export class AsyncJobManager {
 		this.#onJobComplete = options.onJobComplete;
 		this.#maxRunningJobs = Math.max(1, Math.floor(options.maxRunningJobs ?? DEFAULT_MAX_RUNNING_JOBS));
 		this.#retentionMs = Math.max(0, Math.floor(options.retentionMs ?? DEFAULT_RETENTION_MS));
+		this.#progressMinIntervalMs = Math.max(
+			0,
+			Math.floor(options.progressMinIntervalMs ?? DEFAULT_PROGRESS_MIN_INTERVAL_MS),
+		);
+		this.#progressMaxUpdates = Math.max(0, Math.floor(options.progressMaxUpdates ?? 0));
 	}
 
 	/** True when the running-job count has reached the configured cap. */
@@ -180,6 +298,14 @@ export class AsyncJobManager {
 			jobId: string;
 			signal: AbortSignal;
 			reportProgress: (text: string, details?: Record<string, unknown>) => Promise<void>;
+			/**
+			 * Surface one progress update to the *model*, subject to the job's
+			 * {@link AsyncJobProgressPolicy}. Distinct from `reportProgress`,
+			 * which is the unconditional TUI stream: callers pass intent here
+			 * (a matched line, a sampled tail), never their raw output buffer.
+			 * A no-op when the channel is not armed.
+			 */
+			reportAgentProgress: (text: string) => void;
 			/** Clear the queued flag once the job actually starts executing. */
 			markRunning: () => void;
 		}) => Promise<string>,
@@ -216,6 +342,8 @@ export class AsyncJobManager {
 			ownerId: options?.ownerId,
 			agentId: options?.agentId,
 			queued: options?.queued === true,
+			progressPolicy: options?.progressPolicy,
+			progressRequest: options?.progressRequest,
 		};
 
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
@@ -236,6 +364,7 @@ export class AsyncJobManager {
 					jobId: id,
 					signal: abortController.signal,
 					reportProgress,
+					reportAgentProgress: (text: string) => this.#recordAgentProgress(job, text),
 					markRunning: () => {
 						job.queued = false;
 					},
@@ -285,6 +414,161 @@ export class AsyncJobManager {
 
 	getJob(id: string): AsyncJob | undefined {
 		return this.#jobs.get(id);
+	}
+
+	/**
+	 * Arm, retune, or stop the agent-facing progress channel for a running job.
+	 * Pass `undefined` to stop updates while leaving the job running. Scoped by
+	 * `filter.ownerId` exactly like {@link cancel}: a mismatch reads as
+	 * not-found so one agent cannot retune another's monitor. Returns false when
+	 * the job is unknown, not visible to the caller, or already settled.
+	 */
+	setProgressPolicy(id: string, policy: AsyncJobProgressPolicy | undefined, filter?: AsyncJobFilter): boolean {
+		const job = this.#jobs.get(id);
+		if (!job) return false;
+		if (filter?.ownerId && job.ownerId !== filter.ownerId) return false;
+		if (job.status !== "running") return false;
+		job.progressPolicy = policy;
+		// Drop anything the old policy had buffered: after a retune the pending
+		// text was sampled under different rules, and after a stop it must not
+		// leak out on the trailing edge.
+		if (!policy) this.#clearProgressState(id);
+		return true;
+	}
+
+	/** Current progress policy for a job, or undefined when the channel is off. */
+	getProgressPolicy(id: string, filter?: AsyncJobFilter): AsyncJobProgressPolicy | undefined {
+		const job = this.#jobs.get(id);
+		if (!job) return undefined;
+		if (filter?.ownerId && job.ownerId !== filter.ownerId) return undefined;
+		return job.progressPolicy;
+	}
+
+	/**
+	 * Route agent-facing progress for jobs owned by `ownerId` to `sink`.
+	 * Mirrors {@link registerDeliverySink}, including last-registration-wins and
+	 * the guard that keeps a revived session's registration alive through its
+	 * predecessor's late cleanup.
+	 */
+	registerProgressSink(ownerId: string, sink: AsyncJobProgressSink): () => void {
+		this.#progressSinks.set(ownerId, sink);
+		return () => {
+			if (this.#progressSinks.get(ownerId) === sink) this.#progressSinks.delete(ownerId);
+		};
+	}
+
+	/**
+	 * Ingest one agent-facing progress report and emit it if the job's policy,
+	 * the suppression state, and the rate floor all allow. Newest-wins: a report
+	 * arriving inside the window replaces the pending text rather than queueing,
+	 * and a trailing-edge timer flushes it so the last update before a quiet
+	 * stretch is not lost.
+	 */
+	#recordAgentProgress(job: AsyncJob, text: string): void {
+		if (this.#disposed) return;
+		if (!job.progressPolicy) return;
+		if (job.status !== "running") return;
+		// A `hub` wait watching this job already returns snapshots, and an
+		// acknowledged job's result was consumed by a poll — neither should also
+		// produce asides.
+		if (this.isDeliverySuppressed(job.id)) return;
+
+		let state = this.#progressState.get(job.id);
+		// Stop emitting once the per-job cap is reached. The job keeps running and
+		// its completion is delivered as usual; only the running commentary stops,
+		// so a long monitor cannot grow the transcript without bound.
+		if (this.#progressMaxUpdates > 0 && (state?.emitted ?? 0) >= this.#progressMaxUpdates) return;
+		if (!state) {
+			state = { lastEmitAt: 0, seq: 0, emitted: 0 };
+			this.#progressState.set(job.id, state);
+		}
+		state.pendingText = text;
+
+		// A waking match is prompt on its first fire, then rate-limited, so a
+		// pattern matching most lines cannot start a turn per line.
+		const repeatFloorMs = (state.emitted > 0 ? job.progressRequest?.wakeRepeatFloorMs : undefined) ?? 0;
+		const intervalMs = Math.max(this.#progressMinIntervalMs, job.progressPolicy.intervalMs ?? 0, repeatFloorMs);
+		const waitMs = state.lastEmitAt + intervalMs - Date.now();
+		if (waitMs <= 0) {
+			this.#flushAgentProgress(job.id);
+			return;
+		}
+		if (state.timer) return;
+		const timer = setTimeout(() => this.#flushAgentProgress(job.id), waitMs);
+		timer.unref();
+		state.timer = timer;
+	}
+
+	/** Emit the pending progress text for one job, if it is still deliverable. */
+	#flushAgentProgress(jobId: string): void {
+		const state = this.#progressState.get(jobId);
+		if (!state) return;
+		if (state.timer) {
+			clearTimeout(state.timer);
+			state.timer = undefined;
+		}
+		const text = state.pendingText;
+		if (text === undefined) return;
+
+		const job = this.#jobs.get(jobId);
+		// Re-check every gate: the window means arbitrary time passed since the
+		// report was recorded, so the job may have settled, been watched, or had
+		// its monitor stopped in between.
+		if (job?.status !== "running" || !job.progressPolicy || this.isDeliverySuppressed(jobId)) {
+			this.#clearProgressState(jobId);
+			return;
+		}
+		const sink = job.ownerId === undefined ? undefined : this.#progressSinks.get(job.ownerId);
+		if (!sink) return;
+		// Ambient updates are drained at a step boundary; emitting to an idle
+		// session would queue entries nothing picks up. Hold the pending text so
+		// the next report re-arms the window rather than dropping the signal.
+		if (!job.progressPolicy.wake && !sink.isActive()) return;
+
+		state.pendingText = undefined;
+		state.lastEmitAt = Date.now();
+		state.seq += 1;
+		state.emitted += 1;
+		try {
+			const result = sink.deliver(jobId, text, job);
+			if (result) {
+				result.catch(error => {
+					logger.warn("Async job progress delivery failed", {
+						jobId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+			}
+		} catch (error) {
+			logger.warn("Async job progress delivery failed", {
+				jobId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/** Number of agent-facing progress updates emitted so far for a job. */
+	progressEmitCount(jobId: string): number {
+		return this.#progressState.get(jobId)?.emitted ?? 0;
+	}
+
+	/** Monotonic sequence of the newest emitted progress update for a job. */
+	progressSeq(jobId: string): number {
+		return this.#progressState.get(jobId)?.seq ?? 0;
+	}
+
+	#clearProgressState(jobId: string): void {
+		const state = this.#progressState.get(jobId);
+		if (!state) return;
+		if (state.timer) clearTimeout(state.timer);
+		this.#progressState.delete(jobId);
+	}
+
+	#clearAllProgressState(): void {
+		for (const state of this.#progressState.values()) {
+			if (state.timer) clearTimeout(state.timer);
+		}
+		this.#progressState.clear();
 	}
 
 	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
@@ -571,6 +855,8 @@ export class AsyncJobManager {
 		this.#watchedJobs.clear();
 		this.#pollEscalation.clear();
 		this.#deliverySinks.clear();
+		this.#progressSinks.clear();
+		this.#clearAllProgressState();
 		return jobsSettled && drained;
 	}
 
@@ -604,10 +890,16 @@ export class AsyncJobManager {
 		this.#evictionTimers.delete(jobId);
 		this.#suppressedDeliveries.delete(jobId);
 		this.#watchedJobs.delete(jobId);
+		this.#clearProgressState(jobId);
 		return this.#jobs.delete(jobId);
 	}
 
 	#scheduleEviction(jobId: string): void {
+		// Every settle path funnels through here, so this is where a monitor's
+		// trailing-edge timer stops: the job is no longer running, so a pending
+		// update would be dropped at flush anyway — releasing the timer now just
+		// avoids holding it for up to one window.
+		this.#clearProgressState(jobId);
 		if (this.#disposed) return;
 		if (this.#retentionMs <= 0) {
 			this.#evictJob(jobId);
