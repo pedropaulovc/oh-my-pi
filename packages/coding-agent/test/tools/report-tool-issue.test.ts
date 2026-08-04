@@ -33,26 +33,26 @@ function openTempDb(): Database {
 
 function insertGrievance(db: Database, tool: string, report: string): number {
 	const info = db
-		.prepare("INSERT INTO grievances (model, version, tool, report) VALUES (?, ?, ?, ?)")
+		.query("INSERT INTO grievances (model, version, tool, report) VALUES (?, ?, ?, ?)")
 		.run("test-model", "test-version", tool, report);
 	return Number(info.lastInsertRowid);
 }
 
 /** All rows, regardless of pushed state. */
 function selectIds(db: Database): number[] {
-	return (db.prepare("SELECT id FROM grievances ORDER BY id ASC").all() as Array<{ id: number }>).map(r => r.id);
+	return (db.query("SELECT id FROM grievances ORDER BY id ASC").all() as Array<{ id: number }>).map(r => r.id);
 }
 
 /** Just unpushed rows — what the next flush would pick up. */
 function selectUnpushedIds(db: Database): number[] {
-	return (db.prepare("SELECT id FROM grievances WHERE pushed = 0 ORDER BY id ASC").all() as Array<{ id: number }>).map(
+	return (db.query("SELECT id FROM grievances WHERE pushed = 0 ORDER BY id ASC").all() as Array<{ id: number }>).map(
 		r => r.id,
 	);
 }
 
 /** Just pushed rows — what's already been shipped. */
 function selectPushedIds(db: Database): number[] {
-	return (db.prepare("SELECT id FROM grievances WHERE pushed = 1 ORDER BY id ASC").all() as Array<{ id: number }>).map(
+	return (db.query("SELECT id FROM grievances WHERE pushed = 1 ORDER BY id ASC").all() as Array<{ id: number }>).map(
 		r => r.id,
 	);
 }
@@ -384,7 +384,7 @@ describe("dispatchReportIssueDevice", () => {
 			expect(xdev.tool).toBe("report_issue");
 			await settlePipeline();
 			expect(selectIds(db)).toHaveLength(1);
-			const row = db.prepare("SELECT tool, report FROM grievances").get() as { tool: string; report: string };
+			const row = db.query("SELECT tool, report FROM grievances").get() as { tool: string; report: string };
 			expect(row).toEqual({ tool: "read", report: "selector parse dropped trailing line" });
 		} finally {
 			openSpy.mockRestore();
@@ -400,7 +400,7 @@ describe("dispatchReportIssueDevice", () => {
 			const session = { settings: consentedSettings() } as ToolSession;
 			await dispatchReportIssueDevice(session, "grep\nreported matches include a deleted file");
 			await settlePipeline();
-			const row = db.prepare("SELECT tool, report FROM grievances").get() as { tool: string; report: string };
+			const row = db.query("SELECT tool, report FROM grievances").get() as { tool: string; report: string };
 			expect(row).toEqual({ tool: "grep", report: "reported matches include a deleted file" });
 		} finally {
 			openSpy.mockRestore();

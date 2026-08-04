@@ -137,7 +137,7 @@ describe("agent_type migration backfill", () => {
 				UNIQUE(session_file, entry_id)
 			);
 		`);
-		const insert = legacy.prepare(`
+		const insert = legacy.query(`
 			INSERT INTO messages (
 				session_file, entry_id, folder, model, provider, api, timestamp,
 				duration, ttft, stop_reason, error_message,

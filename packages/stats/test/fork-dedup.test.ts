@@ -186,9 +186,9 @@ describe("stats sync deduplicates forked-session entries", () => {
 		// rows that share (entry_id, timestamp) under different session_files
 		// — exactly the shape `SessionManager.fork()` leaves behind.
 		const database = new Database(getStatsDbPath());
-		database.prepare("DELETE FROM meta WHERE key = ?").run("fork_dedupe_v1");
+		database.query("DELETE FROM meta WHERE key = ?").run("fork_dedupe_v1");
 		const ts = Date.now();
-		const insertMessage = database.prepare(`
+		const insertMessage = database.query(`
 			INSERT INTO messages (
 				session_file, entry_id, folder, model, provider, api, timestamp,
 				duration, ttft, stop_reason, error_message,
@@ -221,7 +221,7 @@ describe("stats sync deduplicates forked-session entries", () => {
 		];
 		insertMessage.run("/tmp/parent.jsonl", "asst01ab", ...sharedArgs);
 		insertMessage.run("/tmp/fork.jsonl", "asst01ab", ...sharedArgs);
-		const insertUser = database.prepare(`
+		const insertUser = database.query(`
 			INSERT INTO user_messages (
 				session_file, entry_id, folder, timestamp, model, provider,
 				chars, words, yelling, profanity, anguish,

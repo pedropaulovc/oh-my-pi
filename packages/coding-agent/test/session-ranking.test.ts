@@ -102,7 +102,7 @@ describe("slotted session headers", () => {
 			});
 
 			const check = new Database(dbPath);
-			const rows = check.prepare("SELECT session_id FROM history").all() as Array<{ session_id: string }>;
+			const rows = check.query("SELECT session_id FROM history").all() as Array<{ session_id: string }>;
 			check.close();
 			expect(result.archive?.historyRowsDeleted).toBe(1);
 			expect(rows).toEqual([]);

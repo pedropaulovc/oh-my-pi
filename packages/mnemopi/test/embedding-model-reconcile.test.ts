@@ -27,14 +27,14 @@ function seedDb(model: string): { db: Database; ids: string[] } {
 	const db = new Database(":memory:");
 	initBeam(db);
 	const ts = new Date().toISOString();
-	db.prepare(
+	db.query(
 		"INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, 'test', ?, 'default')",
 	).run("wm-1", "alpha working memory", ts);
-	db.prepare(
+	db.query(
 		"INSERT INTO episodic_memory (id, content, source, timestamp, session_id, binary_vector) VALUES (?, ?, 'test', ?, 'default', ?)",
 	).run("ep-1", "beta episodic memory", ts, new Uint8Array([1, 2, 3, 4]));
 	for (const id of ["wm-1", "ep-1"]) {
-		db.prepare("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)").run(
+		db.query("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)").run(
 			id,
 			JSON.stringify([1, 0, 0, 0]),
 			model,
@@ -164,10 +164,10 @@ describe("reconcileEmbeddingModel on store open", () => {
 		const db = new Database(":memory:");
 		initBeam(db);
 		const ts = new Date().toISOString();
-		db.prepare(
+		db.query(
 			"INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, 'test', ?, 'default')",
 		).run("wm-1", "alpha working memory", ts);
-		db.prepare(
+		db.query(
 			"INSERT INTO episodic_memory (id, content, source, timestamp, session_id) VALUES (?, ?, 'test', ?, 'default')",
 		).run("ep-1", "beta episodic memory", ts);
 

@@ -120,7 +120,7 @@ describe("priority service-tier premium-request backfill", () => {
 		raw.exec("DELETE FROM messages");
 		raw.exec("DELETE FROM file_offsets");
 		raw.exec("DELETE FROM meta WHERE key = 'premium_requests_priority_v1'");
-		raw.prepare(
+		raw.query(
 			`INSERT INTO messages (
 				session_file, entry_id, folder, model, provider, api, timestamp,
 				duration, ttft, stop_reason, error_message,
@@ -151,7 +151,7 @@ describe("priority service-tier premium-request backfill", () => {
 			0,
 			0,
 		);
-		raw.prepare("INSERT INTO file_offsets (session_file, offset, last_modified) VALUES (?, ?, ?)").run(
+		raw.query("INSERT INTO file_offsets (session_file, offset, last_modified) VALUES (?, ?, ?)").run(
 			sessionFile,
 			sessionStats.size,
 			sessionStats.mtimeMs,

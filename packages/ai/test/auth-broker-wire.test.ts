@@ -54,7 +54,7 @@ function readRawCodexCredentialBlocks(
 	const db = new Database(dbPath, { readonly: true });
 	try {
 		return db
-			.prepare(
+			.query(
 				"SELECT block_scope, blocked_until_ms, updated_at FROM auth_credential_blocks WHERE credential_id = ? AND provider_key = 'openai-codex:oauth' ORDER BY block_scope",
 			)
 			.all(credentialId) as Array<{ block_scope: string; blocked_until_ms: number; updated_at: number }>;
@@ -262,7 +262,7 @@ describe("auth-broker wire surface", () => {
 		const chatUpdatedAtSec = sparkUpdatedAtSec + 10;
 		const db = new Database(path.join(tempDir, "agent.db"));
 		try {
-			const updateTimestamp = db.prepare(
+			const updateTimestamp = db.query(
 				"UPDATE auth_credential_blocks SET updated_at = ? WHERE credential_id = ? AND provider_key = ? AND block_scope = ?",
 			);
 			updateTimestamp.run(chatUpdatedAtSec, credential.id, "openai-codex:oauth", "chat");
@@ -351,7 +351,7 @@ describe("auth-broker wire surface", () => {
 		const legacyWriter = new Database(path.join(tempDir, "agent.db"));
 		try {
 			legacyWriter
-				.prepare(
+				.query(
 					`INSERT INTO auth_credential_blocks (
 						credential_id, provider_key, block_scope, blocked_until_ms, updated_at
 					) VALUES (?, 'openai-codex:oauth', 'shared', ?, ?)
