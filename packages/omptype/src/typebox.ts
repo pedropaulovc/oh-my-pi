@@ -36,6 +36,14 @@ export interface ObjectOpts extends Meta {
 }
 const OPTIONAL_INNER = Symbol("omptype.typebox.optionalInner");
 const OBJECT_INFO = Symbol("omptype.typebox.objectInfo");
+/**
+ * Marks a schema that carries a `default`. `tObject` needs this to translate
+ * TypeBox's `Type.Optional(X({ default }))` correctly: a default already makes
+ * a key optional on input, so emitting `key?` as well is the contradiction the
+ * IR rejects. Stamped here rather than read off the built type so the shim does
+ * not depend on the IR's internal representation of defaults.
+ */
+const HAS_DEFAULT = Symbol("omptype.typebox.hasDefault");
 
 export interface TypeBoxValidationFailure {
 	message: string;
@@ -126,6 +134,7 @@ type RequiredProps<P extends Record<string, AnySchema>> = {
 interface RuntimeType<T> extends OmpType<T> {
 	[OPTIONAL_INNER]?: AnySchema;
 	[OBJECT_INFO]?: ObjectInfo;
+	[HAS_DEFAULT]?: boolean;
 	describe(description: string): RuntimeType<T>;
 	default(value: T | (() => T)): RuntimeType<T>;
 	or<schema extends AnySchema>(schema: schema): RuntimeType<T | Static<schema>>;
@@ -186,7 +195,10 @@ function applyMeta<T>(schema: RuntimeType<T>, opts?: Meta): CompatRuntime<T> {
 	let result = schema;
 	const description = opts?.description ?? opts?.title;
 	if (description !== undefined) result = result.describe(description);
-	if (opts && Object.hasOwn(opts, "default")) result = result.default(opts.default as T);
+	if (opts && Object.hasOwn(opts, "default")) {
+		result = result.default(opts.default as T);
+		result[HAS_DEFAULT] = true;
+	}
 	return withLegacyCompat(result);
 }
 
@@ -401,7 +413,12 @@ function tObject<const P extends Record<string, AnySchema>>(properties: P, opts?
 	for (const key in properties) {
 		const schema = properties[key];
 		const inner = asRuntime<unknown>(schema)[OPTIONAL_INNER];
-		def[inner ? `${key}?` : key] = inner ?? schema;
+		// `Type.Optional(X({ default }))` is the idiomatic TypeBox way to say
+		// "may be absent, and here is the value to use when it is". A default
+		// already carries that input-optionality, so the key must NOT also be
+		// suffixed `?` — the IR rejects that pair as contradictory.
+		const optionalSuffix = inner !== undefined && asRuntime<unknown>(inner)[HAS_DEFAULT] !== true;
+		def[optionalSuffix ? `${key}?` : key] = inner ?? schema;
 		props[key] = schema;
 	}
 	if (opts?.additionalProperties === false) def["+"] = "reject";

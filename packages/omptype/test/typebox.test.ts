@@ -147,6 +147,29 @@ describe("TypeBox adapter", () => {
 		expect(Object.getOwnPropertyDescriptor(schema, "__validator")?.enumerable).toBe(false);
 	});
 
+	test("Type.Optional over a schema with a default applies the default when the key is absent", () => {
+		// `Type.Optional(X({ default }))` is idiomatic TypeBox for "may be
+		// absent, and here is the value to use when it is". The IR rejects a
+		// key that is both `?`-suffixed and defaulted, so the adapter must emit
+		// only the default and let it carry the input-optionality.
+		const schema = Type.Object({
+			direction: Type.String(),
+			depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, default: 3 })),
+		});
+
+		expect(schema({ direction: "up" })).toEqual({ direction: "up", depth: 3 });
+		expect(schema({ direction: "up", depth: 7 })).toEqual({ direction: "up", depth: 7 });
+		// The default must not disable validation of a supplied value.
+		expect(valid(schema, { direction: "up", depth: 99 })).toBe(false);
+
+		const json = schema.toJsonSchema() as {
+			required?: string[];
+			properties?: Record<string, { default?: unknown }>;
+		};
+		expect(json.required).toEqual(["direction"]);
+		expect(json.properties?.depth?.default).toBe(3);
+	});
+
 	test("Static infers builder outputs", () => {
 		const literal = Type.Literal("yes");
 		const tuple = Type.Tuple([Type.String(), Type.Number()] as const);
