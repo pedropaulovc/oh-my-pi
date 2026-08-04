@@ -54,6 +54,7 @@ import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
+	buildAsyncProgressBlock,
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
 	buildIrcMessageCard,
@@ -161,6 +162,10 @@ export class UiHelpers {
 				if (message.display) {
 					if (message.customType === "async-result") {
 						this.ctx.chatContainer.addChild(buildAsyncResultBlock(message));
+						break;
+					}
+					if (message.customType === "async-progress" || message.customType === "async-progress-wake") {
+						this.ctx.chatContainer.addChild(buildAsyncProgressBlock(message));
 						break;
 					}
 					if (message.customType === LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE) {

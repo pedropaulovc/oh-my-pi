@@ -30,6 +30,7 @@ import { theme } from "../theme/theme";
 import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
+	buildAsyncProgressBlock,
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
 	buildIrcMessageCard,
@@ -466,6 +467,10 @@ export class ChatTranscriptBuilder {
 		if (!message.display) return;
 		if (message.customType === "async-result") {
 			this.container.addChild(buildAsyncResultBlock(message));
+			return;
+		}
+		if (message.customType === "async-progress" || message.customType === "async-progress-wake") {
+			this.container.addChild(buildAsyncProgressBlock(message));
 			return;
 		}
 		if (message.customType === LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE) {

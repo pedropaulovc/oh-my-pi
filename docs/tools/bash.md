@@ -27,6 +27,27 @@
 | `cwd` | `string` | No | Working directory, resolved against `session.cwd` via `resolveToCwd`. Must exist and be a directory. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
 | `async` | `boolean` | No | Background execution request. Present only when `async.enabled` is true for the session. Returns immediately with a job id instead of waiting; it does not change the effective deadline, including a disabled deadline from `timeout: 0`. |
+| `progress` | `{ every?, match?, wake?, stopOnMatch?, lines? }` | No | Report to the model while the command runs. Requires `async: true`; on a foreground call it throws, because the output is returned directly and a progress policy there would be inert. See below. |
+
+## Reporting progress from a background command
+
+Without `progress`, a background command's output reaches the TUI while it runs but reaches the *model* only when the command finishes. `progress` opts one job into an agent-facing channel:
+
+| Field | Meaning |
+| --- | --- |
+| `every` | Seconds between heartbeat updates. Floored by `async.progress.minIntervalMs`; a raised value is reported as a notice, not applied silently. |
+| `match` | Regex over new output lines. A matching line reports immediately, bypassing the cadence. An invalid pattern throws `ToolError`. |
+| `wake` | `true` reports even while the agent is idle, as a follow-up turn. Default `false`: updates ride the next step boundary of an active run and are not emitted at all while idle. |
+| `stopOnMatch` | End the command when `match` fires. |
+| `lines` | Output lines carried per update. Default 3, capped by `async.progress.maxLines`. |
+
+At least one of `every` or `match` is required — a policy with neither has no trigger and is rejected.
+
+Sampling runs beside the existing per-chunk TUI stream rather than on top of it: the sampler consumes whole lines (a partial trailing line is held until its newline arrives, so an update is never half a line) and reports only the matched line or the newest `lines` on the cadence — never the raw tail buffer.
+
+`stopOnMatch` aborts a job-local `AbortController`, **not** `AsyncJobManager.cancel`. Cancelling would mark the job `cancelled`, and the manager skips completion delivery for cancelled jobs, so the agent would receive the trigger line and never the output. The local abort makes `executeBash` return a structured cancelled result instead of throwing, so the job settles `completed` and delivers its partial output with a `Stopped early: progress match fired.` notice.
+
+Auto-backgrounded commands carry no `progress` (the model did not ask for async), and are delivery-suppressed during their foreground window anyway. Arm them after the fact with `hub` `{"op":"monitor"}`, which also retunes or stops any running job's monitor — see [`hub.md`](./hub.md).
 
 ## Outputs
 The tool returns a single `text` content block plus optional `details`.

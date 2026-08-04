@@ -13,6 +13,7 @@ Background jobs auto-deliver when they finish. You NEVER need to poll; if `jobs`
 - **`inbox`**: drain queued messages without blocking.
 - **`cancel`**: kill background jobs by `ids` when they have hung, stalled, or are no longer needed. Returns immediately.
 - **`jobs`**: status snapshot of every job without waiting. A settled row consumes auto-delivery. Also names running subagents with no job entry — coordinate with those via `send`.
+- **`monitor`**: get told about a running job before it finishes, instead of waiting. `{"op":"monitor","ids":["bg_1"],"progress":{"every":30,"match":"^error","wake":true}}` — `every` (seconds) heartbeats, `match` fires on a line, `wake` reports even while you are idle. Omit `progress` to stop reporting (the job keeps running); omit `ids` to list armed monitors. A `wait` on a job suppresses its updates while the wait is in flight.
 - Job rows are process-local and expire roughly five minutes after settlement. Afterward, use the agent ID with `send`, `agent://<id>`, or `history://<id>`.
 - `completed` means successful yield/job exit, not artifact acceptance. Verify claimed changes.
 - NEVER use shell tools, grep, or read other sessions' files to figure out what a peer is doing. Message them directly.
