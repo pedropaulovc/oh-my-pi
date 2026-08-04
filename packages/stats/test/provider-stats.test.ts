@@ -75,7 +75,7 @@ function createAgentDb(rows: UsageSnapshotRow[]): void {
 				resets_at INTEGER
 			)
 		`);
-		const insert = db.prepare(
+		const insert = db.query(
 			`INSERT INTO usage_history (recorded_at, provider, account_key, email, account_id, limit_id, label, window_label, used_fraction, status, resets_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 		);

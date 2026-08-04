@@ -1365,6 +1365,11 @@ export class AuthStorage {
 		this.#store.close();
 	}
 
+	/** Lets callers own the handle with `using storage = await discoverAuthStorage()`. */
+	[Symbol.dispose](): void {
+		this.close();
+	}
+
 	getGeneration(): number {
 		return this.#generation;
 	}

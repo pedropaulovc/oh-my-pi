@@ -58,14 +58,12 @@ describe("behavior backfill", () => {
 
 		const stats = await fs.stat(sessionFile);
 		const database = new Database(getStatsDbPath());
+		database.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("user_messages_v8", "1778589361860");
 		database
-			.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
-			.run("user_messages_v8", "1778589361860");
-		database
-			.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+			.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
 			.run("user_message_links_v1", "1778589361862");
 		database
-			.prepare("INSERT OR REPLACE INTO file_offsets (session_file, offset, last_modified) VALUES (?, ?, ?)")
+			.query("INSERT OR REPLACE INTO file_offsets (session_file, offset, last_modified) VALUES (?, ?, ?)")
 			.run(sessionFile, stats.size, stats.mtimeMs);
 		database.close();
 
@@ -85,10 +83,8 @@ describe("behavior backfill", () => {
 		closeDb();
 
 		const database = new Database(getStatsDbPath());
-		database.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("user_messages_v8", "pending");
-		database
-			.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
-			.run("user_message_links_v1", "pending");
+		database.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("user_messages_v8", "pending");
+		database.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("user_message_links_v1", "pending");
 		database.close();
 
 		await initDb();

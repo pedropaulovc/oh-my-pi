@@ -42,7 +42,7 @@ function createBankFixture(bank: string, metadataRows: readonly Record<string, u
 				metadata_json TEXT
 			)
 		`);
-		const insert = db.prepare("INSERT INTO working_memory (id, content, metadata_json) VALUES (?, ?, ?)");
+		const insert = db.query("INSERT INTO working_memory (id, content, metadata_json) VALUES (?, ?, ?)");
 		for (const [index, meta] of metadataRows.entries()) {
 			insert.run(`row-${bank}-${index}`, "content", JSON.stringify(meta));
 		}

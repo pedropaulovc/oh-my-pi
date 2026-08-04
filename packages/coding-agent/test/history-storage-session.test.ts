@@ -94,7 +94,7 @@ describe("HistoryStorage session linkage", () => {
 				cwd TEXT
 			);
 		`);
-		legacyDb.prepare("INSERT INTO history (prompt, cwd) VALUES (?, ?)").run("legacy prompt", "/legacy");
+		legacyDb.query("INSERT INTO history (prompt, cwd) VALUES (?, ?)").run("legacy prompt", "/legacy");
 		legacyDb.close();
 
 		HistoryStorage.resetInstance();
@@ -107,7 +107,7 @@ describe("HistoryStorage session linkage", () => {
 
 		const verify = new Database(dbPath, { readonly: true });
 		try {
-			const columns = verify.prepare("PRAGMA table_info(history)").all() as Array<{ name: string }>;
+			const columns = verify.query("PRAGMA table_info(history)").all() as Array<{ name: string }>;
 			expect(columns.some(col => col.name === "session_id")).toBe(true);
 		} finally {
 			verify.close();

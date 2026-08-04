@@ -34,7 +34,7 @@ it("migrates legacy history schema away from unixepoch defaults", async () => {
 		);
 	`);
 	legacyDb
-		.prepare("INSERT INTO history (prompt, created_at, cwd) VALUES (?, ?, ?)")
+		.query("INSERT INTO history (prompt, created_at, cwd) VALUES (?, ?, ?)")
 		.run("legacy prompt", LEGACY_TIMESTAMP, "/tmp/legacy");
 	legacyDb.close();
 
@@ -43,16 +43,16 @@ it("migrates legacy history schema away from unixepoch defaults", async () => {
 
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		const prompts = db.prepare("SELECT prompt FROM history ORDER BY id ASC").all() as Array<{ prompt: string }>;
+		const prompts = db.query("SELECT prompt FROM history ORDER BY id ASC").all() as Array<{ prompt: string }>;
 		expect(prompts).toEqual([{ prompt: "legacy prompt" }, { prompt: "new prompt" }]);
 		expect(readTableSql(dbPath, "history")).not.toContain("unixepoch(");
 		expect(readTableSql(dbPath, "history")).toContain("strftime('%s','now')");
 		const indexRow = db
-			.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'index' AND name = 'idx_history_created_at'")
+			.query("SELECT 1 AS present FROM sqlite_master WHERE type = 'index' AND name = 'idx_history_created_at'")
 			.get() as { present?: number } | undefined;
 		expect(indexRow?.present).toBe(1);
 		const ftsRow = db
-			.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'history_fts'")
+			.query("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'history_fts'")
 			.get() as { present?: number } | undefined;
 		expect(ftsRow?.present).toBe(1);
 	} finally {

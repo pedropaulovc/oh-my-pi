@@ -530,7 +530,7 @@ describe("Mnemopi backend lifecycle", () => {
 		await resumed.forceRetainCurrentSession();
 
 		const rows = resumed.memory.beam.db
-			.prepare<{ content: string; retainedThroughUserTurn: number }, [string]>(`
+			.query<{ content: string; retainedThroughUserTurn: number }, [string]>(`
 				SELECT
 					content,
 					CAST(json_extract(metadata_json, '$.retained_through_user_turn') AS INTEGER)
@@ -572,7 +572,7 @@ describe("Mnemopi backend lifecycle", () => {
 		await resumed.maybeRetainOnAgentEnd([] as never);
 
 		const rows = resumed.memory.beam.db
-			.prepare<{ content: string }, [string]>(`
+			.query<{ content: string }, [string]>(`
 				SELECT content
 				FROM working_memory
 				WHERE source = 'coding-agent-transcript'

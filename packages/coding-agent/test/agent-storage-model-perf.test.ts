@@ -106,7 +106,7 @@ describe("AgentStorage model perf aggregates", () => {
 			provider TEXT, model TEXT, output_tokens INTEGER, duration INTEGER,
 			ttft INTEGER, stop_reason TEXT, timestamp INTEGER
 		)`);
-		const insert = statsDb.prepare("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)");
+		const insert = statsDb.query("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)");
 		const now = Date.now();
 		// Two valid turns totaling 1500 tokens over 8.5s, one with ttft missing.
 		insert.run("openai", "gpt-5", 1000, 6000, 1000, "stop", now - 5000);
@@ -141,7 +141,7 @@ describe("AgentStorage model perf aggregates", () => {
 			provider TEXT, model TEXT, output_tokens INTEGER, duration INTEGER,
 			ttft INTEGER, stop_reason TEXT, timestamp INTEGER
 		)`);
-		const insert = statsDb.prepare("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)");
+		const insert = statsDb.query("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)");
 		const now = Date.now();
 		// 300 rows: the newest 256 run at 100 t/s, the older 44 at a wild
 		// 10000 t/s. Only the newest 256 may count. One transaction: per-row

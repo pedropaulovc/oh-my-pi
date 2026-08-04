@@ -55,7 +55,7 @@ export class HistoryStorage {
 		// protocol loop for the full interactive timeout.
 		this.#db.run(`PRAGMA busy_timeout = ${getDbBusyTimeoutMs()}`);
 
-		const hasFts = this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_fts'").get();
+		const hasFts = this.#db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_fts'").get();
 		this.#db.run(`
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -241,14 +241,14 @@ CREATE TRIGGER IF NOT EXISTS history_ai AFTER INSERT ON history BEGIN
 	}
 
 	#historySchemaUsesUnixEpoch(): boolean {
-		const row = this.#db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'history'").get() as
+		const row = this.#db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'history'").get() as
 			| { sql?: string | null }
 			| undefined;
 		return row?.sql?.includes("unixepoch(") ?? false;
 	}
 
 	#historySchemaHasColumn(column: string): boolean {
-		const columns = this.#db.prepare("PRAGMA table_info(history)").all() as Array<{ name: string }>;
+		const columns = this.#db.query("PRAGMA table_info(history)").all() as Array<{ name: string }>;
 		return columns.some(col => col.name === column);
 	}
 

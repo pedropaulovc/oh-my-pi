@@ -61,7 +61,7 @@ export function readUsageSnapshots(sinceMs: number, dbPath = getAgentDbPath()): 
 		db = new Database(dbPath, { readonly: true });
 		db.run("PRAGMA busy_timeout = 5000");
 		const rows = db
-			.prepare(
+			.query(
 				`SELECT recorded_at, provider, account_key, email, account_id, limit_id, label, window_label, used_fraction, status
 				 FROM usage_history
 				 WHERE recorded_at >= ?

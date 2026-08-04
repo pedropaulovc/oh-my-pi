@@ -280,7 +280,7 @@ export function openAutoQaDb(): Database | null {
 		`);
 		// Legacy DBs (May 2026) predate `created_at`. ALTER TABLE only accepts
 		// constant defaults, so add it empty and backfill before the index below.
-		const hasCreatedAt = db.prepare("SELECT 1 FROM pragma_table_info('grievances') WHERE name = 'created_at'").get();
+		const hasCreatedAt = db.query("SELECT 1 FROM pragma_table_info('grievances') WHERE name = 'created_at'").get();
 		if (!hasCreatedAt) {
 			db.exec(`
 				ALTER TABLE grievances ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
@@ -401,14 +401,14 @@ interface GrievanceRow {
 }
 
 async function performFlush(db: Database, config: PushConfig, options: FlushOptions = {}): Promise<FlushResult> {
-	const selectStmt = db.prepare(
+	const selectStmt = db.query(
 		"SELECT id, model, version, tool, report FROM grievances WHERE pushed = 0 ORDER BY id ASC LIMIT ?",
 	);
 	// Planning snapshot — fires once so progress reporters can size their bar.
 	// Mid-flight inserts are NOT folded in (the worker drains them too, but
 	// the progress bar treats the initial backlog as the denominator).
 	if (options.onStart) {
-		const totalRow = db.prepare("SELECT COUNT(*) AS n FROM grievances WHERE pushed = 0").get() as { n: number };
+		const totalRow = db.query("SELECT COUNT(*) AS n FROM grievances WHERE pushed = 0").get() as { n: number };
 		options.onStart(totalRow.n);
 	}
 	const fetchImpl = options.fetch ?? fetch;
@@ -462,7 +462,7 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 
 		const ids = rows.map(r => r.id);
 		const placeholders = ids.map(() => "?").join(",");
-		db.prepare(`UPDATE grievances SET pushed = 1 WHERE id IN (${placeholders})`).run(...ids);
+		db.query(`UPDATE grievances SET pushed = 1 WHERE id IN (${placeholders})`).run(...ids);
 		totalPushed += rows.length;
 		options.onProgress?.(totalPushed);
 	}
@@ -533,7 +533,7 @@ function recordToolIssue(session: ToolSession, tool: string, report: string): vo
 			if (!$flag("PI_AUTO_QA_PUSH") && !(await resolveAutoQaConsent(session.settings))) return;
 			const db = openAutoQaDb();
 			if (!db) return;
-			db.prepare(
+			db.query(
 				"INSERT INTO grievances (model, version, tool, report, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
 			).run(model, VERSION, canonicalTool, report);
 			await flushGrievances(db, session.settings);

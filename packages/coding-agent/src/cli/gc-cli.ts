@@ -551,13 +551,13 @@ function sqliteNumber(value: number | bigint | null | undefined): number {
 
 function tableExists(db: Database, table: string): boolean {
 	const row = db
-		.prepare("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table','view') AND name = ?")
+		.query("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table','view') AND name = ?")
 		.get(table) as { present?: number } | null;
 	return row?.present === 1;
 }
 
 function historyHasSessionId(db: Database): boolean {
-	const rows = db.prepare("PRAGMA table_info(history)").all() as Array<{ name?: string | null }>;
+	const rows = db.query("PRAGMA table_info(history)").all() as Array<{ name?: string | null }>;
 	return rows.some(row => row.name === "session_id");
 }
 
@@ -569,7 +569,7 @@ function deleteHistoryRowsForSessions(dbPath: string, sessionIds: string[]): { d
 		if (!tableExists(db, "history")) return { deleted: 0, ftsRebuilt: false };
 		if (!historyHasSessionId(db)) return { deleted: 0, ftsRebuilt: false };
 		const hasFts = tableExists(db, "history_fts");
-		const deleteStmt = db.prepare("DELETE FROM history WHERE session_id = ?");
+		const deleteStmt = db.query("DELETE FROM history WHERE session_id = ?");
 		let deleted = 0;
 		const tx = db.transaction((ids: string[]) => {
 			for (const id of ids) {
@@ -687,7 +687,7 @@ function statsIdentityKeys(identities: Record<StatsEntryTable, StatsEntryIdentit
 }
 
 function tableHasColumn(db: Database, table: string, column: string): boolean {
-	const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string | null }>;
+	const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name?: string | null }>;
 	return rows.some(row => row.name === column);
 }
 
@@ -695,7 +695,7 @@ function collectStoredStatsSessionPaths(db: Database): string[] {
 	const sessionPaths = new Set<string>();
 	for (const table of STATS_SESSION_TABLES) {
 		if (!tableExists(db, table) || !tableHasColumn(db, table, "session_file")) continue;
-		const rows = db.prepare(`SELECT DISTINCT session_file FROM ${table}`).all() as Array<{
+		const rows = db.query(`SELECT DISTINCT session_file FROM ${table}`).all() as Array<{
 			session_file?: string | null;
 		}>;
 		for (const row of rows) {
@@ -1039,8 +1039,8 @@ function reconcileStatsRowsForSessions(dbPath: string, plans: StatsCleanupPlan[]
 				PRIMARY KEY (table_name, entry_id, timestamp, tool_call_id)
 			)
 		`);
-		const clearRetainedEntries = db.prepare("DELETE FROM gc_retained_entries");
-		const insertRetainedEntry = db.prepare(`
+		const clearRetainedEntries = db.query("DELETE FROM gc_retained_entries");
+		const insertRetainedEntry = db.query(`
 			INSERT OR IGNORE INTO gc_retained_entries (
 				table_name, entry_id, timestamp, tool_call_id, target_session_file
 			) VALUES (?, ?, ?, ?, ?)
@@ -1054,7 +1054,7 @@ function reconcileStatsRowsForSessions(dbPath: string, plans: StatsCleanupPlan[]
 				AND retained.timestamp = ${table}.timestamp
 				AND ${toolCallMatch}
 			`;
-			return db.prepare(`
+			return db.query(`
 				UPDATE OR IGNORE ${table}
 				SET session_file = (
 					SELECT retained.target_session_file
@@ -1071,7 +1071,7 @@ function reconcileStatsRowsForSessions(dbPath: string, plans: StatsCleanupPlan[]
 		});
 		const deletionStatements = sessionTables.map(table => ({
 			table,
-			statement: db.prepare(`DELETE FROM ${table} WHERE session_file = ? OR instr(session_file, ?) = 1`),
+			statement: db.query(`DELETE FROM ${table} WHERE session_file = ? OR instr(session_file, ?) = 1`),
 		}));
 		let deleted = 0;
 		const tx = db.transaction((cleanupPlans: StatsCleanupPlan[]) => {
@@ -1308,7 +1308,7 @@ async function checkpointWal(dbPath: string, apply: boolean): Promise<WalCheckpo
 	let checkpointAttempted = false;
 	try {
 		db.run("PRAGMA busy_timeout = 5000");
-		const row = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as WalCheckpointRow | null;
+		const row = db.query("PRAGMA wal_checkpoint(TRUNCATE)").get() as WalCheckpointRow | null;
 		checkpointAttempted = true;
 		result.busy = sqliteNumber(row?.busy);
 		result.log = sqliteNumber(row?.log);

@@ -10,7 +10,7 @@ const LEGACY_TIMESTAMP = 1_700_000_000;
 function readSchemaVersion(dbPath: string): number | null {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		const row = db.prepare("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").get() as
+		const row = db.query("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").get() as
 			| { version?: number }
 			| undefined;
 		return typeof row?.version === "number" ? row.version : null;
@@ -22,7 +22,7 @@ function readSchemaVersion(dbPath: string): number | null {
 function readSettingsRows(dbPath: string): Array<{ key: string; value: string; updated_at: number }> {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		return db.prepare("SELECT key, value, updated_at FROM settings ORDER BY key ASC").all() as Array<{
+		return db.query("SELECT key, value, updated_at FROM settings ORDER BY key ASC").all() as Array<{
 			key: string;
 			value: string;
 			updated_at: number;
@@ -78,10 +78,10 @@ describe("AgentStorage SQLite compatibility", () => {
 			);
 		`);
 		legacyDb
-			.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+			.query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
 			.run("theme", '"dark"', LEGACY_TIMESTAMP);
 		legacyDb
-			.prepare("INSERT INTO model_usage (model_key, last_used_at) VALUES (?, ?)")
+			.query("INSERT INTO model_usage (model_key, last_used_at) VALUES (?, ?)")
 			.run("anthropic/claude-sonnet-4-5", LEGACY_TIMESTAMP);
 		legacyDb.close();
 

@@ -67,7 +67,7 @@ describe("stats GPT cost correction", () => {
 
 		const database = new Database(getStatsDbPath());
 		database
-			.prepare(`
+			.query(`
 				INSERT INTO messages (
 					session_file, entry_id, folder, model, provider, api, timestamp,
 					duration, ttft, stop_reason, error_message,

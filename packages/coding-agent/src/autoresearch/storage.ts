@@ -285,7 +285,7 @@ export class AutoresearchStorage {
 	}
 
 	getActiveSession(): SessionRow | null {
-		const stmt = this.#db.prepare<SessionDbRow, []>(
+		const stmt = this.#db.query<SessionDbRow, []>(
 			"SELECT * FROM sessions WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1",
 		);
 		const row = stmt.get();
@@ -297,13 +297,13 @@ export class AutoresearchStorage {
 		// `branch === null` means "no git repo / no branch info" — treat null on both
 		// sides as a match.
 		if (branch === null) {
-			const stmt = this.#db.prepare<SessionDbRow, []>(
+			const stmt = this.#db.query<SessionDbRow, []>(
 				"SELECT * FROM sessions WHERE closed_at IS NULL AND branch IS NULL ORDER BY id DESC LIMIT 1",
 			);
 			const row = stmt.get();
 			return row ? rowToSession(row) : null;
 		}
-		const stmt = this.#db.prepare<SessionDbRow, [string]>(
+		const stmt = this.#db.query<SessionDbRow, [string]>(
 			"SELECT * FROM sessions WHERE closed_at IS NULL AND branch = ? ORDER BY id DESC LIMIT 1",
 		);
 		const row = stmt.get(branch);
@@ -311,13 +311,13 @@ export class AutoresearchStorage {
 	}
 
 	getSessionById(sessionId: number): SessionRow | null {
-		const stmt = this.#db.prepare<SessionDbRow, [number]>("SELECT * FROM sessions WHERE id = ?");
+		const stmt = this.#db.query<SessionDbRow, [number]>("SELECT * FROM sessions WHERE id = ?");
 		const row = stmt.get(sessionId);
 		return row ? rowToSession(row) : null;
 	}
 
 	openSession(params: OpenSessionParams): SessionRow {
-		const stmt = this.#db.prepare<{ id: number }, SQLQueryBindings[]>(
+		const stmt = this.#db.query<{ id: number }, SQLQueryBindings[]>(
 			`INSERT INTO sessions (
 				name, goal, primary_metric, metric_unit, direction,
 				preferred_command, branch, baseline_commit, max_iterations,
@@ -404,7 +404,7 @@ export class AutoresearchStorage {
 		}
 		if (setClauses.length > 0) {
 			values.push(sessionId);
-			this.#db.prepare(`UPDATE sessions SET ${setClauses.join(", ")} WHERE id = ?`).run(...(values as never[]));
+			this.#db.query(`UPDATE sessions SET ${setClauses.join(", ")} WHERE id = ?`).run(...(values as never[]));
 		}
 		const session = this.getSessionById(sessionId);
 		if (!session) throw new Error(`Session ${sessionId} not found after update`);
@@ -412,18 +412,18 @@ export class AutoresearchStorage {
 	}
 
 	bumpSegment(sessionId: number): SessionRow {
-		this.#db.prepare("UPDATE sessions SET current_segment = current_segment + 1 WHERE id = ?").run(sessionId);
+		this.#db.query("UPDATE sessions SET current_segment = current_segment + 1 WHERE id = ?").run(sessionId);
 		const session = this.getSessionById(sessionId);
 		if (!session) throw new Error(`Session ${sessionId} not found after bumping segment`);
 		return session;
 	}
 
 	closeSession(sessionId: number): void {
-		this.#db.prepare("UPDATE sessions SET closed_at = ? WHERE id = ?").run(Date.now(), sessionId);
+		this.#db.query("UPDATE sessions SET closed_at = ? WHERE id = ?").run(Date.now(), sessionId);
 	}
 
 	insertRun(params: InsertRunParams): RunRow {
-		const stmt = this.#db.prepare<{ id: number }, SQLQueryBindings[]>(
+		const stmt = this.#db.query<{ id: number }, SQLQueryBindings[]>(
 			`INSERT INTO runs (
 				session_id, segment, command, started_at, log_path, pre_run_dirty_paths_json
 			) VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
@@ -441,18 +441,18 @@ export class AutoresearchStorage {
 	}
 
 	updateRunLogPath(runId: number, logPath: string): RunRow {
-		this.#db.prepare("UPDATE runs SET log_path = ? WHERE id = ?").run(logPath, runId);
+		this.#db.query("UPDATE runs SET log_path = ? WHERE id = ?").run(logPath, runId);
 		return this.getRunByIdRequired(runId);
 	}
 
 	updateRunConfidence(runId: number, confidence: number | null): RunRow {
-		this.#db.prepare("UPDATE runs SET confidence = ? WHERE id = ?").run(confidence, runId);
+		this.#db.query("UPDATE runs SET confidence = ? WHERE id = ?").run(confidence, runId);
 		return this.getRunByIdRequired(runId);
 	}
 
 	markRunCompleted(params: MarkRunCompletedParams): RunRow {
 		this.#db
-			.prepare(
+			.query(
 				`UPDATE runs SET
 					completed_at = ?, duration_ms = ?, exit_code = ?, timed_out = ?,
 					parsed_primary = ?, parsed_metrics_json = ?, parsed_asi_json = ?
@@ -473,7 +473,7 @@ export class AutoresearchStorage {
 
 	markRunLogged(params: MarkRunLoggedParams): RunRow {
 		this.#db
-			.prepare(
+			.query(
 				`UPDATE runs SET
 					status = ?, description = ?, metric = ?, metrics_json = ?, asi_json = ?,
 					commit_hash = ?, confidence = ?, modified_paths_json = ?, scope_deviations_json = ?,
@@ -498,26 +498,26 @@ export class AutoresearchStorage {
 	}
 
 	flagRun(runId: number, reason: string): RunRow {
-		this.#db.prepare("UPDATE runs SET flagged = 1, flagged_reason = ? WHERE id = ?").run(reason, runId);
+		this.#db.query("UPDATE runs SET flagged = 1, flagged_reason = ? WHERE id = ?").run(reason, runId);
 		return this.getRunByIdRequired(runId);
 	}
 
 	abandonPendingRuns(sessionId: number): number {
 		const beforeRow = this.#db
-			.prepare<{ n: number }, [number]>(
+			.query<{ n: number }, [number]>(
 				"SELECT COUNT(*) AS n FROM runs WHERE session_id = ? AND status IS NULL AND abandoned_at IS NULL",
 			)
 			.get(sessionId);
 		const before = beforeRow?.n ?? 0;
 		if (before === 0) return 0;
 		this.#db
-			.prepare("UPDATE runs SET abandoned_at = ? WHERE session_id = ? AND status IS NULL AND abandoned_at IS NULL")
+			.query("UPDATE runs SET abandoned_at = ? WHERE session_id = ? AND status IS NULL AND abandoned_at IS NULL")
 			.run(Date.now(), sessionId);
 		return before;
 	}
 
 	getPendingRun(sessionId: number): RunRow | null {
-		const stmt = this.#db.prepare<RunDbRow, [number]>(
+		const stmt = this.#db.query<RunDbRow, [number]>(
 			"SELECT * FROM runs WHERE session_id = ? AND status IS NULL AND abandoned_at IS NULL ORDER BY id DESC LIMIT 1",
 		);
 		const row = stmt.get(sessionId);
@@ -525,7 +525,7 @@ export class AutoresearchStorage {
 	}
 
 	getRunById(runId: number): RunRow | null {
-		const stmt = this.#db.prepare<RunDbRow, [number]>("SELECT * FROM runs WHERE id = ?");
+		const stmt = this.#db.query<RunDbRow, [number]>("SELECT * FROM runs WHERE id = ?");
 		const row = stmt.get(runId);
 		return row ? rowToRun(row) : null;
 	}
@@ -537,12 +537,12 @@ export class AutoresearchStorage {
 	}
 
 	listRuns(sessionId: number): RunRow[] {
-		const stmt = this.#db.prepare<RunDbRow, [number]>("SELECT * FROM runs WHERE session_id = ? ORDER BY id ASC");
+		const stmt = this.#db.query<RunDbRow, [number]>("SELECT * FROM runs WHERE session_id = ? ORDER BY id ASC");
 		return stmt.all(sessionId).map(rowToRun);
 	}
 
 	listLoggedRuns(sessionId: number): RunRow[] {
-		const stmt = this.#db.prepare<RunDbRow, [number]>(
+		const stmt = this.#db.query<RunDbRow, [number]>(
 			"SELECT * FROM runs WHERE session_id = ? AND status IS NOT NULL ORDER BY id ASC",
 		);
 		return stmt.all(sessionId).map(rowToRun);
