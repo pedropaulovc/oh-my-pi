@@ -555,7 +555,7 @@ export class MnemopiSessionState {
 		if (this.#retentionCursorLoaded) return;
 		this.#retentionCursorLoaded = true;
 		const rows = this.memory.beam.db
-			.prepare<MnemopiRetentionCursorRow, [string]>(`
+			.query<MnemopiRetentionCursorRow, [string]>(`
 				SELECT
 					content,
 					json_extract(metadata_json, '$.source_id') AS sourceId,

@@ -225,7 +225,7 @@ function bankOnlyHasCwd(dbPath: string, cwd: string): boolean {
 	try {
 		db = new Database(dbPath, { readonly: true });
 		const row = db
-			.prepare<{ matching: number; unsafe: number }, [string, string]>(`
+			.query<{ matching: number; unsafe: number }, [string, string]>(`
 				SELECT
 					SUM(CASE WHEN json_extract(metadata_json, '$.cwd') = ? THEN 1 ELSE 0 END) AS matching,
 					SUM(CASE WHEN json_extract(metadata_json, '$.cwd') IS NULL OR json_extract(metadata_json, '$.cwd') <> ? THEN 1 ELSE 0 END) AS unsafe

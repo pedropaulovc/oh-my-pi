@@ -109,7 +109,7 @@ function buildFixtureBytes(): Uint8Array {
 function readUserEmail(dbPath: string, id: number): string | null {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		const row = db.prepare<{ email: string }, [number]>("SELECT email FROM users WHERE id = ?").get(id);
+		const row = db.query<{ email: string }, [number]>("SELECT email FROM users WHERE id = ?").get(id);
 		return row?.email ?? null;
 	} finally {
 		db.close();
@@ -119,7 +119,7 @@ function readUserEmail(dbPath: string, id: number): string | null {
 function readUserCount(dbPath: string): number {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		return db.prepare<{ count: number }, []>("SELECT COUNT(*) AS count FROM users").get()?.count ?? 0;
+		return db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM users").get()?.count ?? 0;
 	} finally {
 		db.close();
 	}
@@ -129,7 +129,7 @@ function readUserByEmail(dbPath: string, email: string): { name: string; email: 
 	const db = new Database(dbPath, { readonly: true });
 	try {
 		return db
-			.prepare<{ name: string; email: string }, [string]>("SELECT name, email FROM users WHERE email = ?")
+			.query<{ name: string; email: string }, [string]>("SELECT name, email FROM users WHERE email = ?")
 			.get(email);
 	} finally {
 		db.close();

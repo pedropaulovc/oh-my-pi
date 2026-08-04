@@ -285,7 +285,7 @@ export class AutoresearchStorage {
 	}
 
 	getActiveSession(): SessionRow | null {
-		const stmt = this.#db.prepare<SessionDbRow, []>(
+		const stmt = this.#db.query<SessionDbRow, []>(
 			"SELECT * FROM sessions WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1",
 		);
 		const row = stmt.get();
@@ -297,13 +297,13 @@ export class AutoresearchStorage {
 		// `branch === null` means "no git repo / no branch info" — treat null on both
 		// sides as a match.
 		if (branch === null) {
-			const stmt = this.#db.prepare<SessionDbRow, []>(
+			const stmt = this.#db.query<SessionDbRow, []>(
 				"SELECT * FROM sessions WHERE closed_at IS NULL AND branch IS NULL ORDER BY id DESC LIMIT 1",
 			);
 			const row = stmt.get();
 			return row ? rowToSession(row) : null;
 		}
-		const stmt = this.#db.prepare<SessionDbRow, [string]>(
+		const stmt = this.#db.query<SessionDbRow, [string]>(
 			"SELECT * FROM sessions WHERE closed_at IS NULL AND branch = ? ORDER BY id DESC LIMIT 1",
 		);
 		const row = stmt.get(branch);
@@ -311,13 +311,13 @@ export class AutoresearchStorage {
 	}
 
 	getSessionById(sessionId: number): SessionRow | null {
-		const stmt = this.#db.prepare<SessionDbRow, [number]>("SELECT * FROM sessions WHERE id = ?");
+		const stmt = this.#db.query<SessionDbRow, [number]>("SELECT * FROM sessions WHERE id = ?");
 		const row = stmt.get(sessionId);
 		return row ? rowToSession(row) : null;
 	}
 
 	openSession(params: OpenSessionParams): SessionRow {
-		const stmt = this.#db.prepare<{ id: number }, SQLQueryBindings[]>(
+		const stmt = this.#db.query<{ id: number }, SQLQueryBindings[]>(
 			`INSERT INTO sessions (
 				name, goal, primary_metric, metric_unit, direction,
 				preferred_command, branch, baseline_commit, max_iterations,
@@ -423,7 +423,7 @@ export class AutoresearchStorage {
 	}
 
 	insertRun(params: InsertRunParams): RunRow {
-		const stmt = this.#db.prepare<{ id: number }, SQLQueryBindings[]>(
+		const stmt = this.#db.query<{ id: number }, SQLQueryBindings[]>(
 			`INSERT INTO runs (
 				session_id, segment, command, started_at, log_path, pre_run_dirty_paths_json
 			) VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
@@ -504,7 +504,7 @@ export class AutoresearchStorage {
 
 	abandonPendingRuns(sessionId: number): number {
 		const beforeRow = this.#db
-			.prepare<{ n: number }, [number]>(
+			.query<{ n: number }, [number]>(
 				"SELECT COUNT(*) AS n FROM runs WHERE session_id = ? AND status IS NULL AND abandoned_at IS NULL",
 			)
 			.get(sessionId);
@@ -517,7 +517,7 @@ export class AutoresearchStorage {
 	}
 
 	getPendingRun(sessionId: number): RunRow | null {
-		const stmt = this.#db.prepare<RunDbRow, [number]>(
+		const stmt = this.#db.query<RunDbRow, [number]>(
 			"SELECT * FROM runs WHERE session_id = ? AND status IS NULL AND abandoned_at IS NULL ORDER BY id DESC LIMIT 1",
 		);
 		const row = stmt.get(sessionId);
@@ -525,7 +525,7 @@ export class AutoresearchStorage {
 	}
 
 	getRunById(runId: number): RunRow | null {
-		const stmt = this.#db.prepare<RunDbRow, [number]>("SELECT * FROM runs WHERE id = ?");
+		const stmt = this.#db.query<RunDbRow, [number]>("SELECT * FROM runs WHERE id = ?");
 		const row = stmt.get(runId);
 		return row ? rowToRun(row) : null;
 	}
@@ -537,12 +537,12 @@ export class AutoresearchStorage {
 	}
 
 	listRuns(sessionId: number): RunRow[] {
-		const stmt = this.#db.prepare<RunDbRow, [number]>("SELECT * FROM runs WHERE session_id = ? ORDER BY id ASC");
+		const stmt = this.#db.query<RunDbRow, [number]>("SELECT * FROM runs WHERE session_id = ? ORDER BY id ASC");
 		return stmt.all(sessionId).map(rowToRun);
 	}
 
 	listLoggedRuns(sessionId: number): RunRow[] {
-		const stmt = this.#db.prepare<RunDbRow, [number]>(
+		const stmt = this.#db.query<RunDbRow, [number]>(
 			"SELECT * FROM runs WHERE session_id = ? AND status IS NOT NULL ORDER BY id ASC",
 		);
 		return stmt.all(sessionId).map(rowToRun);
