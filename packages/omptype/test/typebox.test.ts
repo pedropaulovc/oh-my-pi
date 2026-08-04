@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type } from "../src/type";
-import { type Static, Type } from "../src/typebox";
+import { type Static, type TNumber, Type } from "../src/typebox";
 
 type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Assert<T extends true> = T;
@@ -168,6 +168,23 @@ describe("TypeBox adapter", () => {
 		};
 		expect(json.required).toEqual(["direction"]);
 		expect(json.properties?.depth?.default).toBe(3);
+	});
+
+	test("a default is honored wherever it is attached to an optional key", () => {
+		// The adapter must read the schema's own `hasDefault` rather than a
+		// marker it stamps itself: a default can arrive by a route no adapter
+		// helper observes. Stamping only in the options path let
+		// `.default()` throw and silently dropped a default passed to
+		// Type.Optional's own options.
+		const fluent = Type.Object({ a: Type.String(), d: Type.Optional(type.number.default(3) as unknown as TNumber) });
+		expect(fluent({ a: "x" })).toEqual({ a: "x", d: 3 });
+
+		const onWrapper = Type.Object({ a: Type.String(), d: Type.Optional(Type.Integer(), { default: 3 }) });
+		expect(onWrapper({ a: "x" })).toEqual({ a: "x", d: 3 });
+
+		// A Type.Optional with no default anywhere stays genuinely absent.
+		const plain = Type.Object({ a: Type.String(), d: Type.Optional(Type.Integer()) });
+		expect(plain({ a: "x" })).toEqual({ a: "x" });
 	});
 
 	test("Static infers builder outputs", () => {
