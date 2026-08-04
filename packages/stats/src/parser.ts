@@ -454,19 +454,32 @@ export async function listSessionFolders(): Promise<string[]> {
 }
 
 /**
- * List all session files in a folder.
+ * List all session files in a folder, ordered by path.
+ *
+ * `fs.readdir` returns directory order, which is a filesystem implementation
+ * detail (hash order on ext4) and varies between machines and even between
+ * runs after rewrites. Sync's fork dedupe is first-write-wins across a lineage
+ * — see {@link insertMessageStats} — so unordered input makes the *owner* of a
+ * deduplicated provider request arbitrary: a forked session could claim a turn
+ * that was made in its parent. Session filenames are timestamp-prefixed, so
+ * sorting them is chronological, and a fork always sorts after the parent it
+ * copied from.
  */
 export async function listSessionFiles(folderPath: string): Promise<string[]> {
 	try {
 		const entries = await fs.readdir(folderPath, { recursive: true, withFileTypes: true });
-		return entries.filter(e => e.isFile() && e.name.endsWith(".jsonl")).map(e => path.join(e.parentPath, e.name));
+		return entries
+			.filter(e => e.isFile() && e.name.endsWith(".jsonl"))
+			.map(e => path.join(e.parentPath, e.name))
+			.sort();
 	} catch {
 		return [];
 	}
 }
 
 /**
- * List all session files across all folders.
+ * List all session files across all folders, ordered by path.
+ * See {@link listSessionFiles} for why the order is load-bearing.
  */
 export async function listAllSessionFiles(): Promise<string[]> {
 	const folders = await listSessionFolders();
@@ -477,7 +490,7 @@ export async function listAllSessionFiles(): Promise<string[]> {
 		allFiles.push(...files);
 	}
 
-	return allFiles;
+	return allFiles.sort();
 }
 
 /**

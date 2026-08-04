@@ -6,6 +6,7 @@
 
 - Session directories now classify a cwd against the most specific scope root instead of testing `home` before `tmp`. On Windows `os.tmpdir()` (`%LOCALAPPDATA%\Temp`) is nested inside `os.homedir()`, so every temp-root cwd was bucketed as home-scoped and the `tmp` scope was unreachable; the same happened on POSIX with `TMPDIR=$HOME/tmp`.
 - SQLite databases are now genuinely released when their storage closes. `bun:sqlite`'s `close()` runs `sqlite3_close_v2`, which *defers* the close while any prepared statement is outstanding, so a one-shot `db.prepare(...)` that was never finalized left the file handle open even though `close()` returned cleanly — `AgentStorage.resetInstance()`, `HistoryStorage.resetInstance()`, `closeDb()` and gc's own `db.close()` calls all silently did nothing. One-shot statements now use the cached `db.query(...)`, which `close()` finalizes. On POSIX this leaked file descriptors (3 per `omp gc` run against a fresh agent dir); on Windows it made the agent directory undeletable outright.
+- Stats sync now lists session files in a stable, sorted order. `fs.readdir` returns filesystem order, and sync's fork dedupe is first-write-wins across a lineage, so the *owner* of a deduplicated provider request was arbitrary — a forked session could be credited with a turn that was made in its parent.
 
 ## [17.2.8] - 2026-08-04
 
