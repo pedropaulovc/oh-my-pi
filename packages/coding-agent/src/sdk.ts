@@ -1610,7 +1610,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// onJobComplete here.
 	const asyncJobManager =
 		!options.parentTaskPrefix && !AsyncJobManager.instance()
-			? new AsyncJobManager({ maxRunningJobs: asyncMaxJobs })
+			? new AsyncJobManager({
+					maxRunningJobs: asyncMaxJobs,
+					progressMinIntervalMs: settings.get("async.progress.minIntervalMs"),
+				})
 			: undefined;
 
 	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
