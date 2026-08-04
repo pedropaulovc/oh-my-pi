@@ -384,27 +384,35 @@ describe("arkToWireSchema — undefined-union branch pruning", () => {
 });
 
 // ---------------------------------------------------------------------------
-// arkToWireSchema — authored property order (guards the @ark/schema patch)
+// toolWireSchema — authored property order
 // ---------------------------------------------------------------------------
 
-describe("arkToWireSchema — authored property order", () => {
-	function arkTool(parameters: unknown): Tool {
+describe("toolWireSchema — authored property order", () => {
+	function makeTool(parameters: unknown): Tool {
 		return { name: "t", description: "d", parameters } as Tool;
 	}
 
 	it("preserves declaration order rather than alphabetizing keys", () => {
-		// Without the @ark/schema patch, ArkType canonicalizes keys by hash
-		// (alphabetical): `zebra, content, path`. Streaming renderers and prompt
-		// caching depend on the authored order being preserved on the wire.
-		const wire = toolWireSchema(arkTool(type({ path: "string", content: "string", zebra: "string" })));
+		// Key order is not cosmetic: streaming renderers and prompt caching
+		// depend on the authored order surviving onto the wire.
+		const wire = toolWireSchema(makeTool(type({ path: "string", content: "string", zebra: "string" })));
 		expect(Object.keys(wire.properties as Record<string, unknown>)).toEqual(["path", "content", "zebra"]);
 	});
 
-	it("emits required props before optional props, each in declaration order", () => {
+	it("keeps optional props in declaration order rather than grouping them last", () => {
+		// This asserted `[pattern, i, paths, skip]` until bc39ffa26 repointed the
+		// suite from `arktype` to `@oh-my-pi/omptype` with a one-line import swap.
+		// Grouping required props ahead of optional ones was never the goal — it
+		// fell out of ArkType's constraint `precedence`, which omptype (a separate
+		// implementation) does not reproduce. Plain declaration order is what the
+		// sibling case above asks for. Kept as the record of why the expectation
+		// changed, so the old order does not get "restored" as a regression fix.
 		const wire = toolWireSchema(
-			arkTool(type({ pattern: "string", "paths?": "string", i: "boolean", "skip?": "number" })),
+			makeTool(type({ pattern: "string", "paths?": "string", i: "boolean", "skip?": "number" })),
 		);
-		expect(Object.keys(wire.properties as Record<string, unknown>)).toEqual(["pattern", "i", "paths", "skip"]);
+		expect(Object.keys(wire.properties as Record<string, unknown>)).toEqual(["pattern", "paths", "i", "skip"]);
+		// Optionality itself must still be carried by `required`, not by position.
+		expect(wire.required).toEqual(["pattern", "i"]);
 	});
 });
 
