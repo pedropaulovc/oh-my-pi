@@ -50,7 +50,7 @@ function normalizePremiumRequests(value: number): number {
 	return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-const SCRATCH_ROOTS: readonly string[] = (() => {
+function computeScratchRoots(): readonly string[] {
 	const roots = new Set<string>([os.tmpdir(), path.join(os.homedir(), "tmp")]);
 	if (process.platform === "win32") {
 		const { TEMP, TMP, SystemRoot } = process.env;
@@ -66,10 +66,28 @@ const SCRATCH_ROOTS: readonly string[] = (() => {
 		}
 	}
 	return [...roots];
-})();
+}
+
+let scratchRoots: readonly string[] = computeScratchRoots();
+
+/** The roots the path segment treats as scratch. */
+export function getScratchRoots(): readonly string[] {
+	return scratchRoots;
+}
+
+/**
+ * Override the scratch-root set. Test-only, mirroring {@link setProjectDir}.
+ * Fixtures need a location that is provably NOT scratch, and there is no such
+ * location a test can rely on: a git worktree may itself live under /tmp, and
+ * the real home is not always writable. Declaring the classification is the
+ * only seam that works everywhere. Pass undefined to restore the real set.
+ */
+export function setScratchRootsForTests(roots: readonly string[] | undefined): void {
+	scratchRoots = roots ?? computeScratchRoots();
+}
 
 function classifyProjectDir(pwd: string): { scratch: boolean; relative: string | null } {
-	for (const root of SCRATCH_ROOTS) {
+	for (const root of scratchRoots) {
 		if (pathIsWithin(root, pwd)) {
 			return { scratch: true, relative: relativePathWithinRoot(root, pwd) };
 		}
