@@ -68,6 +68,9 @@ function createPathContext(): SegmentContext {
 afterEach(() => {
 	vi.restoreAllMocks();
 	setProjectDir(originalProjectDir);
+	for (const root of fixtureRoots.splice(0)) {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function expectContentToContainPath(content: string, expected: string): void {
@@ -78,10 +81,39 @@ function expectContentToContainPath(content: string, expected: string): void {
 	expect(content).toContain(expected);
 }
 
+/**
+ * Mirrors `SCRATCH_ROOTS` in modes/components/status-line/segments.ts. A fake
+ * home created under any of these renders the scratch icon and skips Projects
+ * stripping — the opposite of what the non-scratch fixtures set up.
+ */
+const SCRATCH_ROOTS: readonly string[] = [
+	os.tmpdir(),
+	path.join(os.homedir(), "tmp"),
+	"/tmp",
+	"/var/tmp",
+	"/private/tmp",
+	"/private/var/tmp",
+];
+
+function isUnderScratchRoot(dir: string): boolean {
+	const resolved = path.resolve(dir);
+	return SCRATCH_ROOTS.some(root => resolved === root || resolved.startsWith(`${root}${path.sep}`));
+}
+
+/** Fixture roots to remove after each test, so runs leave nothing behind. */
+const fixtureRoots: string[] = [];
+
 function createFakeHome(): { home: string; projectsRoot: string } {
-	const homeRoot = path.join(originalProjectDir, ".wt");
+	// The checkout is the natural base, but a git worktree can itself live under
+	// /tmp — and then every fixture below it sits inside a scratch root, so the
+	// "outside any scratch root" cases assert the opposite of what they build.
+	// Fall back to the real home, which is never a scratch root (only `~/tmp`
+	// is). Resolved before `os.homedir` is stubbed below.
+	const base = isUnderScratchRoot(originalProjectDir) ? os.homedir() : originalProjectDir;
+	const homeRoot = path.join(base, ".wt");
 	fs.mkdirSync(homeRoot, { recursive: true });
 	const home = fs.mkdtempSync(path.join(homeRoot, "omp-status-line-home-"));
+	fixtureRoots.push(home);
 	const projectsRoot = path.join(home, "Projects");
 	fs.mkdirSync(projectsRoot, { recursive: true });
 	vi.spyOn(os, "homedir").mockReturnValue(home);
