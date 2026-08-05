@@ -3,6 +3,7 @@ import * as net from "node:net";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import {
+	__resetProxyCache,
 	connectProxiedSocket,
 	getProxyForProvider,
 	getProxyForUrl,
@@ -96,11 +97,15 @@ function proxyEnvKeys(): Set<string> {
 }
 
 // Snapshot + clear every proxy-related env var so each test starts clean and
-// leaves nothing behind for later files. Provider-specific tests use unique
-// provider ids so the module-level resolver cache can never cross-contaminate.
+// leaves nothing behind for later files. Clearing env is not sufficient on its
+// own: `getProxyForProvider` memoizes per provider id — including a `undefined`
+// miss — for the life of the process, and real ids like `github-copilot` are
+// resolved by provider code in other test files. Without the cache reset those
+// files prime a miss and this file's env writes are never observed.
 let saved: Record<string, string | undefined>;
 
 beforeEach(() => {
+	__resetProxyCache();
 	saved = {};
 	for (const key of proxyEnvKeys()) {
 		saved[key] = Bun.env[key];
@@ -114,6 +119,7 @@ afterEach(() => {
 		const value = saved[key];
 		if (value !== undefined) Bun.env[key] = value;
 	}
+	__resetProxyCache();
 });
 
 describe("getProxyForProvider", () => {
