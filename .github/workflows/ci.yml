@@ -221,8 +221,13 @@ jobs:
               # the wrong release loads fine and passes the key check, then is
               # rejected far downstream by the loader with a 20-line "Tried:"
               # dump — check it where the file is fetched instead.
+              # The version comes in via env: the script lives in RUNNER_TEMP, so
+              # a relative require() inside it resolves against that directory
+              # rather than the checkout.
+              NATIVES_VERSION="$(node -p 'require("./packages/natives/package.json").version')"
+              export NATIVES_VERSION
               cat > "$RUNNER_TEMP/smoke-addons.js" <<'EOF'
-              const version = require("./packages/natives/package.json").version;
+              const version = process.env.NATIVES_VERSION;
               const sentinel = `__piNativesV${version.replace(/[^0-9a-zA-Z]/g, "_")}`;
               for (const f of process.argv.slice(2)) {
                const m = require(f);
