@@ -156,6 +156,23 @@ Cancellation:
 
 No exception is thrown inside executor for timeout/cancel; it returns structured `BashResult` and lets caller map error semantics.
 
+### Progress sampling (`progress`)
+
+`onChunk` doubles as the sampling point for the opt-in `progress` parameter (see `docs/tools/bash.md`). Sampling sits
+beside the existing `reportProgress` TUI call, never on top of it: the TUI keeps receiving raw tail-buffer chunks, while
+the model-facing channel emits complete lines only.
+
+- `every` samples the newest complete lines on a cadence. It throttles output-driven sampling rather than acting as a
+  wall-clock heartbeat, so a command that prints nothing reports nothing.
+- `match` is compiled once during parameter validation; an invalid regex is a `ToolError`, and nested quantifiers are
+  rejected as backtracking hazards.
+- `stopOnMatch` aborts a **job-local** `AbortController` owned by `#startManagedBashJob` — deliberately not
+  `AsyncJobManager.cancel()`. That distinction is load-bearing: `cancel()` marks the job `cancelled`, and both settle
+  arms return early for cancelled jobs without enqueuing a delivery, so the agent would get the trigger line and never
+  the output. Aborting locally instead yields the structured `cancelled: true` result described above, so the job
+  settles `completed`, the partial output renders with a `Stopped early: progress match fired.` notice, and normal
+  completion delivery still runs.
+
 ## Interactive PTY path (`runInteractiveBashPty`)
 
 When PTY is enabled, tool runs `runInteractiveBashPty()` which opens an overlay console component and drives a native `PtySession`.
