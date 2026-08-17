@@ -240,6 +240,7 @@ import {
 	ASYNC_INLINE_RESULT_MAX_CHARS,
 	ASYNC_PREVIEW_MAX_CHARS,
 	ASYNC_PROGRESS_MESSAGE_TYPE,
+	ASYNC_PROGRESS_WAKE_QUEUE_KIND,
 	ASYNC_RESULT_MESSAGE_TYPE,
 	type AsyncProgressEntry,
 	type AsyncResultEntry,
@@ -559,6 +560,7 @@ export class AgentSession {
 	#unregisterAsyncDeliverySink: (() => void) | undefined;
 	#unregisterAsyncProgressSink: (() => void) | undefined;
 	#unregisterAsyncProgressQueue: (() => void) | undefined;
+	#unregisterAsyncProgressWakeQueue: (() => void) | undefined;
 	/**
 	 * Async-delivery generation, bumped on every session transition that evicts
 	 * this owner's jobs (see {@link AgentSession.#cancelOwnAsyncJobs}). Stamped
@@ -1398,6 +1400,16 @@ export class AgentSession {
 					build: buildAsyncProgressBatchMessage,
 				},
 			);
+			this.#unregisterAsyncProgressWakeQueue = this.yieldQueue.register<AsyncProgressEntry>(
+				ASYNC_PROGRESS_WAKE_QUEUE_KIND,
+				{
+					isStale: entry =>
+						entry.epoch !== this.#asyncDeliveryEpoch ||
+						manager.isDeliverySuppressed(entry.jobId) ||
+						manager.getJob(entry.jobId)?.status !== "running",
+					build: buildAsyncProgressBatchMessage,
+				},
+			);
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			const event: AgentEvent = {
@@ -1874,6 +1886,7 @@ export class AgentSession {
 		this.#asyncDeliveryEpoch += 1;
 		this.yieldQueue.clear("async-result");
 		this.yieldQueue.clear(ASYNC_PROGRESS_MESSAGE_TYPE);
+		this.yieldQueue.clear(ASYNC_PROGRESS_WAKE_QUEUE_KIND);
 	}
 
 	/**
@@ -1953,14 +1966,16 @@ export class AgentSession {
 	}
 
 	#deliverAsyncJobProgress(jobId: string, text: string, job: AsyncJob, seq: number): void {
-		if (this.#isDisposed || !this.isStreaming) return;
-		this.yieldQueue.enqueue<AsyncProgressEntry>(ASYNC_PROGRESS_MESSAGE_TYPE, {
+		if (this.#isDisposed || job.progressDelivery === undefined) return;
+		const queueKind = job.progressDelivery === "wake" ? ASYNC_PROGRESS_WAKE_QUEUE_KIND : ASYNC_PROGRESS_MESSAGE_TYPE;
+		this.yieldQueue.enqueue<AsyncProgressEntry>(queueKind, {
 			jobId,
 			text,
 			job,
 			seq,
 			elapsedMs: Math.max(0, Date.now() - job.startTime),
 			epoch: this.#asyncDeliveryEpoch,
+			delivery: job.progressDelivery,
 		});
 	}
 
@@ -3973,6 +3988,8 @@ export class AgentSession {
 		this.#unregisterAsyncProgressSink = undefined;
 		this.#unregisterAsyncProgressQueue?.();
 		this.#unregisterAsyncProgressQueue = undefined;
+		this.#unregisterAsyncProgressWakeQueue?.();
+		this.#unregisterAsyncProgressWakeQueue = undefined;
 		const manager = this.#ownedAsyncJobManager;
 		// The shutdown reason is reserved for the top-level session that OWNS the
 		// manager — the genuine process/handled-shutdown path — so the task
