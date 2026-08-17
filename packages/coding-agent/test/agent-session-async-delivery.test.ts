@@ -490,7 +490,12 @@ describe("AgentSession owner-routed async delivery", () => {
 							: message.content.flatMap(content => (content.type === "text" ? [content.text] : [])),
 					)
 					.join("\n");
-				if (text.includes("BUSY EVENT TWO") && text.includes("BUSY EVENT THREE")) batchObserved.resolve(text);
+				if (
+					text.includes("BUSY EVENT TWO") &&
+					text.includes("BUSY EVENT THREE") &&
+					text.includes("BUSY COMPLETION AFTER EVENTS")
+				)
+					batchObserved.resolve(text);
 				return { content: ["Done"] };
 			},
 		});
@@ -538,12 +543,13 @@ describe("AgentSession owner-routed async delivery", () => {
 		await busyStarted.promise;
 		session.yieldQueue.enqueue(ASYNC_PROGRESS_WAKE_QUEUE_KIND, progressEntry("BUSY EVENT TWO", 2));
 		session.yieldQueue.enqueue(ASYNC_PROGRESS_WAKE_QUEUE_KIND, progressEntry("BUSY EVENT THREE", 3));
-		gate.resolve("done");
+		gate.resolve("BUSY COMPLETION AFTER EVENTS");
 		await manager.waitForAll();
 		releaseBusy.resolve();
 
 		const batch = await batchObserved.promise;
 		expect(batch.indexOf("BUSY EVENT TWO")).toBeLessThan(batch.indexOf("BUSY EVENT THREE"));
+		expect(batch.indexOf("BUSY EVENT THREE")).toBeLessThan(batch.indexOf("BUSY COMPLETION AFTER EVENTS"));
 		expect(mock.calls).toHaveLength(3);
 		expect(manager.getJob(job.id)?.status).toBe("completed");
 	}, 10_000);
