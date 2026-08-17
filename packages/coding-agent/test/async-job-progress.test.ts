@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
-import { type AsyncJob, AsyncJobManager, type AsyncJobProgressSink } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import {
+	type AsyncJob,
+	AsyncJobManager,
+	type AsyncJobProgressDelivery,
+	type AsyncJobProgressSink,
+} from "@oh-my-pi/pi-coding-agent/async/job-manager";
 
-function heldJob(manager: AsyncJobManager, ownerId = "Main") {
+function heldJob(manager: AsyncJobManager, ownerId = "Main", progressDelivery: AsyncJobProgressDelivery = "ambient") {
 	const gate = Promise.withResolvers<void>();
 	const started = Promise.withResolvers<(text: string) => void>();
 	const jobId = manager.register(
@@ -12,7 +17,7 @@ function heldJob(manager: AsyncJobManager, ownerId = "Main") {
 			await gate.promise;
 			return "done";
 		},
-		{ ownerId },
+		{ ownerId, progressDelivery },
 	);
 	return { jobId, report: started.promise, release: gate.resolve };
 }
@@ -97,6 +102,20 @@ describe("AsyncJobManager model progress", () => {
 		await manager.waitForAll();
 	});
 
+	test("delivers wake progress to an idle owner", async () => {
+		const manager = new AsyncJobManager({});
+		const recorder = recordingSink(false);
+		manager.registerProgressSink("Main", recorder.sink);
+		const job = heldJob(manager, "Main", "wake");
+		const report = await job.report;
+
+		report("push while idle");
+		expect(recorder.seen).toEqual([{ jobId: job.jobId, text: "push while idle", seq: 1 }]);
+
+		job.release();
+		await manager.waitForAll();
+	});
+
 	test("sink failures are best-effort and do not block completion", async () => {
 		const completions: string[] = [];
 		const manager = new AsyncJobManager({});
@@ -117,7 +136,7 @@ describe("AsyncJobManager model progress", () => {
 				reportAgentProgress("tick");
 				return "complete";
 			},
-			{ ownerId: "Main" },
+			{ ownerId: "Main", progressDelivery: "ambient" },
 		);
 		await manager.waitForAll();
 		await manager.drainDeliveries({ timeoutMs: 2_000 });

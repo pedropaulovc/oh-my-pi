@@ -22,7 +22,7 @@ function job(id: string): AsyncJob {
 }
 
 function entry(jobId: string, text: string, seq = 1): AsyncProgressEntry {
-	return { jobId, text, seq, job: job(jobId), elapsedMs: 5_000, epoch: 0 };
+	return { jobId, text, seq, job: job(jobId), elapsedMs: 5_000, epoch: 0, delivery: "ambient" };
 }
 
 function content(message: { content: unknown } | null): string {

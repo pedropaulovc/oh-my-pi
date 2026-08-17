@@ -27,7 +27,7 @@
 | `cwd` | `string` | No | Working directory, resolved against `session.cwd` via `resolveToCwd`. Must exist and be a directory. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
 | `async` | `boolean` | No | Background execution request. Present only when `async.enabled` is true for the session. Returns immediately with a job id instead of waiting; it does not change the effective deadline, including a disabled deadline from `timeout: 0`. |
-| `progress` | `boolean` | No | With `async: true`, opt in to model-visible progress while the owning session is actively streaming. Complete non-empty output lines are coalesced to at most one update per second. |
+| `progress` | `"ambient" \| "wake"` | No | With `async: true`, deliver complete non-empty output lines to the model. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are coalesced to at most one per second. |
 
 ## Outputs
 The tool returns a single `text` content block plus optional `details`.
@@ -48,7 +48,7 @@ The tool returns a single `text` content block plus optional `details`.
 - Background progress / completion:
   - delivered through `onUpdate` / async job manager, not the initial return.
   - running updates contain tail text and `details.async.state: "running"` only after the job is considered backgrounded.
-  - with `progress: true`, complete output lines are also delivered to the model as bounded `async-progress` asides; partial lines are held until completed, including the final unterminated line.
+  - with `progress: "wake"`, complete output lines push bounded `async-progress` follow-up turns even while the agent is idle; `progress: "ambient"` uses non-waking step-boundary asides instead. Partial lines are held until completed, including the final unterminated line.
   - completion/failure updates carry final text and `details.async.state: "completed" | "failed"`. A non-zero exit or timeout is recorded as a failed background job.
 - Failure:
   - cancellation, missing exit status, validation failures, intercepted commands, and client-terminal-bridge timeouts throw `ToolError` / `ToolAbortError`.
