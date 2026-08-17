@@ -9,7 +9,7 @@ Use ONLY for one binary or a short pipeline that computes a fact (`wc -l`, `sort
 - Order-dependent commands use `&&` in one call; independent calls may run concurrently.
 - Internal URIs (`skill://`, `agent://`, …) auto-resolve to paths.
 {{#if hasShellBuiltins}}- aux utils available: mkdir, wc, sort, comm, diff, uniq, base64, cmp, md5sum, sha{1,224,256,384,512}sum, b2sum, basename, dirname, readlink, realpath, touch, stat, date, mktemp, seq, yes, printenv, truncate, tac, nproc, uname, whoami, hostname, which, ps, pgrep, pkill, pidwait, top, cut, tee, tr, paste, sed, xargs, jq, rm, mv, ln, ts, sponge, ifne, isutf8, combine{{#unless isWindows}}, errno{{/unless}}{{/if}}
-{{#if asyncEnabled}}- `async: true` defers a finite command's result; it does not extend `timeout`. Set `progress: "wake"` to receive complete non-empty output lines as push notifications that start a follow-up turn, or `progress: "ambient"` to receive them only during an already-active turn.{{/if}}
+{{#if asyncEnabled}}- `async: true` defers a finite command's result; it does not extend `timeout`. Set `progress: "wake"` when output may require action before the command exits: every complete non-empty line is pushed back by the harness and starts a follow-up turn. Use `progress: "ambient"` only when updates can wait for an already-active turn.{{/if}}
 </instruction>
 
 <critical>

@@ -14,7 +14,11 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { DaemonCompletionNotification } from "@oh-my-pi/pi-coding-agent/launch/protocol";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { AsyncProgressEntry, AsyncResultEntry } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
+import {
+	ASYNC_PROGRESS_WAKE_QUEUE_KIND,
+	type AsyncProgressEntry,
+	type AsyncResultEntry,
+} from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -464,6 +468,84 @@ describe("AgentSession owner-routed async delivery", () => {
 		manager.watchJobs([jobId]);
 		gate.resolve("done");
 		await manager.waitForAll();
+	}, 10_000);
+
+	it("batches every wake event queued while busy even when the job completes before the follow-up", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const busyStarted = Promise.withResolvers<void>();
+		const releaseBusy = Promise.withResolvers<void>();
+		const batchObserved = Promise.withResolvers<string>();
+		let invocation = 0;
+		const mock = createMockModel({
+			handler: async context => {
+				invocation += 1;
+				if (invocation === 2) {
+					busyStarted.resolve();
+					await releaseBusy.promise;
+				}
+				const text = context.messages
+					.flatMap(message =>
+						typeof message.content === "string"
+							? [message.content]
+							: message.content.flatMap(content => (content.type === "text" ? [content.text] : [])),
+					)
+					.join("\n");
+				if (text.includes("BUSY EVENT TWO") && text.includes("BUSY EVENT THREE")) batchObserved.resolve(text);
+				return { content: ["Done"] };
+			},
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			agentId: "Main",
+			ownedAsyncJobManager: manager,
+		});
+		await session.sendUserMessage("initialize then wait");
+
+		const gate = Promise.withResolvers<string>();
+		manager.register("bash", "busy batching job", () => gate.promise, {
+			id: "busy-batch",
+			ownerId: "Main",
+			progressDelivery: "wake",
+		});
+		const job = manager.getJob("busy-batch");
+		if (!job) throw new Error("Expected registered busy batching job");
+		const progressEntry = (text: string, seq: number): AsyncProgressEntry => ({
+			jobId: job.id,
+			text,
+			job,
+			seq,
+			elapsedMs: seq,
+			epoch: 0,
+			delivery: "wake",
+		});
+
+		session.yieldQueue.enqueue(ASYNC_PROGRESS_WAKE_QUEUE_KIND, progressEntry("BUSY EVENT ONE", 1));
+		await busyStarted.promise;
+		session.yieldQueue.enqueue(ASYNC_PROGRESS_WAKE_QUEUE_KIND, progressEntry("BUSY EVENT TWO", 2));
+		session.yieldQueue.enqueue(ASYNC_PROGRESS_WAKE_QUEUE_KIND, progressEntry("BUSY EVENT THREE", 3));
+		gate.resolve("done");
+		await manager.waitForAll();
+		releaseBusy.resolve();
+
+		const batch = await batchObserved.promise;
+		expect(batch.indexOf("BUSY EVENT TWO")).toBeLessThan(batch.indexOf("BUSY EVENT THREE"));
+		expect(mock.calls).toHaveLength(3);
+		expect(manager.getJob(job.id)?.status).toBe("completed");
 	}, 10_000);
 
 	it("drops late progress from a prior session after its job id is reused", async () => {

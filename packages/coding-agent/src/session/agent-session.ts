@@ -1405,20 +1405,14 @@ export class AgentSession {
 				ASYNC_PROGRESS_MESSAGE_TYPE,
 				{
 					skipIdleFlush: true,
-					isStale: entry =>
-						entry.epoch !== this.#asyncDeliveryEpoch ||
-						manager.isDeliverySuppressed(entry.jobId) ||
-						manager.getJob(entry.jobId)?.status !== "running",
+					isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
 					build: buildAsyncProgressBatchMessage,
 				},
 			);
 			this.#unregisterAsyncProgressWakeQueue = this.yieldQueue.register<AsyncProgressEntry>(
 				ASYNC_PROGRESS_WAKE_QUEUE_KIND,
 				{
-					isStale: entry =>
-						entry.epoch !== this.#asyncDeliveryEpoch ||
-						manager.isDeliverySuppressed(entry.jobId) ||
-						manager.getJob(entry.jobId)?.status !== "running",
+					isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
 					build: buildAsyncProgressBatchMessage,
 				},
 			);
