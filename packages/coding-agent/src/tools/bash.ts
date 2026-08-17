@@ -10,6 +10,7 @@ import type {
 import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
+import type { AsyncJobProgressDelivery } from "../async";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -363,7 +364,9 @@ const bashSchemaWithAsync = type({
 	"cwd?": "string",
 	"pty?": "boolean",
 	"async?": type("boolean").describe("run in background"),
-	"progress?": type("boolean").describe("report complete output lines while the background job runs"),
+	"progress?": type("'ambient' | 'wake'").describe(
+		"deliver complete output lines to the agent while the background job runs; wake starts a follow-up turn while idle",
+	),
 });
 
 type BashToolSchema = typeof bashSchemaBase | typeof bashSchemaWithAsync;
@@ -376,7 +379,7 @@ export interface BashToolInput {
 
 	async?: boolean;
 	pty?: boolean;
-	progress?: boolean;
+	progress?: AsyncJobProgressDelivery;
 }
 
 export interface BashToolDetails {
@@ -851,7 +854,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		resolvedEnv?: Record<string, string>;
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
 		forwardUpdates: boolean;
-		progressMode: "disabled" | "lines";
+		progressDelivery?: AsyncJobProgressDelivery;
 	}): ManagedBashJobHandle {
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
@@ -869,8 +872,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			async ({ jobId, signal: runSignal, reportProgress, reportAgentProgress }) => {
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
-				const progressLines =
-					options.progressMode === "lines" ? new BashProgressLines(reportAgentProgress) : undefined;
+				const progressLines = options.progressDelivery ? new BashProgressLines(reportAgentProgress) : undefined;
 				const wallTimeStart = performance.now();
 				try {
 					let result: BashResult;
@@ -924,6 +926,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			},
 			{
 				ownerId: this.session.getAgentId?.() ?? undefined,
+				progressDelivery: options.progressDelivery,
 				onProgress: async text => {
 					latestText = text;
 					if (!forwardUpdates) return;
@@ -1009,7 +1012,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 			async: asyncRequested = false,
 			pty = false,
-			progress = false,
+			progress,
 		}: BashToolInput,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
@@ -1129,7 +1132,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				resolvedEnv,
 				onUpdate,
 				forwardUpdates: false,
-				progressMode: progress ? "lines" : "disabled",
+				progressDelivery: progress,
 			});
 			return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
 				requestedTimeoutSec,
@@ -1168,7 +1171,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				resolvedEnv,
 				onUpdate,
 				forwardUpdates: !startBackgrounded,
-				progressMode: "disabled",
 			});
 			if (startBackgrounded) {
 				return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {

@@ -380,6 +380,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			seq: 1,
 			elapsedMs: 10,
 			epoch: 0,
+			delivery: "ambient",
 		});
 
 		await Promise.resolve();
@@ -402,6 +403,68 @@ describe("AgentSession owner-routed async delivery", () => {
 		gate.resolve("done");
 		await manager.waitForAll();
 	});
+
+	it("pushes wake progress into an idle session before the job completes", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const marker = "WAKE PROGRESS BEFORE COMPLETION";
+		const wakeObserved = Promise.withResolvers<void>();
+		const mock = createMockModel({
+			handler: context => {
+				const sawMarker = context.messages.some(message =>
+					typeof message.content === "string"
+						? message.content.includes(marker)
+						: message.content.some(content => content.type === "text" && content.text.includes(marker)),
+				);
+				if (sawMarker) wakeObserved.resolve();
+				return { content: ["Done"] };
+			},
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			agentId: "Main",
+			ownedAsyncJobManager: manager,
+		});
+
+		await session.sendUserMessage("initialize then wait");
+		expect(mock.calls).toHaveLength(1);
+
+		const gate = Promise.withResolvers<string>();
+		const reporter = Promise.withResolvers<(text: string) => void>();
+		const jobId = manager.register(
+			"bash",
+			"wake progress job",
+			async ({ reportAgentProgress }) => {
+				reporter.resolve(reportAgentProgress);
+				return gate.promise;
+			},
+			{ ownerId: "Main", progressDelivery: "wake" },
+		);
+		const report = await reporter.promise;
+		report(marker);
+
+		await wakeObserved.promise;
+		expect(manager.getJob(jobId)?.status).toBe("running");
+		expect(mock.calls).toHaveLength(2);
+
+		manager.watchJobs([jobId]);
+		gate.resolve("done");
+		await manager.waitForAll();
+	}, 10_000);
 
 	it("drops late progress from a prior session after its job id is reused", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
@@ -439,6 +502,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			seq: 1,
 			elapsedMs: 10,
 			epoch: 0,
+			delivery: "ambient",
 		});
 
 		await session.sendUserMessage("fresh turn");

@@ -13,7 +13,7 @@
 - Send the `omp/<version>` User-Agent on xAI chat (`xai` and `xai-oauth`) unless the request already set its own ([#8840](https://github.com/can1357/oh-my-pi/pull/8840) by [@Jaaneek](https://github.com/Jaaneek)).
 ### Added
 
-- Added opt-in `progress: true` updates for asynchronous Bash jobs, reporting complete output lines to the model while the owning session is active ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
+- Added opt-in ambient or wake progress delivery for asynchronous Bash jobs, with bounded complete-line updates that can push a follow-up turn before the job completes ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
 
 ## [17.3.6] - 2026-08-17
 
