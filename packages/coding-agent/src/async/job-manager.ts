@@ -32,7 +32,7 @@ interface PollEscalationState {
 
 interface AgentProgressState {
 	lastEmitAt: number;
-	pendingText?: string;
+	pendingTexts: string[];
 	seq: number;
 	timer?: NodeJS.Timeout;
 }
@@ -281,6 +281,7 @@ export class AsyncJobManager {
 					this.#scheduleEviction(id);
 					return;
 				}
+				this.#flushAgentProgress(id);
 				job.status = "completed";
 				job.resultText = text;
 				this.#enqueueDelivery(id, text);
@@ -292,6 +293,7 @@ export class AsyncJobManager {
 					return;
 				}
 				const errorText = error instanceof Error ? error.message : String(error);
+				this.#flushAgentProgress(id);
 				job.status = "failed";
 				job.errorText = errorText;
 				this.#enqueueDelivery(id, errorText);
@@ -528,10 +530,10 @@ export class AsyncJobManager {
 			return;
 		let state = this.#progressState.get(job.id);
 		if (!state) {
-			state = { lastEmitAt: 0, seq: 0 };
+			state = { lastEmitAt: 0, pendingTexts: [], seq: 0 };
 			this.#progressState.set(job.id, state);
 		}
-		state.pendingText = text;
+		state.pendingTexts.push(text);
 		const waitMs = state.lastEmitAt + AGENT_PROGRESS_INTERVAL_MS - Date.now();
 		if (waitMs <= 0) {
 			this.#flushAgentProgress(job.id);
@@ -554,13 +556,13 @@ export class AsyncJobManager {
 			this.#clearAgentProgress(jobId);
 			return;
 		}
-		const text = state.pendingText;
-		if (text === undefined) return;
+		if (state.pendingTexts.length === 0) return;
 		const sink = job.ownerId === undefined ? undefined : this.#progressSinks.get(job.ownerId);
 		if (!sink) return;
 		if (job.progressDelivery === "ambient" && sink.state() !== "streaming") return;
 
-		state.pendingText = undefined;
+		const text = state.pendingTexts.join("\n");
+		state.pendingTexts = [];
 		state.lastEmitAt = Date.now();
 		state.seq += 1;
 		try {

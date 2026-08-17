@@ -27,7 +27,52 @@
 | `cwd` | `string` | No | Working directory, resolved against `session.cwd` via `resolveToCwd`. Must exist and be a directory. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
 | `async` | `boolean` | No | Background execution request. Present only when `async.enabled` is true for the session. Returns immediately with a job id instead of waiting; it does not change the effective deadline, including a disabled deadline from `timeout: 0`. |
-| `progress` | `"ambient" \| "wake"` | No | With `async: true`, deliver complete non-empty output lines to the model. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are coalesced to at most one per second. |
+| `progress` | `"ambient" \| "wake"` | No | With `async: true`, deliver complete non-empty output lines to the model. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once per second, with every line in the interval retained in the batch. |
+
+## Agent-facing guidance
+
+When async execution is enabled, the Bash tool description sent to the model includes this instruction:
+
+> `async: true` defers a finite command's result; it does not extend `timeout`. Set `progress: "wake"` when output may require action before the command exits: every complete non-empty line is pushed back by the harness and starts a follow-up turn. Use `progress: "ambient"` only when updates can wait for an already-active turn.
+
+`wake` is a harness push, not a polling hint. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
+
+```text
+The following output events were emitted by a background job. The harness pushed this event and started a follow-up turn so you can inspect the update and act if needed.
+
+### <job-id> (<elapsed>)
+
+<all output events queued for this job>
+```
+
+The tool guidance is part of the Bash tool schema rather than the system-message text. The progress message is a harness-injected `async-progress` message in the model's conversation.
+
+### Capability compared with Claude Code Monitor
+
+This comparison uses the observed Claude Code 2.1.233 Monitor contract. Both implementations provide genuine harness-to-agent push delivery; neither requires the model to poll after arming the command.
+
+| Capability | OMP async Bash progress | Claude Code Monitor |
+| --- | --- | --- |
+| Start operation | `bash` with `async: true` and `progress: "wake"` | Top-level `Monitor` call with `command` or WebSocket URL |
+| Harness push while agent is idle | Yes; starts a follow-up model turn | Yes; each event wakes a follow-up model turn |
+| Events received while agent is busy | Every event is retained and all waiting events are delivered in one next-turn batch | Every event is retained; observed events were dequeued across successive follow-up turns |
+| Command event boundary | Every complete non-empty merged stdout/stderr line | Every stdout line |
+| WebSocket event boundary | Not supported | Every text frame |
+| Command termination | Existing async-job completion/failure delivery is separate from progress | Monitor termination is a separate notification |
+| Non-waking delivery | `progress: "ambient"` injects updates only into an already-active turn | No native ambient mode observed |
+| Native regex, cadence, or stop-on-match controls | None; filtering belongs in the command | None; filtering and polling belong in the monitor command |
+| Persistent session-long monitor | No; lifetime is the async command, with `timeout: 0` available | Optional `persistent: true`, stopped through task control |
+| Attach or retune an existing monitor | No | No |
+
+## Live model behavioral eval
+
+The opt-in eval runs a real authenticated model through the normal `AgentSession` and checks both policy and runtime behavior: the model must select Bash with `async: true` and `progress: "wake"`, the harness must inject `MONITOR_READY` before command completion, and a later assistant message must acknowledge that pushed event without starting a polling command.
+
+```bash
+bun --cwd=packages/coding-agent run eval:async-progress --model <provider/model> --runs 3
+```
+
+Omit `--model` to use the configured default. The command exits non-zero if any run fails and prints the selected Bash arguments plus the individual criteria. It is deliberately opt-in because it uses external credentials, incurs provider cost, and measures stochastic model behavior; deterministic queue, batching, and wake semantics remain covered by the regular test suite.
 
 ## Outputs
 The tool returns a single `text` content block plus optional `details`.
@@ -48,7 +93,7 @@ The tool returns a single `text` content block plus optional `details`.
 - Background progress / completion:
   - delivered through `onUpdate` / async job manager, not the initial return.
   - running updates contain tail text and `details.async.state: "running"` only after the job is considered backgrounded.
-  - with `progress: "wake"`, complete output lines push bounded `async-progress` follow-up turns even while the agent is idle; `progress: "ambient"` uses non-waking step-boundary asides instead. Partial lines are held until completed, including the final unterminated line.
+  - with `progress: "wake"`, complete output lines push `async-progress` follow-up turns even while the agent is idle; `progress: "ambient"` uses non-waking step-boundary asides instead. Lines emitted while the agent is busy are retained and delivered together rather than replaced by the newest line. Partial lines are held until completed, including the final unterminated line.
   - completion/failure updates carry final text and `details.async.state: "completed" | "failed"`. A non-zero exit or timeout is recorded as a failed background job.
 - Failure:
   - cancellation, missing exit status, validation failures, intercepted commands, and client-terminal-bridge timeouts throw `ToolError` / `ToolAbortError`.

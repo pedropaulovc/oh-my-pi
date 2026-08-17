@@ -65,44 +65,36 @@ export type AsyncProgressDetails = {
 	jobs: AsyncProgressJobDetails[];
 };
 
-const ASYNC_PROGRESS_MAX_LINES_PER_JOB = 3;
-const ASYNC_PROGRESS_MAX_CHARS = 4_000;
-
-function capProgressText(text: string, maxChars: number): string {
-	const lines = sanitizeText(text)
-		.split("\n")
-		.filter(line => line.trim().length > 0)
-		.slice(-ASYNC_PROGRESS_MAX_LINES_PER_JOB);
-	const joined = lines.join("\n");
-	if (joined.length <= maxChars) return joined;
-	return joined.slice(-maxChars);
-}
-
-/** Build one bounded aside, keeping only the newest update for each job. */
+/** Build one progress batch, preserving every queued event and grouping events by job. */
 export function buildAsyncProgressBatchMessage(
 	entries: AsyncProgressEntry[],
 ): CustomMessage<AsyncProgressDetails> | null {
 	if (entries.length === 0) return null;
-	const newestByJob = new Map<string, AsyncProgressEntry>();
+	const entriesByJob = new Map<string, AsyncProgressEntry[]>();
 	for (const entry of entries) {
-		const previous = newestByJob.get(entry.jobId);
-		if (!previous || entry.seq >= previous.seq) newestByJob.set(entry.jobId, entry);
+		const queued = entriesByJob.get(entry.jobId);
+		if (queued) {
+			queued.push(entry);
+			continue;
+		}
+		entriesByJob.set(entry.jobId, [entry]);
 	}
 
-	const survivors = Array.from(newestByJob.values());
-	const perJobChars = Math.max(1, Math.floor(ASYNC_PROGRESS_MAX_CHARS / survivors.length));
-	const jobs = survivors.map(entry => ({
-		jobId: entry.jobId,
-		type: entry.job?.type,
-		label: entry.job?.label,
-		elapsedMs: entry.elapsedMs,
-		text: capProgressText(entry.text, perJobChars),
-	}));
+	const jobs = Array.from(entriesByJob.values()).map(jobEntries => {
+		const latest = jobEntries.at(-1)!;
+		return {
+			jobId: latest.jobId,
+			type: latest.job?.type,
+			label: latest.job?.label,
+			elapsedMs: latest.elapsedMs,
+			text: jobEntries.map(entry => sanitizeText(entry.text)).join("\n"),
+		};
+	});
 	return {
 		role: "custom",
 		customType: ASYNC_PROGRESS_MESSAGE_TYPE,
 		content: prompt.render(asyncProgressTemplate, {
-			wake: survivors.some(entry => entry.delivery === "wake"),
+			wake: entries.some(entry => entry.delivery === "wake"),
 			multiple: jobs.length > 1,
 			jobs: jobs.map(job => ({ ...job, elapsed: formatDuration(job.elapsedMs) })),
 		}),

@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added opt-in ambient or wake progress delivery for asynchronous Bash jobs, with bounded complete-line updates that can push a follow-up turn before the job completes ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
+- Added opt-in ambient or wake progress delivery for asynchronous Bash jobs, batching every complete output line without loss and optionally pushing a follow-up turn before the job completes ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
 
 ## [17.3.6] - 2026-08-17
 
