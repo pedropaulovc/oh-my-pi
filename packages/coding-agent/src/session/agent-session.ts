@@ -1378,8 +1378,20 @@ export class AgentSession {
 		// session and for subagents inheriting the process manager alike.
 		if (this.#asyncJobManager && this.#agentId) {
 			const manager = this.#asyncJobManager;
-			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(this.#agentId, (jobId, text, job) =>
-				this.#deliverAsyncJobResult(manager, jobId, text, job),
+			this.#unregisterAsyncProgressQueue = this.yieldQueue.register<AsyncProgressEntry>(
+				ASYNC_PROGRESS_MESSAGE_TYPE,
+				{
+					skipIdleFlush: true,
+					isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
+					build: buildAsyncProgressBatchMessage,
+				},
+			);
+			this.#unregisterAsyncProgressWakeQueue = this.yieldQueue.register<AsyncProgressEntry>(
+				ASYNC_PROGRESS_WAKE_QUEUE_KIND,
+				{
+					isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
+					build: buildAsyncProgressBatchMessage,
+				},
 			);
 			this.yieldQueue.register<AsyncResultEntry>("async-result", {
 				isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
@@ -1389,26 +1401,8 @@ export class AgentSession {
 				state: () => (this.isStreaming ? "streaming" : "idle"),
 				deliver: (jobId, text, job, seq) => this.#deliverAsyncJobProgress(jobId, text, job, seq),
 			});
-			this.#unregisterAsyncProgressQueue = this.yieldQueue.register<AsyncProgressEntry>(
-				ASYNC_PROGRESS_MESSAGE_TYPE,
-				{
-					skipIdleFlush: true,
-					isStale: entry =>
-						entry.epoch !== this.#asyncDeliveryEpoch ||
-						manager.isDeliverySuppressed(entry.jobId) ||
-						manager.getJob(entry.jobId)?.status !== "running",
-					build: buildAsyncProgressBatchMessage,
-				},
-			);
-			this.#unregisterAsyncProgressWakeQueue = this.yieldQueue.register<AsyncProgressEntry>(
-				ASYNC_PROGRESS_WAKE_QUEUE_KIND,
-				{
-					isStale: entry =>
-						entry.epoch !== this.#asyncDeliveryEpoch ||
-						manager.isDeliverySuppressed(entry.jobId) ||
-						manager.getJob(entry.jobId)?.status !== "running",
-					build: buildAsyncProgressBatchMessage,
-				},
+			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(this.#agentId, (jobId, text, job) =>
+				this.#deliverAsyncJobResult(manager, jobId, text, job),
 			);
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {

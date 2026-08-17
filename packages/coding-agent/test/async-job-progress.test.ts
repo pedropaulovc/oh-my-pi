@@ -48,7 +48,7 @@ describe("AsyncJobManager model progress", () => {
 		vi.useRealTimers();
 	});
 
-	test("coalesces to the newest update on a fixed trailing edge", async () => {
+	test("batches every update on a fixed trailing edge without dropping events", async () => {
 		vi.useFakeTimers();
 		const manager = new AsyncJobManager({});
 		const recorder = recordingSink();
@@ -64,14 +64,18 @@ describe("AsyncJobManager model progress", () => {
 		vi.advanceTimersByTime(1_000);
 		expect(recorder.seen).toEqual([
 			{ jobId: job.jobId, text: "first", seq: 1 },
-			{ jobId: job.jobId, text: "newest", seq: 2 },
+			{ jobId: job.jobId, text: "second\nnewest", seq: 2 },
 		]);
 
-		report("stale after completion");
+		report("final before completion");
 		job.release();
 		await manager.waitForAll();
 		vi.advanceTimersByTime(1_000);
-		expect(recorder.seen).toHaveLength(2);
+		expect(recorder.seen).toEqual([
+			{ jobId: job.jobId, text: "first", seq: 1 },
+			{ jobId: job.jobId, text: "second\nnewest", seq: 2 },
+			{ jobId: job.jobId, text: "final before completion", seq: 3 },
+		]);
 	});
 
 	test("respects wait/ack suppression and routes only to the owning active session", async () => {
@@ -87,7 +91,7 @@ describe("AsyncJobManager model progress", () => {
 		expect(mine.seen).toEqual([]);
 		mine.setActive(true);
 		report("active");
-		expect(mine.seen.map(item => item.text)).toEqual(["active"]);
+		expect(mine.seen.map(item => item.text)).toEqual(["idle\nactive"]);
 		expect(other.seen).toEqual([]);
 
 		manager.watchJobs([job.jobId]);
@@ -114,6 +118,46 @@ describe("AsyncJobManager model progress", () => {
 
 		job.release();
 		await manager.waitForAll();
+	});
+
+	test("waits for asynchronous final progress delivery before delivering completion", async () => {
+		const start = Promise.withResolvers<void>();
+		const progressStarted = Promise.withResolvers<void>();
+		const releaseProgress = Promise.withResolvers<void>();
+		const order: string[] = [];
+		const manager = new AsyncJobManager({});
+		manager.registerProgressSink("Main", {
+			state: () => "idle",
+			deliver: async () => {
+				order.push("progress:start");
+				progressStarted.resolve();
+				await releaseProgress.promise;
+				order.push("progress:end");
+			},
+		});
+		manager.registerDeliverySink("Main", () => {
+			order.push("completion");
+		});
+		const jobId = manager.register(
+			"bash",
+			"ordered",
+			async ({ reportAgentProgress }) => {
+				await start.promise;
+				reportAgentProgress("final progress");
+				return "done";
+			},
+			{ ownerId: "Main", progressDelivery: "wake" },
+		);
+
+		start.resolve();
+		await progressStarted.promise;
+		expect(manager.getJob(jobId)?.status).toBe("running");
+		expect(order).toEqual(["progress:start"]);
+
+		releaseProgress.resolve();
+		await manager.waitForAll();
+		await manager.drainDeliveries({ timeoutMs: 2_000 });
+		expect(order).toEqual(["progress:start", "progress:end", "completion"]);
 	});
 
 	test("sink failures are best-effort and do not block completion", async () => {
