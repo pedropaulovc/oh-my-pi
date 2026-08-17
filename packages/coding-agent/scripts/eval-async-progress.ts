@@ -30,6 +30,7 @@ interface EvalCriteria {
 	selectedWake: boolean;
 	singleBashCall: boolean;
 	notificationDelivered: boolean;
+	completionObserved: boolean;
 	notificationBeforeCompletion: boolean;
 	acknowledgedAfterNotification: boolean;
 }
@@ -108,7 +109,8 @@ function scoreMessages(messages: AgentMessage[], bashCalls: BashCall[]): EvalCri
 		selectedWake: bashCalls.some(call => call.async === true && call.progress === "wake"),
 		singleBashCall: bashCalls.length === 1,
 		notificationDelivered: progressIndex >= 0,
-		notificationBeforeCompletion: progressIndex >= 0 && (completionIndex < 0 || progressIndex < completionIndex),
+		completionObserved: completionIndex >= 0,
+		notificationBeforeCompletion: progressIndex >= 0 && completionIndex >= 0 && progressIndex < completionIndex,
 		acknowledgedAfterNotification: progressIndex >= 0 && acknowledgementIndex > progressIndex,
 	};
 }
