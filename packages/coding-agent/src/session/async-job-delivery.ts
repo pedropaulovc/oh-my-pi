@@ -9,7 +9,7 @@
  * every completion — regardless of owner — into the first top-level session.
  */
 import { formatDuration, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
-import type { AsyncJob, AsyncJobType } from "../async";
+import type { AsyncJob, AsyncJobProgressDelivery, AsyncJobType } from "../async";
 import asyncProgressTemplate from "../prompts/tools/async-progress.md" with { type: "text" };
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
@@ -21,6 +21,8 @@ import type { CustomMessage } from "./messages";
  */
 export const ASYNC_RESULT_MESSAGE_TYPE = "async-result";
 export const ASYNC_PROGRESS_MESSAGE_TYPE = "async-progress";
+/** Separate queue kind whose idle flush starts a follow-up turn. Messages retain the shared progress custom type. */
+export const ASYNC_PROGRESS_WAKE_QUEUE_KIND = "async-progress-wake";
 
 /** Result payloads longer than this spill to an artifact with an inline preview. */
 export const ASYNC_INLINE_RESULT_MAX_CHARS = 12_000;
@@ -48,6 +50,7 @@ export interface AsyncProgressEntry {
 	seq: number;
 	elapsedMs: number;
 	epoch: number;
+	delivery: AsyncJobProgressDelivery;
 }
 
 type AsyncProgressJobDetails = {
@@ -99,6 +102,7 @@ export function buildAsyncProgressBatchMessage(
 		role: "custom",
 		customType: ASYNC_PROGRESS_MESSAGE_TYPE,
 		content: prompt.render(asyncProgressTemplate, {
+			wake: survivors.some(entry => entry.delivery === "wake"),
 			multiple: jobs.length > 1,
 			jobs: jobs.map(job => ({ ...job, elapsed: formatDuration(job.elapsedMs) })),
 		}),

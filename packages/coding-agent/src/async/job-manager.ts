@@ -71,7 +71,11 @@ export interface AsyncJob {
 	 * until the caller invokes `markRunning()` from the run context.
 	 */
 	queued?: boolean;
+	/** How intentional progress reaches the owning agent; undefined keeps the channel off. */
+	progressDelivery?: AsyncJobProgressDelivery;
 }
+
+export type AsyncJobProgressDelivery = "ambient" | "wake";
 
 /** Delivery callback for a settled job's result text. */
 export type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
@@ -79,7 +83,7 @@ export type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob)
 /** Best-effort owner-routed delivery for progress from a still-running job. */
 export interface AsyncJobProgressSink {
 	deliver(jobId: string, text: string, job: AsyncJob, seq: number): void | Promise<void>;
-	/** Ambient progress is useful only while the owning session is actively streaming. */
+	/** Ambient progress is useful only while the owning session is actively streaming; wake progress also delivers idle. */
 	state(): "idle" | "streaming";
 }
 
@@ -129,6 +133,8 @@ export interface AsyncJobRegisterOptions {
 	onProgress?: (text: string, details?: Record<string, unknown>) => void | Promise<void>;
 	/** Register the job in queued state; see {@link AsyncJob.queued}. */
 	queued?: boolean;
+	/** Opt into model-facing progress and choose whether it wakes an idle agent. */
+	progressDelivery?: AsyncJobProgressDelivery;
 }
 
 /**
@@ -247,6 +253,7 @@ export class AsyncJobManager {
 			ownerId: options?.ownerId,
 			agentId: options?.agentId,
 			queued: options?.queued === true,
+			progressDelivery: options?.progressDelivery,
 		};
 
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
@@ -515,7 +522,13 @@ export class AsyncJobManager {
 	}
 
 	#recordAgentProgress(job: AsyncJob, text: string): void {
-		if (this.#disposed || job.status !== "running" || this.isDeliverySuppressed(job.id)) return;
+		if (
+			this.#disposed ||
+			job.status !== "running" ||
+			job.progressDelivery === undefined ||
+			this.isDeliverySuppressed(job.id)
+		)
+			return;
 		let state = this.#progressState.get(job.id);
 		if (!state) {
 			state = { lastEmitAt: 0, seq: 0 };
@@ -547,7 +560,8 @@ export class AsyncJobManager {
 		const text = state.pendingText;
 		if (text === undefined) return;
 		const sink = job.ownerId === undefined ? undefined : this.#progressSinks.get(job.ownerId);
-		if (sink?.state() !== "streaming") return;
+		if (!sink) return;
+		if (job.progressDelivery === "ambient" && sink.state() !== "streaming") return;
 
 		state.pendingText = undefined;
 		state.lastEmitAt = Date.now();

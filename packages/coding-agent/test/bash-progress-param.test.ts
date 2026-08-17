@@ -63,13 +63,13 @@ describe("bash progress parameter", () => {
 		await tool.execute("complete-lines", {
 			command: "printf par; sleep 0.1; printf 'tial\\n\\n'",
 			async: true,
-			progress: true,
+			progress: "wake",
 		});
 		await manager.waitForAll();
 		await tool.execute("final-partial", {
 			command: "printf final",
 			async: true,
-			progress: true,
+			progress: "wake",
 		});
 		await manager.waitForAll();
 
@@ -84,7 +84,7 @@ describe("bash progress parameter", () => {
 		await tool.execute("bounded-line", {
 			command: "printf '%05000d' 0",
 			async: true,
-			progress: true,
+			progress: "wake",
 		});
 		await manager.waitForAll();
 
@@ -97,7 +97,7 @@ describe("bash progress parameter", () => {
 		const manager = new AsyncJobManager({});
 		const tool = new BashTool(makeSession(manager));
 
-		await expect(tool.execute("foreground", { command: "echo no", progress: true })).rejects.toThrow(
+		await expect(tool.execute("foreground", { command: "echo no", progress: "wake" })).rejects.toThrow(
 			/requires `async: true`/,
 		);
 	});
