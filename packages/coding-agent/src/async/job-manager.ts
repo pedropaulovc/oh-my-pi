@@ -5,6 +5,7 @@ const DELIVERY_RETRY_MAX_MS = 30_000;
 const DELIVERY_RETRY_JITTER_MS = 200;
 const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RUNNING_JOBS = 15;
+const AGENT_PROGRESS_INTERVAL_MS = 1_000;
 /** Abort reason used only when the owning session shuts down the entire manager. */
 export const ASYNC_JOB_MANAGER_SHUTDOWN_REASON = Symbol("AsyncJobManager shutdown");
 
@@ -31,6 +32,13 @@ interface PollEscalationState {
 
 /** Kind of work a managed job runs; drives job-row badges and delivery labels. */
 export type AsyncJobType = "bash" | "task" | "eval";
+
+interface AgentProgressState {
+	lastEmitAt: number;
+	pendingText?: string;
+	seq: number;
+	timer?: NodeJS.Timeout;
+}
 
 export interface AsyncJob {
 	id: string;
@@ -67,6 +75,13 @@ export interface AsyncJob {
 
 /** Delivery callback for a settled job's result text. */
 export type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
+
+/** Best-effort owner-routed delivery for progress from a still-running job. */
+export interface AsyncJobProgressSink {
+	deliver(jobId: string, text: string, job: AsyncJob, seq: number): void | Promise<void>;
+	/** Ambient progress is useful only while the owning session is actively streaming. */
+	state(): "idle" | "streaming";
+}
 
 export interface AsyncJobManagerOptions {
 	/**
@@ -151,6 +166,8 @@ export class AsyncJobManager {
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
 	readonly #deliverySinks = new Map<string, AsyncJobDeliverySink>();
+	readonly #progressSinks = new Map<string, AsyncJobProgressSink>();
+	readonly #progressState = new Map<string, AgentProgressState>();
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
@@ -192,6 +209,8 @@ export class AsyncJobManager {
 			jobId: string;
 			signal: AbortSignal;
 			reportProgress: (text: string, details?: Record<string, unknown>) => Promise<void>;
+			/** Report intentional progress to the owning model, separately from TUI updates. */
+			reportAgentProgress: (text: string) => void;
 			/** Clear the queued flag once the job actually starts executing. */
 			markRunning: () => void;
 		}) => Promise<string>,
@@ -248,6 +267,7 @@ export class AsyncJobManager {
 					jobId: id,
 					signal: abortController.signal,
 					reportProgress,
+					reportAgentProgress: text => this.#recordAgentProgress(job, text),
 					markRunning: () => {
 						job.queued = false;
 					},
@@ -338,6 +358,7 @@ export class AsyncJobManager {
 		const uniqueJobIds = Array.from(new Set(jobIds.map(id => id.trim()).filter(id => id.length > 0)));
 		for (const jobId of uniqueJobIds) {
 			this.#watchedJobs.add(jobId);
+			this.#clearAgentProgress(jobId);
 		}
 		this.#notifyDeliveryQueueChanged();
 		return uniqueJobIds.length;
@@ -386,6 +407,7 @@ export class AsyncJobManager {
 
 		for (const jobId of uniqueJobIds) {
 			this.#suppressedDeliveries.add(jobId);
+			this.#clearAgentProgress(jobId);
 		}
 
 		const before = this.#deliveries.length;
@@ -479,6 +501,87 @@ export class AsyncJobManager {
 		return () => {
 			if (this.#deliverySinks.get(ownerId) === sink) this.#deliverySinks.delete(ownerId);
 		};
+	}
+
+	/**
+	 * Route progress for jobs owned by `ownerId`. The newest registration wins,
+	 * matching completion delivery ownership.
+	 */
+	registerProgressSink(ownerId: string, sink: AsyncJobProgressSink): () => void {
+		this.#progressSinks.set(ownerId, sink);
+		return () => {
+			if (this.#progressSinks.get(ownerId) === sink) this.#progressSinks.delete(ownerId);
+		};
+	}
+
+	#recordAgentProgress(job: AsyncJob, text: string): void {
+		if (this.#disposed || job.status !== "running" || this.isDeliverySuppressed(job.id)) return;
+		let state = this.#progressState.get(job.id);
+		if (!state) {
+			state = { lastEmitAt: 0, seq: 0 };
+			this.#progressState.set(job.id, state);
+		}
+		state.pendingText = text;
+		const waitMs = state.lastEmitAt + AGENT_PROGRESS_INTERVAL_MS - Date.now();
+		if (waitMs <= 0) {
+			this.#flushAgentProgress(job.id);
+			return;
+		}
+		if (state.timer) return;
+		state.timer = setTimeout(() => this.#flushAgentProgress(job.id), waitMs);
+		state.timer.unref();
+	}
+
+	#flushAgentProgress(jobId: string): void {
+		const state = this.#progressState.get(jobId);
+		if (!state) return;
+		if (state.timer) {
+			clearTimeout(state.timer);
+			state.timer = undefined;
+		}
+		const job = this.#jobs.get(jobId);
+		if (job?.status !== "running" || this.isDeliverySuppressed(jobId)) {
+			this.#clearAgentProgress(jobId);
+			return;
+		}
+		const text = state.pendingText;
+		if (text === undefined) return;
+		const sink = job.ownerId === undefined ? undefined : this.#progressSinks.get(job.ownerId);
+		if (sink?.state() !== "streaming") return;
+
+		state.pendingText = undefined;
+		state.lastEmitAt = Date.now();
+		state.seq += 1;
+		try {
+			const delivery = sink.deliver(jobId, text, job, state.seq);
+			if (delivery) {
+				delivery.catch(error => {
+					logger.warn("Async job progress delivery failed", {
+						jobId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+			}
+		} catch (error) {
+			logger.warn("Async job progress delivery failed", {
+				jobId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	#clearAgentProgress(jobId: string): void {
+		const state = this.#progressState.get(jobId);
+		if (!state) return;
+		if (state.timer) clearTimeout(state.timer);
+		this.#progressState.delete(jobId);
+	}
+
+	#clearAllAgentProgress(): void {
+		for (const state of this.#progressState.values()) {
+			if (state.timer) clearTimeout(state.timer);
+		}
+		this.#progressState.clear();
 	}
 
 	/**
@@ -615,6 +718,8 @@ export class AsyncJobManager {
 		this.#watchedJobs.clear();
 		this.#pollEscalation.clear();
 		this.#deliverySinks.clear();
+		this.#progressSinks.clear();
+		this.#clearAllAgentProgress();
 		return jobsSettled && drained;
 	}
 
@@ -648,10 +753,12 @@ export class AsyncJobManager {
 		this.#evictionTimers.delete(jobId);
 		this.#suppressedDeliveries.delete(jobId);
 		this.#watchedJobs.delete(jobId);
+		this.#clearAgentProgress(jobId);
 		return this.#jobs.delete(jobId);
 	}
 
 	#scheduleEviction(jobId: string): void {
+		this.#clearAgentProgress(jobId);
 		if (this.#disposed) return;
 		if (this.#retentionMs <= 0) {
 			this.#evictJob(jobId);
