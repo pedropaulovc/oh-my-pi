@@ -37,25 +37,24 @@ beforeAll(async () => {
 });
 
 describe("async progress messages", () => {
-	test("keeps the latest sequence and applies shared line/character caps", () => {
+	test("preserves every queued event while batching updates by job", () => {
+		const longEvent = "x".repeat(5_000);
 		const message = buildAsyncProgressBatchMessage([
-			entry("bg_1", "stale", 1),
-			entry("bg_1", `discarded\nline2\nline3\n${"x".repeat(5_000)}`, 2),
+			entry("bg_1", "first", 1),
+			entry("bg_1", `second\n${longEvent}`, 2),
 			entry("bg_2", "important", 1),
 		]);
 		const jobs = message?.details?.jobs ?? [];
 
 		expect(message?.customType).toBe(ASYNC_PROGRESS_MESSAGE_TYPE);
 		expect(jobs).toHaveLength(2);
-		expect(jobs.reduce((total, item) => total + item.text.length, 0)).toBeLessThanOrEqual(4_000);
-		expect(jobs[0]?.text.split("\n").length).toBeLessThanOrEqual(3);
-		expect(content(message)).not.toContain("stale");
+		expect(jobs[0]?.text).toBe(`first\nsecond\n${longEvent}`);
+		expect(content(message)).toContain("first");
+		expect(content(message)).toContain("second");
+		expect(content(message)).toContain(longEvent);
 		expect(content(message)).toContain("important");
-		expect(content(message)).toContain("STILL RUNNING");
+		expect(content(message)).toContain("output events were emitted");
 		expect(content(message)).toContain("no action is required");
-
-		const lineCapped = buildAsyncProgressBatchMessage([entry("bg_3", "one\ntwo\nthree\nfour")]);
-		expect(lineCapped?.details?.jobs[0]?.text).toBe("two\nthree\nfour");
 	});
 
 	test("renders the custom message as sanitized progress rather than a completion", () => {
