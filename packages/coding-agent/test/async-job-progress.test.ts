@@ -120,6 +120,46 @@ describe("AsyncJobManager model progress", () => {
 		await manager.waitForAll();
 	});
 
+	test("waits for asynchronous final progress delivery before delivering completion", async () => {
+		const start = Promise.withResolvers<void>();
+		const progressStarted = Promise.withResolvers<void>();
+		const releaseProgress = Promise.withResolvers<void>();
+		const order: string[] = [];
+		const manager = new AsyncJobManager({});
+		manager.registerProgressSink("Main", {
+			state: () => "idle",
+			deliver: async () => {
+				order.push("progress:start");
+				progressStarted.resolve();
+				await releaseProgress.promise;
+				order.push("progress:end");
+			},
+		});
+		manager.registerDeliverySink("Main", () => {
+			order.push("completion");
+		});
+		const jobId = manager.register(
+			"bash",
+			"ordered",
+			async ({ reportAgentProgress }) => {
+				await start.promise;
+				reportAgentProgress("final progress");
+				return "done";
+			},
+			{ ownerId: "Main", progressDelivery: "wake" },
+		);
+
+		start.resolve();
+		await progressStarted.promise;
+		expect(manager.getJob(jobId)?.status).toBe("running");
+		expect(order).toEqual(["progress:start"]);
+
+		releaseProgress.resolve();
+		await manager.waitForAll();
+		await manager.drainDeliveries({ timeoutMs: 2_000 });
+		expect(order).toEqual(["progress:start", "progress:end", "completion"]);
+	});
+
 	test("sink failures are best-effort and do not block completion", async () => {
 		const completions: string[] = [];
 		const manager = new AsyncJobManager({});
