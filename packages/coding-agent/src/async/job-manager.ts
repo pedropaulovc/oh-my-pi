@@ -34,6 +34,7 @@ interface AgentProgressState {
 	lastEmitAt: number;
 	pendingTexts: string[];
 	seq: number;
+	deliveryTail?: Promise<void>;
 	timer?: NodeJS.Timeout;
 }
 
@@ -281,7 +282,7 @@ export class AsyncJobManager {
 					this.#scheduleEviction(id);
 					return;
 				}
-				this.#flushAgentProgress(id);
+				await this.#flushAgentProgress(id);
 				job.status = "completed";
 				job.resultText = text;
 				this.#enqueueDelivery(id, text);
@@ -293,7 +294,7 @@ export class AsyncJobManager {
 					return;
 				}
 				const errorText = error instanceof Error ? error.message : String(error);
-				this.#flushAgentProgress(id);
+				await this.#flushAgentProgress(id);
 				job.status = "failed";
 				job.errorText = errorText;
 				this.#enqueueDelivery(id, errorText);
@@ -536,51 +537,55 @@ export class AsyncJobManager {
 		state.pendingTexts.push(text);
 		const waitMs = state.lastEmitAt + AGENT_PROGRESS_INTERVAL_MS - Date.now();
 		if (waitMs <= 0) {
-			this.#flushAgentProgress(job.id);
+			void this.#flushAgentProgress(job.id);
 			return;
 		}
 		if (state.timer) return;
-		state.timer = setTimeout(() => this.#flushAgentProgress(job.id), waitMs);
+		state.timer = setTimeout(() => void this.#flushAgentProgress(job.id), waitMs);
 		state.timer.unref();
 	}
 
-	#flushAgentProgress(jobId: string): void {
+	#flushAgentProgress(jobId: string): Promise<void> {
 		const state = this.#progressState.get(jobId);
-		if (!state) return;
+		if (!state) return Promise.resolve();
 		if (state.timer) {
 			clearTimeout(state.timer);
 			state.timer = undefined;
 		}
 		const job = this.#jobs.get(jobId);
 		if (job?.status !== "running" || this.isDeliverySuppressed(jobId)) {
+			const deliveryTail = state.deliveryTail ?? Promise.resolve();
 			this.#clearAgentProgress(jobId);
-			return;
+			return deliveryTail;
 		}
-		if (state.pendingTexts.length === 0) return;
+		if (state.pendingTexts.length === 0) return state.deliveryTail ?? Promise.resolve();
 		const sink = job.ownerId === undefined ? undefined : this.#progressSinks.get(job.ownerId);
-		if (!sink) return;
-		if (job.progressDelivery === "ambient" && sink.state() !== "streaming") return;
+		if (!sink) return state.deliveryTail ?? Promise.resolve();
+		if (job.progressDelivery === "ambient" && sink.state() !== "streaming") {
+			return state.deliveryTail ?? Promise.resolve();
+		}
 
 		const text = state.pendingTexts.join("\n");
 		state.pendingTexts = [];
 		state.lastEmitAt = Date.now();
 		state.seq += 1;
-		try {
-			const delivery = sink.deliver(jobId, text, job, state.seq);
-			if (delivery) {
-				delivery.catch(error => {
-					logger.warn("Async job progress delivery failed", {
-						jobId,
-						error: error instanceof Error ? error.message : String(error),
-					});
+		const seq = state.seq;
+		const deliver = async () => {
+			try {
+				await sink.deliver(jobId, text, job, seq);
+			} catch (error) {
+				logger.warn("Async job progress delivery failed", {
+					jobId,
+					error: error instanceof Error ? error.message : String(error),
 				});
 			}
-		} catch (error) {
-			logger.warn("Async job progress delivery failed", {
-				jobId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+		};
+		const tail = state.deliveryTail ? state.deliveryTail.then(deliver) : deliver();
+		state.deliveryTail = tail;
+		void tail.then(() => {
+			if (state.deliveryTail === tail) state.deliveryTail = undefined;
+		});
+		return tail;
 	}
 
 	#clearAgentProgress(jobId: string): void {
