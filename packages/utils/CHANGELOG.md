@@ -7,6 +7,9 @@
 ### Added
 
 - Exported `BINARY_SNIFF_BYTES`, the header window `isProbablyBinary` sniffs, so a caller holding the whole file in memory can classify the identical prefix through `isProbablyBinaryHeader` instead of reopening the file.
+### Fixed
+
+- Fixed Windows shell resolution to use the caller-provided `PATH`, preventing host executables from leaking into isolated discovery and tests.
 
 ## [17.3.5] - 2026-08-16
 
