@@ -318,7 +318,10 @@ describe.skipIf(!hasPtyHarness)("interactive startup changelog PTY smoke", () =>
 						stderr: "pipe",
 						env: {
 							...process.env,
+							BUN_ENV: "development",
 							HOME: root,
+							NODE_ENV: "development",
+							PI_TEST_RUNTIME: "0",
 							XDG_CONFIG_HOME: path.join(root, "xdg-config"),
 							XDG_STATE_HOME: path.join(root, "xdg-state"),
 							XDG_DATA_HOME: path.join(root, "xdg-data"),
