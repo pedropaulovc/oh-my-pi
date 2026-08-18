@@ -160,10 +160,11 @@ export function resolveWindowsShell(env: Record<string, string | undefined> = Bu
 		if (fs.existsSync(candidate)) return candidate;
 	}
 
-	const bashOnPath = $which("bash.exe");
+	const pathOptions = { PATH: env.PATH ?? "" };
+	const bashOnPath = $which("bash.exe", pathOptions);
 	if (bashOnPath) return bashOnPath;
 
-	const shOnPath = $which("sh.exe");
+	const shOnPath = $which("sh.exe", pathOptions);
 	if (shOnPath) {
 		const siblingBash = path.join(path.dirname(shOnPath), "bash.exe");
 		return fs.existsSync(siblingBash) ? siblingBash : shOnPath;
