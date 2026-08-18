@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Windows shell resolution to use the caller-provided `PATH`, preventing host executables from leaking into isolated discovery and tests.
+
 ## [17.3.5] - 2026-08-16
 
 ### Fixed
