@@ -50,7 +50,7 @@ When either async Bash or Hub process monitoring is available, the system prompt
 
 ```text
 <async-progress>
-Finite commands of uncertain duration → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline).
+Finite commands → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline). NEVER use `async: true` unless the user explicitly requests immediate background.
 Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).
 NEVER call `hub wait`, follow logs, or block to receive progress or keep the turn alive; use async progress and end the turn instead.
 </async-progress>

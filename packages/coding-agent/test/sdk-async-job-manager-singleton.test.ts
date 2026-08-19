@@ -104,7 +104,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			expect(progressIndex).toBeLessThan(workflowIndex);
 			expect(systemPrompt).toContain("<async-progress>");
 			expect(systemPrompt).toContain(
-				'Finite commands of uncertain duration → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline).',
+				'Finite commands → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline). NEVER use `async: true` unless the user explicitly requests immediate background.',
 			);
 			expect(systemPrompt).toContain(
 				'Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).',
