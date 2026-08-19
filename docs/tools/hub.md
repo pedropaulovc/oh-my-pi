@@ -15,7 +15,8 @@ Merged from the former `irc`, `job`, and `launch` tools; each op family keeps it
   - `packages/coding-agent/src/irc/bus.ts` — process-global `IrcBus`: per-agent mailboxes, delivery, waiter matching.
   - `packages/coding-agent/src/registry/agent-registry.ts` — process-global agent directory and status.
   - `packages/coding-agent/src/registry/agent-lifecycle.ts` — revival of parked recipients on direct send.
-  - `packages/coding-agent/src/session/agent-session.ts` — `deliverIrcMessage(...)`: recipient-side injection and wake turns.
+  - `packages/coding-agent/src/session/agent-session.ts` — recipient-side message, progress, and completion injection and wake turns.
+  - `packages/coding-agent/src/session/async-job-delivery.ts` — shared lossless progress batching and model-facing progress messages.
   - `packages/coding-agent/src/async/job-manager.ts` — job registry, cancellation, delivery suppression, smart poll ladder.
   - `packages/coding-agent/src/launch/client.ts` / `broker.ts` / `presence.ts` / `protocol.ts` — process-supervision broker.
   - `packages/coding-agent/src/config/settings-schema.ts` — `irc.timeoutMs`, `async.pollWaitDuration`, `launch.enabled`.
@@ -24,7 +25,7 @@ Merged from the former `irc`, `job`, and `launch` tools; each op family keeps it
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `op` | `"send" \| "wait" \| "inbox" \| "list" \| "jobs" \| "cancel" \| "start" \| "ps" \| "logs" \| "stop" \| "restart" \| "describe"` | Yes | Operation. |
+| `op` | `"send" \| "wait" \| "inbox" \| "list" \| "jobs" \| "cancel" \| "start" \| "ps" \| "logs" \| "stop" \| "restart" \| "describe" \| "monitor"` | Yes | Operation. |
 | `to` | `string` | `send` (peer) | Recipient agent id, or `"all"` for broadcast. Mutually exclusive with `name`. |
 | `message` | `string` | `send` (peer) | Message body. Empty-after-trim is rejected. |
 | `replyTo` | `string` | No | `send`: message id being answered. |
@@ -35,6 +36,7 @@ Merged from the former `irc`, `job`, and `launch` tools; each op family keeps it
 | `peek` | `boolean` | No | `inbox`: leave messages in the process-global bus mailbox. Note that messages already buffered on the live recipient session are still drained into this result by the current implementation. |
 | `name` | `string` | process ops | Stable project-scoped launch name (1-48 chars). On `send`/`wait` it routes the op to the process broker. |
 | `application`, `args`, `env`, `cwd`, `pty`, `ready`, `restart`, `persist`, `detached` | — | `start` | Launch spec, unchanged from the former `launch` tool. |
+| `progress` | `"wake" \| "ambient" \| "off"` | No | `start`: attach live progress with `wake` or `ambient`; default off. `monitor`: attach or retune with `wake`/`ambient`, or detach with `off`. |
 | `lines`, `head`, `grep`, `follow`, `cursor` | — | `logs` | Log window controls, unchanged. |
 | `for`, `pattern` | — | `wait` (name) | Process lifecycle condition / output regex. |
 | `text`, `enter`, `keys`, `signal` | — | `send` (name) | Process stdin / terminal keys / signal. |
@@ -43,7 +45,7 @@ Merged from the former `irc`, `job`, and `launch` tools; each op family keeps it
 ## Op families and dispatch
 - **Messaging** — `send` (with `to`), `inbox`, `list`, and `wait` with `from`. Fire-and-forget sends return delivery receipts (`injected`/`woken`/`revived`/`failed`); direct sends can revive parked agents, while broadcasts target visible live peers without reviving every parked agent. `await: true` waits for one reply after delivery. A busy recipient with async execution disabled may auto-reply rather than strand an awaiting sender.
 - **Jobs** — `wait` (bare or with `ids`), `cancel`, `jobs`. Owner-scoped visibility, watch/unwatch delivery suppression, `acknowledgeDeliveries` on returned completions, 500 ms `onUpdate` snapshots while waiting, and the `async.pollWaitDuration` fixed/smart wait window. `jobs` is the former job-list snapshot plus the roster of running subagents with no running job entry.
-- **Processes** — `start`, `ps`, `logs`, `stop`, `restart`, `describe`, plus `send`/`wait` when they carry `name`. Exact behavior of the former `launch` tool; `ps` is the broker's `list`. See the launch sections below.
+- **Processes** — `start`, `ps`, `logs`, `stop`, `restart`, `describe`, `monitor`, plus `send`/`wait` when they carry `name`. `monitor` controls the calling session's live-output subscription; `ps` is the broker's `list`. See the launch sections below.
 
 `send` with both `to` and `name` is rejected as ambiguous. `wait` routes by target: `name` → process wait; otherwise the unified coordination wait.
 
@@ -65,8 +67,8 @@ Smart-ladder bookkeeping (`recordPollWaitEnd`) runs only when the smart window w
 
 ## Outputs
 - Messaging and job results: single text block plus `details: CoordinationDetails` — `{ op, from?, to?, receipts?, waited?, inbox?, peers?, jobs?, cancelled?, agents? }`. Shapes are unchanged from the former tools except that job-op details now carry `op` (`"wait" | "cancel" | "jobs"`).
-- Process results: `details: LaunchToolDetails` — `{ op, daemon?, daemons?, cursor?, timedOut?, state?, terminalRows?, matched?, spec? }`, unchanged from the former `launch` tool (internally `ps` stores the broker op `list`).
-- Streaming: job-watching waits emit `onUpdate` every 500 ms with fresh snapshots; everything else is single-shot.
+- Process results: `details: LaunchToolDetails` — `{ op, daemon?, daemons?, cursor?, timedOut?, state?, terminalRows?, matched?, spec? }` (internally `ps` stores the broker op `list`).
+- Streaming: job-watching waits emit `onUpdate` every 500 ms with fresh snapshots. Process progress is delivered later as harness-injected progress messages, not as `onUpdate` output from the `start` or `monitor` call.
 
 ## Availability
 - The tool is always registered (`loadMode: "essential"`).
@@ -75,7 +77,7 @@ Smart-ladder bookkeeping (`recordPollWaitEnd`) runs only when the smart window w
 - Process ops require `launch.enabled`; otherwise `Process supervision is disabled (launch.enabled=false).`
 
 ## Approval
-`hubApproval` (per-call): `start`, `stop`, `restart`, and `send`-to-process are `exec`; everything else — messaging, job control, `ps`/`logs`/`describe`/`wait` — is `read`.
+`hubApproval` (per-call): `start`, `stop`, `restart`, and `send`-to-process are `exec`; everything else — messaging, job control, `ps`/`logs`/`describe`/`wait`/`monitor` — is `read`.
 
 ## Starting and readiness (processes)
 `application` and `args` are separate fields, so callers do not need shell quoting:
@@ -86,13 +88,30 @@ Smart-ladder bookkeeping (`recordPollWaitEnd`) runs only when the smart window w
   "name": "web",
   "application": "bun",
   "args": ["run", "dev"],
-  "ready": { "log": "Local:.*http", "port": 5173, "timeout": 30 }
+  "ready": { "log": "Local:.*http", "port": 5173, "timeout": 30 },
+  "progress": "wake"
 }
 ```
 
 Defaults: `cwd` = session directory, `args: []`, `env: {}`, `pty: true`, `restart: "no"`, `persist: false`, `detached: false`, readiness timeout 30 s. `detached: true` implies `persist`, forces `pty: false`, and disables stdin. `ready.log` is a regex over captured output; `ready.port` probes TCP at `ready.host` (default `127.0.0.1`); when both are present, both must pass. A readiness timeout leaves the process running and reports its state.
 
 Names are stable and unique within one project directory. A live name must be stopped or restarted; starting a completed name creates a new launch and rotates its prior output log.
+
+## Push monitoring (processes)
+
+`progress: "wake"` on `start` subscribes the calling agent session to future process output. `progress: "ambient"` uses the same capture path without starting a turn. Monitoring is opt-in and defaults off.
+
+```json
+{"op":"monitor","name":"web","progress":"wake"}
+{"op":"monitor","name":"web","progress":"ambient"}
+{"op":"monitor","name":"web","progress":"off"}
+```
+
+`monitor` attaches to, retunes, or detaches the calling session's subscription for an already-running named process. It begins at the current output cursor and does not replay older logs. Each complete non-empty merged stdout/stderr line is retained. Delivery is batched at most once per second; if output arrives while the model is busy, all waiting lines are delivered together in the next batch. A final unterminated line is flushed when the process exits.
+
+Wake progress starts a follow-up model turn when the agent is idle. Ambient progress is delivered only at an already-active step boundary and never wakes an idle agent. Process termination is a separate completion notification, ordered after any final progress batch.
+
+Monitoring does not alter the daemon's lifecycle. `persist` controls whether the process survives the last omp client exiting; `detached` controls whether it survives broker shutdown. Detaching a monitor does not stop the process, and stopping the process does not require detaching first. Session disposal removes its subscriptions without stopping otherwise-surviving processes. Fully detached daemons cannot use live monitoring because no broker connection remains to deliver events.
 
 ## Logs, input, signals (processes)
 ```json
@@ -104,7 +123,7 @@ Names are stable and unique within one project directory. A live name must be st
 Each logs result returns a byte cursor; `follow: true` waits until output advances beyond it, the process exits, or the timeout elapses. The broker keeps a 25 MiB current log plus one rotated log. Keys: `ENTER`, `TAB`, `ESCAPE`, `CTRL_C`, `CTRL_D`, arrows. Signals: `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`, `SIGKILL`. Input is one shared stream across all project clients.
 
 ## Cross-instance lifecycle (processes)
-Unchanged from the former `launch` tool: the first process op starts a detached broker over a private socket under `~/.omp/run/daemons/<project-hash>/`; every omp instance in the project shares names, logs, and state. After the last omp process exits, the broker stops non-persistent processes and exits. `persist: true` opts out of last-client teardown; restart policies (`no`/`on-failure`/`always`) use bounded exponential backoff up to 30 s.
+The first process op starts a detached broker over a private socket under `~/.omp/run/daemons/<project-hash>/`; every omp instance in the project shares names, logs, and state. Progress subscriptions belong to an agent session, not to the shared process. After the last omp process exits, the broker stops non-persistent processes and exits. `persist: true` opts out of last-client teardown; restart policies (`no`/`on-failure`/`always`) use bounded exponential backoff up to 30 s.
 
 ## Limits & Caps
 - Mailboxes: 100 messages per agent (`MAILBOX_CAP`); oldest dropped beyond the cap.
@@ -112,15 +131,16 @@ Unchanged from the former `launch` tool: the first process op starts a detached 
 - Poll window: `async.pollWaitDuration` — `5s`/`10s`/`30s`/`1m`/`5m`/`smart` (default); smart ladder `[5s..5m]` climbing per back-to-back wait, resetting after 60 s without waiting.
 - Job retention 5 min; manager max-running fallback 15; `async.maxJobs` clamped 1..100.
 - Launch names 1-48 chars; `ready.port` 1..65535; `logs`/`wait`/`stop` timeouts capped at one hour.
+- Live progress emits at most once per second. All complete non-empty lines accumulated during the interval are retained in the batch.
 
 ## Errors
 - Most validation/availability failures are text results with `isError: true`: messaging unavailable, missing `to`/`message`, self-send (`Cannot send a message to yourself.`), `await` with `to:"all"`, `to`+`name` on one send, missing `ids` on `cancel`, and launch disabled. The async-disabled `jobs`/`cancel` response is an exception: it returns `Async execution is disabled; no background jobs are available.` with an empty job list and no `isError` flag.
-- Launch validation (missing `name`/`application`, bad `ready.port`, unsupported key) throws `ToolError`, exactly as before.
+- Launch validation (missing `name`/`application`, bad `ready.port`, unsupported key, monitoring a detached process, or `monitor` targeting a process that is not running) throws `ToolError`.
 - A `wait` timeout is a normal result (`waited: null` or an all-running snapshot flagged `useless`), never an error.
 - Per-recipient delivery failures surface as `failed` receipts; `send` is `isError` only when nothing was delivered.
 
 ## Notes
-- The IRC bus, agent registry, job manager, and launch broker are unchanged subsystems; only the tool surface merged.
+- Process progress reuses the same model-facing batching and yield channel as async Bash progress; Hub and Bash do not maintain separate delivery semantics.
 - A running recipient still gets messages injected as non-interrupting asides (`irc:incoming` custom messages, `prompts/system/irc-incoming.md`); replies are real turns.
 - Messaging a parked agent revives it — the only resume primitive; the task tool has no `resume` parameter.
 - TUI rendering is preserved per family: messaging cards (`IRC ➤ / ⟵` headers), job waiting frames (displaceable, shimmering rows), and launch frames render byte-identically to the pre-merge tools; the `hub` renderer only dispatches.

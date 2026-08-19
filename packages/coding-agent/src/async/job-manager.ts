@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { ProgressBatcher } from "./progress-batcher";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -40,7 +41,6 @@ interface AgentProgressState {
 	deliveryTail?: Promise<void>;
 	timer?: NodeJS.Timeout;
 }
-
 export interface AsyncJob {
 	id: string;
 	type: AsyncJobType;
@@ -84,8 +84,6 @@ export type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob)
 /** Best-effort owner-routed delivery for progress from a still-running job. */
 export interface AsyncJobProgressSink {
 	deliver(jobId: string, text: string, job: AsyncJob, seq: number): void | Promise<void>;
-	/** Ambient progress is useful only while the owning session is actively streaming; wake progress also delivers idle. */
-	state(): "idle" | "streaming";
 }
 
 export interface AsyncJobManagerOptions {
@@ -174,7 +172,9 @@ export class AsyncJobManager {
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
 	readonly #deliverySinks = new Map<string, AsyncJobDeliverySink>();
 	readonly #progressSinks = new Map<string, AsyncJobProgressSink>();
-	readonly #progressState = new Map<string, AgentProgressState>();
+	readonly #progressBatcher = new ProgressBatcher(AGENT_PROGRESS_INTERVAL_MS, (jobId, text, seq) =>
+		this.#deliverAgentProgress(jobId, text, seq),
+	);
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
@@ -532,77 +532,37 @@ export class AsyncJobManager {
 			this.isDeliverySuppressed(job.id)
 		)
 			return;
-		let state = this.#progressState.get(job.id);
-		if (!state) {
-			state = { lastEmitAt: 0, pendingTexts: [], seq: 0 };
-			this.#progressState.set(job.id, state);
-		}
-		state.pendingTexts.push(text);
-		const waitMs = state.lastEmitAt + AGENT_PROGRESS_INTERVAL_MS - Date.now();
-		if (waitMs <= 0) {
-			void this.#flushAgentProgress(job.id);
+		if (job.ownerId === undefined || !this.#progressSinks.has(job.ownerId)) return;
+		this.#progressBatcher.push(job.id, text);
+	}
+
+	async #deliverAgentProgress(jobId: string, text: string, seq: number): Promise<void> {
+		const job = this.#jobs.get(jobId);
+		if (job?.status !== "running" || this.isDeliverySuppressed(jobId)) {
 			return;
 		}
-		if (state.timer) return;
-		state.timer = setTimeout(() => void this.#flushAgentProgress(job.id), waitMs);
-		state.timer.unref();
+		const sink = job.ownerId === undefined ? undefined : this.#progressSinks.get(job.ownerId);
+		if (!sink) return;
+		try {
+			await sink.deliver(jobId, text, job, seq);
+		} catch (error) {
+			logger.warn("Async job progress delivery failed", {
+				jobId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	#flushAgentProgress(jobId: string): Promise<void> {
-		const state = this.#progressState.get(jobId);
-		if (!state) return Promise.resolve();
-		if (state.timer) {
-			clearTimeout(state.timer);
-			state.timer = undefined;
-		}
-		const job = this.#jobs.get(jobId);
-		if (job?.status !== "running" || this.isDeliverySuppressed(jobId)) {
-			const deliveryTail = state.deliveryTail ?? Promise.resolve();
-			this.#clearAgentProgress(jobId);
-			return deliveryTail;
-		}
-		if (state.pendingTexts.length === 0) return state.deliveryTail ?? Promise.resolve();
-		const sink = job.ownerId === undefined ? undefined : this.#progressSinks.get(job.ownerId);
-		if (!sink) return state.deliveryTail ?? Promise.resolve();
-		if (job.progressDelivery === "ambient" && sink.state() !== "streaming") {
-			return state.deliveryTail ?? Promise.resolve();
-		}
-
-		const text = state.pendingTexts.join("\n");
-		state.pendingTexts = [];
-		state.lastEmitAt = Date.now();
-		state.seq += 1;
-		const seq = state.seq;
-		const deliver = async () => {
-			try {
-				await sink.deliver(jobId, text, job, seq);
-			} catch (error) {
-				logger.warn("Async job progress delivery failed", {
-					jobId,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		};
-		const tail = state.deliveryTail ? state.deliveryTail.then(deliver) : deliver();
-		state.deliveryTail = tail;
-		void tail.then(() => {
-			if (state.deliveryTail === tail) state.deliveryTail = undefined;
-		});
-		return tail;
+		return this.#progressBatcher.flush(jobId);
 	}
 
 	#clearAgentProgress(jobId: string): void {
-		const state = this.#progressState.get(jobId);
-		if (!state) return;
-		if (state.timer) clearTimeout(state.timer);
-		this.#progressState.delete(jobId);
+		this.#progressBatcher.clear(jobId);
 	}
 
 	#clearAllAgentProgress(): void {
-		for (const state of this.#progressState.values()) {
-			if (state.timer) clearTimeout(state.timer);
-		}
-		this.#progressState.clear();
+		this.#progressBatcher.dispose();
 	}
 
 	/**

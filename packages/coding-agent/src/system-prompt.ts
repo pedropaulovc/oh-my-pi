@@ -17,7 +17,7 @@ import { expandAtImports } from "./discovery/at-imports";
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
-import asyncBashProgressTemplate from "./prompts/system/async-bash-progress.md" with { type: "text" };
+import asyncProgressTemplate from "./prompts/system/async-progress.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
@@ -557,8 +557,11 @@ export interface BuildSystemPromptOptions {
 	xdevDocs?: string;
 	/** Whether Auto-QA grievance reporting is enabled; renders the `xd://report_issue` note. */
 	autoQaEnabled?: boolean;
-	/** Whether the active Bash tool can deliver background output to the model. */
-	asyncBashProgress?: "disabled" | "enabled";
+	/** Which active tools can push background output to the model. */
+	asyncProgress?: {
+		bash?: boolean;
+		hub?: boolean;
+	};
 }
 
 /** Result of building provider-facing system prompt messages. */
@@ -616,7 +619,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		xdevTools = [],
 		xdevDocs = "",
 		autoQaEnabled = false,
-		asyncBashProgress = "disabled",
+		asyncProgress = {},
 		activeRepoContext: providedActiveRepoContext,
 	} = options;
 	const inlineToolDescriptors = providedInlineToolDescriptors ?? false;
@@ -852,9 +855,13 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		...contextPromptSources,
 	];
 	const injectedAlwaysApplyRules = dedupeAlwaysApplyRules(alwaysApplyRules, promptSources);
-	const asyncBashProgressPrompt =
-		asyncBashProgress === "enabled" && toolNames.includes("bash")
-			? prompt.render(asyncBashProgressTemplate, { toolRefs }).trim()
+	const asyncProgressCapabilities = {
+		bash: asyncProgress.bash === true && toolNames.includes("bash"),
+		hub: asyncProgress.hub === true && toolNames.includes("hub"),
+	};
+	const asyncProgressPrompt =
+		asyncProgressCapabilities.bash || asyncProgressCapabilities.hub
+			? prompt.render(asyncProgressTemplate, { ...asyncProgressCapabilities, toolRefs }).trim()
 			: "";
 
 	const environment = getEnvironmentInfo(cpuModel, gpu);
@@ -898,7 +905,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		hasDynamicXdevTools: xdevTools.some(mounted => mounted.dynamic === true),
 		xdevDocs,
 		autoQaEnabled,
-		asyncBashProgressPrompt,
+		asyncProgressPrompt,
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
 	const systemPrompt = [rendered];

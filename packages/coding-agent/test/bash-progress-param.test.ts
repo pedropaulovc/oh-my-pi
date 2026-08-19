@@ -36,7 +36,6 @@ function collectProgress(manager: AsyncJobManager): string[] {
 	const seen: string[] = [];
 	manager.registerDeliverySink("Main", () => {});
 	manager.registerProgressSink("Main", {
-		state: () => "streaming",
 		deliver: (_jobId, text) => {
 			seen.push(text);
 		},

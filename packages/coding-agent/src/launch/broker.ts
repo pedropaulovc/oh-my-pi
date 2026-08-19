@@ -4,6 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { isEexist, isEnoent, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
+import { ProgressBatcher } from "../async/progress-batcher";
+import { ProgressLines } from "../async/progress-lines";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { truncateHead, truncateHeadBytes, truncateTail, truncateTailBytes } from "../session/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
@@ -17,6 +19,8 @@ import {
 	DAEMON_RUNTIME_DIR_ENV,
 	type DaemonCompletionNotification,
 	type DaemonOperation,
+	type DaemonOutputNotification,
+	type DaemonOutputSubscription,
 	type DaemonReadySpec,
 	type DaemonRpcResult,
 	type DaemonSignal,
@@ -90,6 +94,12 @@ interface ManagedDaemon {
 	pendingCompletions: DaemonCompletionNotification[];
 	completionSubscriptionId?: string;
 	persistQueue: Promise<void>;
+	progressLines?: ProgressLines;
+}
+
+interface OutputRegistration extends DaemonOutputSubscription {
+	socket: net.Socket;
+	subscriptionId: string;
 }
 
 interface BrokerLease {
@@ -368,6 +378,8 @@ class DaemonBroker {
 	readonly #ownerSockets = new Map<string, { socket: net.Socket; subscriptionId: string | undefined }>();
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
+	readonly #outputRegistrations = new Map<string, OutputRegistration>();
+	readonly #progressBatcher = new ProgressBatcher(1_000, (name, text, seq) => this.#notifyOutput(name, text, seq));
 	readonly #finished = Promise.withResolvers<void>();
 	readonly #sockets = new Set<net.Socket>();
 	#server: net.Server | undefined;
@@ -425,6 +437,8 @@ class DaemonBroker {
 			await record.persistQueue;
 		}
 		this.#ownerSockets.clear();
+		this.#outputRegistrations.clear();
+		this.#progressBatcher.dispose();
 		for (const socket of this.#sockets) socket.destroy();
 		this.#sockets.clear();
 		if (this.#server) {
@@ -475,6 +489,9 @@ class DaemonBroker {
 			for (const [owner, registration] of this.#ownerSockets) {
 				if (registration.socket === socket) this.#ownerSockets.delete(owner);
 			}
+			for (const [monitorId, registration] of this.#outputRegistrations) {
+				if (registration.socket === socket) this.#outputRegistrations.delete(monitorId);
+			}
 		});
 	}
 
@@ -486,6 +503,7 @@ class DaemonBroker {
 			id = request.id;
 			if (request.token !== this.#token) throw new Error("Daemon broker authentication failed");
 			onAuthenticated();
+			this.#syncOutputSubscriptions(socket, request.outputSubscriptionId, request.outputSubscriptions);
 			for (const owner of request.completionUnsubscribes ?? []) {
 				const subscriptionId = this.#completionSubscriptions.get(owner);
 				if (
@@ -570,7 +588,7 @@ class DaemonBroker {
 	async #dispatch(operation: DaemonOperation): Promise<DaemonRpcResult> {
 		switch (operation.op) {
 			case "ping":
-				return { op: "ping", projectDir: this.#projectDir };
+				return { op: "ping", projectDir: this.#projectDir, capabilities: ["output-monitor-v1"] };
 			case "start":
 				return this.#start(operation.spec, operation.owner);
 			case "list": {
@@ -712,6 +730,9 @@ class DaemonBroker {
 		syncReadyPending(record);
 		record.readinessBuffer = "";
 		record.outputOffset = 0;
+		record.progressLines = record.spec.detached
+			? undefined
+			: new ProgressLines(line => this.#progressBatcher.push(record.snapshot.name, line));
 		this.#persist(record);
 		try {
 			if (record.spec.detached) await this.#launchDetached(record, generation);
@@ -852,7 +873,56 @@ class DaemonBroker {
 		const output = raw.toWellFormed();
 		const text = record.log?.append(output) ?? output;
 		record.snapshot.outputBytes += Buffer.byteLength(text, "utf8");
-		this.#trackOutput(record, generation, sanitizeText(text));
+		const sanitized = sanitizeText(text);
+		record.progressLines?.append(sanitized);
+		this.#trackOutput(record, generation, sanitized);
+	}
+
+	#syncOutputSubscriptions(
+		socket: net.Socket,
+		subscriptionId: string | undefined,
+		subscriptions: DaemonOutputSubscription[] | undefined,
+	): void {
+		if (!subscriptionId || !subscriptions) return;
+		const advertised = new Set(subscriptions.map(subscription => subscription.id));
+		for (const [monitorId, registration] of this.#outputRegistrations) {
+			if (registration.subscriptionId !== subscriptionId || advertised.has(monitorId)) continue;
+			this.#outputRegistrations.delete(monitorId);
+		}
+		for (const subscription of subscriptions) {
+			this.#outputRegistrations.set(subscription.id, { ...subscription, socket, subscriptionId });
+		}
+	}
+
+	#notifyOutput(name: string, text: string, seq: number): void {
+		const daemon = this.#records.get(name)?.snapshot;
+		if (!daemon) return;
+		for (const registration of this.#outputRegistrations.values()) {
+			if (registration.name !== name || registration.socket.destroyed) continue;
+			const notification: DaemonOutputNotification = {
+				event: "daemon-output",
+				monitorId: registration.id,
+				name,
+				daemonId: daemon.id,
+				seq,
+				text,
+			};
+			registration.socket.write(`${JSON.stringify(notification)}\n`);
+		}
+	}
+
+	#notifyMonitorCompletion(record: ManagedDaemon): void {
+		for (const registration of this.#outputRegistrations.values()) {
+			if (registration.name !== record.snapshot.name) continue;
+			if (registration.socket.destroyed) continue;
+			registration.socket.write(
+				`${JSON.stringify({
+					event: "daemon-monitor-completed",
+					monitorId: registration.id,
+					daemon: { ...record.snapshot },
+				})}\n`,
+			);
+		}
 	}
 
 	async #readDetachedOutput(record: ManagedDaemon, generation: number): Promise<void> {
@@ -952,6 +1022,10 @@ class DaemonBroker {
 		await this.#readDetachedOutput(record, generation);
 		// The output read yields, so a concurrent refresh may settle this generation first.
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
+		record.progressLines?.finish();
+		record.progressLines = undefined;
+		await this.#progressBatcher.flush(record.snapshot.name);
+		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		record.process = undefined;
 		record.input = undefined;
 		record.pty = undefined;
@@ -1012,6 +1086,7 @@ class DaemonBroker {
 		) {
 			this.#notifyCompletion(completion);
 		}
+		this.#notifyMonitorCompletion(record);
 		// Terminal settlement can free the last live persistent daemon. The idle
 		// timer that fired while that daemon was alive returned without rearming
 		// (see #scheduleIdleShutdown), so rearm here or the broker, its endpoint,
@@ -1290,7 +1365,9 @@ class DaemonBroker {
 						if ("pendingCompletions" in decoded && Array.isArray(decoded.pendingCompletions)) {
 							return decoded.pendingCompletions.map(value => {
 								const message = parseDaemonWireMessage(value);
-								if (!("event" in message)) throw new Error("Pending daemon completion is not an event");
+								if (!("event" in message) || message.event !== "daemon-completed") {
+									throw new Error("Pending daemon completion is not a completion event");
+								}
 								return message;
 							});
 						}

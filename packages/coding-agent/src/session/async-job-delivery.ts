@@ -47,15 +47,23 @@ export interface AsyncProgressEntry {
 	jobId: string;
 	text: string;
 	job: AsyncJob | undefined;
+	source?: AsyncProgressSource;
 	seq: number;
 	elapsedMs: number;
 	epoch: number;
 	delivery: AsyncJobProgressDelivery;
 }
 
+export interface AsyncProgressSource {
+	id: string;
+	type: "bash" | "task" | "process";
+	label: string;
+	startedAt: number;
+}
+
 type AsyncProgressJobDetails = {
 	jobId: string;
-	type?: "bash" | "task";
+	type?: "bash" | "task" | "process";
 	label?: string;
 	elapsedMs: number;
 	text: string;
@@ -85,8 +93,8 @@ export function buildAsyncProgressBatchMessage(
 		const type = latest.job?.type;
 		return {
 			jobId: latest.jobId,
-			type: type === "eval" ? undefined : type,
-			label: latest.job?.label,
+			type: latest.source?.type ?? (type === "eval" ? undefined : type),
+			label: latest.source?.label ?? latest.job?.label,
 			elapsedMs: latest.elapsedMs,
 			text: jobEntries.map(entry => sanitizeText(entry.text)).join("\n"),
 		};

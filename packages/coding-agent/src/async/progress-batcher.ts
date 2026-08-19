@@ -1,0 +1,91 @@
+interface ProgressBatchState {
+	lastEmitAt: number;
+	pendingTexts: string[];
+	seq: number;
+	deliveryTail?: Promise<void>;
+	timer?: NodeJS.Timeout;
+}
+
+/** Lossless, ordered, per-source progress batching with a fixed maximum delivery cadence. */
+export class ProgressBatcher {
+	readonly #states = new Map<string, ProgressBatchState>();
+	readonly #intervalMs: number;
+	readonly #deliver: (id: string, text: string, seq: number) => void | Promise<void>;
+
+	constructor(intervalMs: number, deliver: (id: string, text: string, seq: number) => void | Promise<void>) {
+		this.#intervalMs = intervalMs;
+		this.#deliver = deliver;
+	}
+
+	push(id: string, text: string): void {
+		let state = this.#states.get(id);
+		if (!state) {
+			state = { lastEmitAt: 0, pendingTexts: [], seq: 0 };
+			this.#states.set(id, state);
+		}
+		state.pendingTexts.push(text);
+		const waitMs = state.lastEmitAt + this.#intervalMs - Date.now();
+		if (waitMs <= 0) {
+			void this.flush(id);
+			return;
+		}
+		if (state.timer) return;
+		state.timer = setTimeout(() => void this.flush(id), waitMs);
+		state.timer.unref();
+	}
+
+	flush(id: string): Promise<void> {
+		const state = this.#states.get(id);
+		if (!state) return Promise.resolve();
+		if (state.timer) {
+			clearTimeout(state.timer);
+			state.timer = undefined;
+		}
+		if (state.pendingTexts.length === 0) return state.deliveryTail ?? Promise.resolve();
+		const text = state.pendingTexts.join("\n");
+		state.pendingTexts = [];
+		state.lastEmitAt = Date.now();
+		state.seq += 1;
+		const seq = state.seq;
+		const deliver = () => this.#deliver(id, text, seq);
+		let tail: Promise<void>;
+		if (state.deliveryTail) {
+			tail = state.deliveryTail.then(deliver);
+		} else {
+			try {
+				tail = Promise.resolve(deliver());
+			} catch (error) {
+				tail = Promise.reject(error);
+			}
+		}
+		state.deliveryTail = tail;
+		void tail.then(
+			() => {
+				if (state.deliveryTail === tail) state.deliveryTail = undefined;
+			},
+			() => {
+				if (state.deliveryTail === tail) state.deliveryTail = undefined;
+			},
+		);
+		return tail;
+	}
+
+	async finish(id: string): Promise<void> {
+		await this.flush(id);
+		this.clear(id);
+	}
+
+	clear(id: string): void {
+		const state = this.#states.get(id);
+		if (!state) return;
+		if (state.timer) clearTimeout(state.timer);
+		this.#states.delete(id);
+	}
+
+	dispose(): void {
+		for (const state of this.#states.values()) {
+			if (state.timer) clearTimeout(state.timer);
+		}
+		this.#states.clear();
+	}
+}

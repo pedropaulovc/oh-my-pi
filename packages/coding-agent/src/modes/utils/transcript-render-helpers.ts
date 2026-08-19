@@ -72,7 +72,7 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 export function buildAsyncProgressBlock(message: CustomOrHookMessage): TranscriptBlock {
 	const details = (
 		message as CustomMessage<{
-			jobs?: Array<{ jobId?: string; type?: "bash" | "task"; elapsedMs?: number; text?: string }>;
+			jobs?: Array<{ jobId?: string; type?: "bash" | "task" | "process"; elapsedMs?: number; text?: string }>;
 		}>
 	).details;
 	const block = new TranscriptBlock();

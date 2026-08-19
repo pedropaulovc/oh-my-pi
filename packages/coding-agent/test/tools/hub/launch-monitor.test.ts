@@ -1,0 +1,245 @@
+import { afterEach, describe, expect, it, vi } from "bun:test";
+import type { DaemonBrokerClient } from "../../../src/launch/client";
+import * as daemonClient from "../../../src/launch/client";
+import type {
+	DaemonCompletionNotification,
+	DaemonMonitorNotification,
+	DaemonOperation,
+	DaemonOutputSubscription,
+	DaemonRpcResult,
+	DaemonSnapshot,
+	DaemonSpec,
+} from "../../../src/launch/protocol";
+import type { ToolSession } from "../../../src/tools";
+import { executeLaunch } from "../../../src/tools/hub/launch";
+
+const OWNER = "owner-session";
+
+const daemon: DaemonSnapshot = {
+	name: "web",
+	id: "daemon-id",
+	state: "running",
+	pid: 123,
+	createdAt: 1,
+	startedAt: 2,
+	restartCount: 0,
+	outputBytes: 0,
+	owner: OWNER,
+	persist: true,
+	detached: false,
+};
+
+const spec: DaemonSpec = {
+	name: daemon.name,
+	application: process.execPath,
+	args: [],
+	env: {},
+	cwd: process.cwd(),
+	pty: false,
+	restart: "no",
+	persist: true,
+	detached: false,
+};
+
+interface MonitorHarness {
+	client: DaemonBrokerClient;
+	session: ToolSession;
+	requests: DaemonOperation[];
+	progress: Array<{ notification: Extract<DaemonMonitorNotification, { event: "daemon-output" }>; delivery: string }>;
+	completions: DaemonCompletionNotification[];
+	active: Array<{ monitorId: string; delivery: string; active: boolean }>;
+	disposeCallbacks: Array<() => void>;
+	getOutputSink(): ((notification: DaemonMonitorNotification) => void | Promise<void>) | undefined;
+	getSubscription(): DaemonOutputSubscription | undefined;
+	unregisterCount(): number;
+}
+
+function createHarness(): MonitorHarness {
+	const requests: DaemonOperation[] = [];
+	const progress: MonitorHarness["progress"] = [];
+	const completions: DaemonCompletionNotification[] = [];
+	const active: MonitorHarness["active"] = [];
+	const disposeCallbacks: Array<() => void> = [];
+	let outputSink: ((notification: DaemonMonitorNotification) => void | Promise<void>) | undefined;
+	let subscription: DaemonOutputSubscription | undefined;
+	let unregisters = 0;
+	const client = {
+		projectDir: process.cwd(),
+		onCompletion: () => () => {},
+		onOutput: (
+			registered: DaemonOutputSubscription,
+			sink: (notification: DaemonMonitorNotification) => void | Promise<void>,
+		) => {
+			subscription = registered;
+			outputSink = sink;
+			return () => {
+				unregisters++;
+				outputSink = undefined;
+			};
+		},
+		request: async (operation: DaemonOperation): Promise<DaemonRpcResult> => {
+			requests.push(operation);
+			if (operation.op === "ping") {
+				expect(subscription).toMatchObject({ name: daemon.name, owner: OWNER });
+				return { op: "ping", projectDir: process.cwd(), capabilities: ["output-monitor-v1"] };
+			}
+			if (operation.op === "start") return { op: "start", daemon, readyTimedOut: false };
+			if (operation.op === "describe") return { op: "describe", daemon, spec };
+			throw new Error(`Unexpected operation: ${operation.op}`);
+		},
+		close() {},
+	} as DaemonBrokerClient;
+	const session = {
+		cwd: process.cwd(),
+		getSessionId: () => OWNER,
+		isDisposed: () => false,
+		queueLaunchProgress: (
+			notification: Extract<DaemonMonitorNotification, { event: "daemon-output" }>,
+			delivery: string,
+		) => {
+			progress.push({ notification, delivery });
+		},
+		queueLaunchCompletion: async (notification: DaemonCompletionNotification) => {
+			completions.push(notification);
+		},
+		setLaunchMonitorActive: (monitorId: string, delivery: string, isActive: boolean) => {
+			active.push({ monitorId, delivery, active: isActive });
+		},
+		registerDisposeCallback: (callback: () => void) => {
+			disposeCallbacks.push(callback);
+		},
+		registerSessionChangeCallback: () => {},
+	} as unknown as ToolSession;
+	return {
+		client,
+		session,
+		requests,
+		progress,
+		completions,
+		active,
+		disposeCallbacks,
+		getOutputSink: () => outputSink,
+		getSubscription: () => subscription,
+		unregisterCount: () => unregisters,
+	};
+}
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+describe("hub process output monitoring", () => {
+	it("advertises the output subscription before starting and routes live output", async () => {
+		const harness = createHarness();
+		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
+
+		await executeLaunch(harness.session, {
+			op: "start",
+			name: daemon.name,
+			application: process.execPath,
+			pty: false,
+			persist: true,
+			progress: "wake",
+		});
+
+		expect(harness.requests.map(operation => operation.op)).toEqual(["ping", "start"]);
+		const subscription = harness.getSubscription();
+		if (!subscription) throw new Error("Expected output subscription");
+		await harness.getOutputSink()?.({
+			event: "daemon-output",
+			monitorId: subscription.id,
+			name: daemon.name,
+			daemonId: daemon.id,
+			seq: 1,
+			text: "ready",
+		});
+
+		expect(harness.progress).toEqual([
+			{
+				notification: {
+					event: "daemon-output",
+					monitorId: subscription.id,
+					name: daemon.name,
+					daemonId: daemon.id,
+					seq: 1,
+					text: "ready",
+				},
+				delivery: "wake",
+			},
+		]);
+		expect(harness.active).toEqual([{ monitorId: subscription.id, delivery: "wake", active: true }]);
+	});
+
+	it("attaches to an existing process and updates its delivery mode in place", async () => {
+		const harness = createHarness();
+		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
+
+		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "wake" });
+		const subscription = harness.getSubscription();
+		if (!subscription) throw new Error("Expected output subscription");
+		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "ambient" });
+		await harness.getOutputSink()?.({
+			event: "daemon-output",
+			monitorId: subscription.id,
+			name: daemon.name,
+			daemonId: daemon.id,
+			seq: 1,
+			text: "after mode update",
+		});
+
+		expect(harness.requests.map(operation => operation.op)).toEqual(["ping", "describe", "ping", "describe"]);
+		expect(harness.getSubscription()?.id).toBe(subscription.id);
+		expect(harness.unregisterCount()).toBe(0);
+		expect(harness.progress.map(item => item.delivery)).toEqual(["ambient"]);
+		expect(harness.active).toEqual([
+			{ monitorId: subscription.id, delivery: "wake", active: true },
+			{ monitorId: subscription.id, delivery: "wake", active: false },
+			{ monitorId: subscription.id, delivery: "ambient", active: true },
+		]);
+	});
+
+	it("detaches with progress off without stopping the process", async () => {
+		const harness = createHarness();
+		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
+
+		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "wake" });
+		const subscription = harness.getSubscription();
+		if (!subscription) throw new Error("Expected output subscription");
+		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "off" });
+
+		expect(harness.unregisterCount()).toBe(1);
+		expect(harness.requests.map(operation => operation.op)).toEqual(["ping", "describe", "describe"]);
+		expect(harness.requests.some(operation => operation.op === "stop")).toBeFalse();
+		expect(harness.active.at(-1)).toEqual({ monitorId: subscription.id, delivery: "wake", active: false });
+	});
+
+	it("session disposal removes monitoring but leaves process lifecycle untouched", async () => {
+		const harness = createHarness();
+		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
+
+		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "wake" });
+		expect(harness.disposeCallbacks).toHaveLength(2);
+		for (const dispose of harness.disposeCallbacks) dispose();
+
+		expect(harness.unregisterCount()).toBe(1);
+		expect(harness.requests.some(operation => operation.op === "stop")).toBeFalse();
+	});
+
+	it("terminal monitor notification cleans up without duplicating owner completion", async () => {
+		const harness = createHarness();
+		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
+
+		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "wake" });
+		const subscription = harness.getSubscription();
+		if (!subscription) throw new Error("Expected output subscription");
+		await harness.getOutputSink()?.({
+			event: "daemon-monitor-completed",
+			monitorId: subscription.id,
+			daemon: { ...daemon, state: "exited", pid: undefined, exitedAt: 3, exitCode: 0 },
+		});
+
+		expect(harness.unregisterCount()).toBe(1);
+		expect(harness.active.at(-1)).toEqual({ monitorId: subscription.id, delivery: "wake", active: false });
+		expect(harness.completions).toEqual([]);
+	});
+});

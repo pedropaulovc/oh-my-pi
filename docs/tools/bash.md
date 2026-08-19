@@ -31,9 +31,7 @@
 
 ## Agent-facing guidance
 
-When async execution is enabled, the Bash tool description sent to the model includes this instruction:
-
-> `async: true` defers a finite command's result; it does not extend `timeout`. Set `progress: "wake"` when output may require action before the command exits: every complete non-empty line is pushed back by the harness and starts a follow-up turn. Use `progress: "ambient"` only when updates can wait for an already-active turn.
+When async execution is enabled, the Bash tool description tells the model that `async: true` is for finite commands, `progress: "wake"` is lossless and waking, output produced while the model is busy is batched, `progress: "ambient"` never wakes, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
 
 `wake` is a harness push, not a polling hint. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
 
@@ -45,35 +43,38 @@ The following output events were emitted by a background job. The harness pushed
 <all output events queued for this job>
 ```
 
-When async Bash is available, the system prompt includes this capability block in addition to the Bash tool schema:
+When either async Bash or Hub process monitoring is available, the system prompt includes one terse selection rule under `§ Tool Policy`. With both tools active it renders as:
 
 ```text
-# Background Bash Push Events
-For a finite command whose output may require action before it exits, call `bash` with `async: true` and `progress: "wake"` instead of polling.
-- The harness retains every complete, non-empty merged stdout/stderr line and emits progress at most once per second; when the agent is idle, it starts a follow-up turn.
-- Lines emitted while the agent is busy are retained and delivered together in the next progress batch; no queued event is replaced by a newer event.
-- Use `progress: "ambient"` only when updates may wait for an already-active turn; ambient progress never starts a turn.
-- Progress and command completion are separate notifications. Continue other useful work after arming the command and react when the harness delivers either notification.
+<async-progress>
+Actionable finite-command output → `bash` with `async: true`, `progress: "wake"`.
+Actionable long-running-process output → `hub` with `op: "start"`, `progress: "wake"`.
+Never poll.
+</async-progress>
 ```
 
 Each delivered progress batch is a harness-injected `async-progress` message in the model's conversation.
 
 ### Capability compared with Claude Code Monitor
 
-This comparison uses the observed Claude Code 2.1.233 Monitor contract. Both implementations provide genuine harness-to-agent push delivery; neither requires the model to poll after arming the command.
+This comparison uses the observed Claude Code 2.1.233 Monitor contract. Each surface pushes events from the harness to the agent; the model does not poll after arming the work.
 
-| Capability | OMP async Bash progress | Claude Code Monitor |
-| --- | --- | --- |
-| Start operation | `bash` with `async: true` and `progress: "wake"` | Top-level `Monitor` call with `command` or WebSocket URL |
-| Harness push while agent is idle | Yes; starts a follow-up model turn | Yes; each event wakes a follow-up model turn |
-| Events received while agent is busy | Every event is retained and all waiting events are delivered in one next-turn batch | Every event is retained; observed events were dequeued across successive follow-up turns |
-| Command event boundary | Every complete non-empty merged stdout/stderr line | Every stdout line |
-| WebSocket event boundary | Not supported | Every text frame |
-| Command termination | Existing async-job completion/failure delivery is separate from progress | Monitor termination is a separate notification |
-| Non-waking delivery | `progress: "ambient"` injects updates only into an already-active turn | No native ambient mode observed |
-| Native regex, cadence, or stop-on-match controls | None; filtering belongs in the command | None; filtering and polling belong in the monitor command |
-| Persistent session-long monitor | No; lifetime is the async command, with `timeout: 0` available | Optional `persistent: true`, stopped through task control |
-| Attach or retune an existing monitor | No | No |
+| Capability | OMP async Bash | OMP Hub monitoring | Claude Code Monitor |
+| --- | --- | --- | --- |
+| Intended workload | Finite background command | Shared long-running process, watcher, service, debugger, or REPL | Command or WebSocket watcher |
+| Start operation | `bash` with `async: true`, `progress: "wake"` | `hub` `op:"start"`, `progress:"wake"` | Top-level `Monitor` call with a command or WebSocket URL |
+| Attach or retune | No; progress belongs to the command | `hub` `op:"monitor"` by stable process name | No attach/retune operation observed |
+| Detach without stopping work | No separate subscription | `progress:"off"` | Persistent monitor is stopped through task control |
+| Harness push while idle | Starts a follow-up turn | Starts a follow-up turn | Starts a follow-up turn |
+| Events received while busy | Every line retained; waiting lines delivered together in the next batch | Same shared lossless batching contract | Events are buffered while busy and delivered together when the agent can run |
+| Command event boundary | Complete non-empty merged stdout/stderr line | Complete non-empty merged stdout/stderr line | Stdout line |
+| WebSocket event boundary | Not supported | Not supported | Text frame |
+| Termination | Separate async-job completion/failure | Separate process completion | Separate monitor termination |
+| Non-waking delivery | `progress:"ambient"` | `progress:"ambient"` | No native ambient mode observed |
+| Native regex, cadence, or stop-on-match controls | None; filtering belongs in the command | None; filtering belongs in the supervised process | None; filtering and polling belong in the monitor command |
+| Lifetime | Command lifetime; `timeout:0` disables its deadline | Monitoring is session-scoped; process lifetime is independently controlled by `persist`/`detached` | Optional `persistent:true` |
+
+OMP Hub monitoring is the persistent-process counterpart to Claude Code Monitor's `persistent:true`. Hub's `persist:true` is not a monitoring flag: it makes the process survive the last omp client, while `progress` controls only the current session's notification subscription. Fully detached Hub daemons cannot be live-monitored.
 
 ## Live model behavioral eval
 

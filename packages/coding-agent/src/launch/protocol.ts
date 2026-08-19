@@ -96,7 +96,7 @@ export type DaemonOperation =
 
 /** Typed broker result decoded before it reaches tool code. */
 export type DaemonRpcResult =
-	| { op: "ping"; projectDir: string }
+	| { op: "ping"; projectDir: string; capabilities?: string[] }
 	| { op: "start"; daemon: DaemonSnapshot; readyTimedOut: boolean }
 	| { op: "list"; daemons: DaemonSnapshot[] }
 	| {
@@ -129,7 +129,16 @@ export interface DaemonWireRequest {
 	completionUnsubscribes?: string[];
 	completionReplays?: string[];
 	completionSubscriptionId?: string;
+	outputSubscriptions?: DaemonOutputSubscription[];
+	outputSubscriptionId?: string;
 	operation: DaemonOperation;
+}
+
+/** One live process-output subscription advertised by a connected client. */
+export interface DaemonOutputSubscription {
+	id: string;
+	name: string;
+	owner: string;
 }
 
 /** Response envelope kept raw until matched with its pending operation. */
@@ -143,7 +152,25 @@ export interface DaemonCompletionNotification {
 	daemon: DaemonSnapshot;
 }
 
-export type DaemonWireMessage = DaemonWireResponse | DaemonCompletionNotification;
+/** A live output batch for one monitored process. */
+export interface DaemonOutputNotification {
+	event: "daemon-output";
+	monitorId: string;
+	name: string;
+	daemonId: string;
+	seq: number;
+	text: string;
+}
+
+/** Terminal process state for a monitor whose owner is not the process owner. */
+export interface DaemonMonitorCompletionNotification {
+	event: "daemon-monitor-completed";
+	monitorId: string;
+	daemon: DaemonSnapshot;
+}
+
+export type DaemonMonitorNotification = DaemonOutputNotification | DaemonMonitorCompletionNotification;
+export type DaemonWireMessage = DaemonWireResponse | DaemonCompletionNotification | DaemonMonitorNotification;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -200,6 +227,18 @@ function stringRecord(value: unknown, label: string): Record<string, string> {
 	const result: Record<string, string> = {};
 	for (const key in source) result[key] = rawString(source[key], `${label}.${key}`);
 	return result;
+}
+
+function outputSubscriptions(value: unknown): DaemonOutputSubscription[] {
+	if (!Array.isArray(value)) throw new Error("request.outputSubscriptions must be an array");
+	return value.map((item, index) => {
+		const source = record(item, `request.outputSubscriptions[${index}]`);
+		return {
+			id: stringValue(source.id, `request.outputSubscriptions[${index}].id`),
+			name: stringValue(source.name, `request.outputSubscriptions[${index}].name`),
+			owner: stringValue(source.owner, `request.outputSubscriptions[${index}].owner`),
+		};
+	});
 }
 
 function daemonState(value: unknown): DaemonState {
@@ -311,6 +350,12 @@ export function parseDaemonWireRequest(value: unknown): DaemonWireRequest {
 			source.completionSubscriptionId === undefined
 				? undefined
 				: stringValue(source.completionSubscriptionId, "request.completionSubscriptionId"),
+		outputSubscriptions:
+			source.outputSubscriptions === undefined ? undefined : outputSubscriptions(source.outputSubscriptions),
+		outputSubscriptionId:
+			source.outputSubscriptionId === undefined
+				? undefined
+				: stringValue(source.outputSubscriptionId, "request.outputSubscriptionId"),
 		operation: parseDaemonOperation(source.operation),
 	};
 }
@@ -332,6 +377,23 @@ export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 			event: "daemon-completed",
 			completionId: stringValue(source.completionId, "completion.id"),
 			owner: stringValue(source.owner, "completion.owner"),
+			daemon: parseDaemonSnapshot(source.daemon),
+		};
+	}
+	if (source.event === "daemon-output") {
+		return {
+			event: "daemon-output",
+			monitorId: stringValue(source.monitorId, "output.monitorId"),
+			name: stringValue(source.name, "output.name"),
+			daemonId: stringValue(source.daemonId, "output.daemonId"),
+			seq: numberValue(source.seq, "output.seq"),
+			text: stringValue(source.text, "output.text"),
+		};
+	}
+	if (source.event === "daemon-monitor-completed") {
+		return {
+			event: "daemon-monitor-completed",
+			monitorId: stringValue(source.monitorId, "monitor completion.monitorId"),
 			daemon: parseDaemonSnapshot(source.daemon),
 		};
 	}
@@ -404,7 +466,12 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 	const source = record(value, `${operation.op} result`);
 	switch (operation.op) {
 		case "ping":
-			return { op: "ping", projectDir: stringValue(source.projectDir, "result.projectDir") };
+			return {
+				op: "ping",
+				projectDir: stringValue(source.projectDir, "result.projectDir"),
+				capabilities:
+					source.capabilities === undefined ? undefined : stringArray(source.capabilities, "result.capabilities"),
+			};
 		case "start":
 			return {
 				op: "start",

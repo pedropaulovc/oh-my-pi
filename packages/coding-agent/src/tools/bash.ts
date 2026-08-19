@@ -17,6 +17,7 @@ import {
 	raceJobSettlement,
 	resolveAutoBackgroundWaitMs,
 } from "../async";
+import { ProgressLines } from "../async/progress-lines";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -309,52 +310,6 @@ async function saveBashOriginalArtifact(session: ToolSession, originalText: stri
 		return alloc.id;
 	} catch {
 		return undefined;
-	}
-}
-
-/** Incrementally reports complete, non-empty output lines. */
-class BashProgressLines {
-	static readonly MAX_LINE_CHARS = 4_000;
-	readonly #report: (line: string) => void;
-	#partial = "";
-
-	constructor(report: (line: string) => void) {
-		this.#report = report;
-	}
-
-	append(chunk: string): void {
-		let start = 0;
-		let newline = chunk.indexOf("\n");
-		while (newline !== -1) {
-			this.#appendPartial(chunk.slice(start, newline));
-			this.#reportLine(this.#partial);
-			this.#partial = "";
-			start = newline + 1;
-			newline = chunk.indexOf("\n", start);
-		}
-		if (start < chunk.length) this.#appendPartial(chunk.slice(start));
-	}
-
-	finish(): void {
-		if (this.#partial === "") return;
-		const line = this.#partial;
-		this.#partial = "";
-		this.#reportLine(line);
-	}
-
-	#appendPartial(segment: string): void {
-		if (segment.length >= BashProgressLines.MAX_LINE_CHARS) {
-			this.#partial = segment.slice(-BashProgressLines.MAX_LINE_CHARS);
-			return;
-		}
-		const keep = BashProgressLines.MAX_LINE_CHARS - segment.length;
-		this.#partial = `${this.#partial.slice(-keep)}${segment}`;
-	}
-
-	#reportLine(rawLine: string): void {
-		const line = rawLine.replace(/\r$/, "");
-		if (line.trim().length === 0) return;
-		this.#report(line);
 	}
 }
 
@@ -879,7 +834,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			async ({ jobId, signal: runSignal, reportProgress, reportAgentProgress }) => {
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
-				const progressLines = options.progressDelivery ? new BashProgressLines(reportAgentProgress) : undefined;
+				const progressLines = options.progressDelivery ? new ProgressLines(reportAgentProgress) : undefined;
 				const wallTimeStart = performance.now();
 				try {
 					let result: BashResult;

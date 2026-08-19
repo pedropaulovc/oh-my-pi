@@ -10,7 +10,7 @@ There are two different bash execution surfaces in coding-agent:
 
 1. **Tool-call surface** (`toolName: "bash"`): used when the model calls the bash tool.
    - Entry point: `BashTool.execute()`.
-   - Parameters include `command`, optional `env`, `timeout`, `cwd`, `pty`, and, when `async.enabled` is true, `async`.
+   - Parameters include `command`, optional `env`, `timeout`, `cwd`, `pty`, and, when `async.enabled` is true, `async` plus `progress` (`"wake"` or `"ambient"`).
 2. **User bang-command surface** (`!cmd` from interactive input or RPC `bash` command): session-level helper path.
    - Entry point: `AgentSession.executeBash()`.
 
@@ -27,6 +27,7 @@ Set `bash.enabled: false` in settings to remove the model-facing `bash` tool fro
 - validates optional `env` names against shell-variable syntax,
 - extracts a leading single-line `cd <path> && ...` into `cwd` when `cwd` was not supplied, unless the path needs shell expansion,
 - rejects `async: true` when `async.enabled` is false,
+- rejects `progress` unless the same call uses `async: true`,
 - defaults `timeout` to 300 seconds; `0` explicitly disables the command deadline.
 
 There are no structured `head` or `tail` parameters. Before execution, internal URLs in the command and environment values are expanded to backing filesystem paths; an internal URL used as `cwd` is also resolved. Expansion can create parent directories for writable `local://` paths. The configured direnv/devenv preflight can then merge project environment changes, with explicit `env` values taking precedence.
@@ -215,6 +216,10 @@ For non-PTY foreground execution, `BashTool` uses a separate `TailBuffer` for pa
 For PTY execution, live rendering is handled by custom UI overlay, not by `onUpdate` text chunks.
 
 When `async.enabled` is true and the call passes `async: true`, `BashTool` starts a managed bash job immediately, returns a running result with a job id, and stores completion through the session job manager. Auto-backgrounding can also use this path after `bash.autoBackground.thresholdMs`; it is skipped for PTY and client-bridge terminal routes and falls back to foreground execution when the job manager is at capacity. A queued steering message can background a still-running auto-background candidate early.
+
+`progress: "wake"` opts that managed job into model-facing progress. The Bash output sampler carries partial lines across chunks, reports each complete non-empty merged stdout/stderr line, and flushes a final unterminated line on exit. The shared delivery channel retains every reported line and emits batches at most once per second. Output produced while the model is busy remains queued and is delivered together in the next batch; no newer event replaces an older one. Wake delivery starts a follow-up turn when the model is idle. `progress: "ambient"` uses the same capture and batching path but is injected only at an already-active step boundary.
+
+Progress and job completion are independent, ordered notifications: any final progress batch is delivered before the async result. The progress choice does not change the command timeout; `timeout: 0` is still the explicit way to disable the deadline. Long-running services, watchers, debuggers, and REPLs belong in `hub`, whose process monitor reuses this delivery contract while keeping process lifetime separate from the subscription.
 
 ## Result shaping, metadata, and error mapping
 

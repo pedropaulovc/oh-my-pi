@@ -92,28 +92,46 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 		expect(AsyncJobManager.instance()).toBeUndefined();
 	}, 60000);
 
-	it("advertises harness-pushed Bash progress in the production system prompt", async () => {
+	it("advertises available harness-pushed progress surfaces under Tool Policy", async () => {
 		const session = await spawnTopLevelSession({ "async.enabled": true });
 		try {
 			const systemPrompt = session.systemPrompt.join("\n\n");
 			const toolPolicyIndex = systemPrompt.indexOf("§ Tool Policy");
-			const progressIndex = systemPrompt.indexOf("<async-bash-progress>");
+			const progressIndex = systemPrompt.indexOf("<async-progress>");
 			const workflowIndex = systemPrompt.indexOf("§ Workflow");
 			expect(toolPolicyIndex).toBeGreaterThanOrEqual(0);
 			expect(progressIndex).toBeGreaterThan(toolPolicyIndex);
 			expect(progressIndex).toBeLessThan(workflowIndex);
-			expect(systemPrompt).toContain("<async-bash-progress>");
-			expect(systemPrompt).toContain('`async: true`, `progress: "wake"`; never poll');
-			expect(systemPrompt).toContain("</async-bash-progress>");
+			expect(systemPrompt).toContain("<async-progress>");
+			expect(systemPrompt).toContain(
+				'Actionable finite-command output → `bash` with `async: true`, `progress: "wake"`.',
+			);
+			expect(systemPrompt).toContain(
+				'Actionable long-running-process output → `hub` with `op: "start"`, `progress: "wake"`.',
+			);
+			expect(systemPrompt).toContain("Never poll.");
+			expect(systemPrompt).toContain("</async-progress>");
 		} finally {
 			await session.dispose();
 		}
 	}, 60000);
 
-	it("omits Bash push guidance when async execution is disabled", async () => {
+	it("advertises only Hub progress when async Bash is disabled", async () => {
 		const session = await spawnTopLevelSession({ "async.enabled": false });
 		try {
-			expect(session.systemPrompt.join("\n\n")).not.toContain("<async-bash-progress>");
+			const systemPrompt = session.systemPrompt.join("\n\n");
+			expect(systemPrompt).toContain("<async-progress>");
+			expect(systemPrompt).not.toContain("Actionable finite-command output");
+			expect(systemPrompt).toContain("Actionable long-running-process output");
+		} finally {
+			await session.dispose();
+		}
+	}, 60000);
+
+	it("omits push guidance when neither progress surface is available", async () => {
+		const session = await spawnTopLevelSession({ "async.enabled": false, "launch.enabled": false });
+		try {
+			expect(session.systemPrompt.join("\n\n")).not.toContain("<async-progress>");
 		} finally {
 			await session.dispose();
 		}

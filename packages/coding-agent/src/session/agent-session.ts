@@ -98,7 +98,12 @@ import {
 	withTimeout,
 } from "@oh-my-pi/pi-utils";
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
-import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
+import {
+	ASYNC_JOB_MANAGER_SHUTDOWN_REASON,
+	type AsyncJob,
+	AsyncJobManager,
+	type AsyncJobProgressDelivery,
+} from "../async";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
@@ -145,7 +150,7 @@ import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
-import type { DaemonCompletionNotification } from "../launch/protocol";
+import type { DaemonCompletionNotification, DaemonOutputNotification } from "../launch/protocol";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
@@ -568,6 +573,7 @@ export class AgentSession {
 	#unregisterAsyncProgressSink: (() => void) | undefined;
 	#unregisterAsyncProgressQueue: (() => void) | undefined;
 	#unregisterAsyncProgressWakeQueue: (() => void) | undefined;
+	readonly #activeLaunchWakeMonitors = new Set<string>();
 	/**
 	 * Async-delivery generation, bumped on every session transition that evicts
 	 * this owner's jobs (see {@link AgentSession.#cancelOwnAsyncJobs}). Stamped
@@ -1268,11 +1274,6 @@ export class AgentSession {
 				}
 			},
 		});
-		this.yieldQueue.register<LaunchCompletionEntry>(LAUNCH_COMPLETION_MESSAGE_TYPE, {
-			isStale: entry =>
-				this.#isDisposed || !isLaunchCompletionOwner(entry.owner, this.sessionManager.getSessionId()),
-			build: buildLaunchCompletionBatchMessage,
-		});
 		// Background-job completions / late diagnostics are pulled into the run at
 		// each step boundary as non-interrupting asides. Peer IRCs share the aside
 		// injection boundary, but also expose a non-consuming interrupt peek so
@@ -1388,29 +1389,37 @@ export class AgentSession {
 		// registered sink the manager dead-letters owned deliveries, so this
 		// registration is what makes background jobs usable — for the main
 		// session and for subagents inheriting the process manager alike.
+		this.#unregisterAsyncProgressQueue = this.yieldQueue.register<AsyncProgressEntry>(ASYNC_PROGRESS_MESSAGE_TYPE, {
+			skipIdleFlush: true,
+			isStale: entry =>
+				entry.epoch !== this.#asyncDeliveryEpoch ||
+				(entry.job !== undefined && this.#asyncJobManager?.isDeliverySuppressed(entry.jobId) === true),
+			build: buildAsyncProgressBatchMessage,
+		});
+		this.#unregisterAsyncProgressWakeQueue = this.yieldQueue.register<AsyncProgressEntry>(
+			ASYNC_PROGRESS_WAKE_QUEUE_KIND,
+			{
+				isStale: entry =>
+					entry.epoch !== this.#asyncDeliveryEpoch ||
+					(entry.job !== undefined && this.#asyncJobManager?.isDeliverySuppressed(entry.jobId) === true),
+				build: buildAsyncProgressBatchMessage,
+			},
+		);
+		// Progress queues must drain before terminal process completions. The broker
+		// flushes its final progress batch first; preserve that ordering when both
+		// kinds accumulate while the model is busy.
+		this.yieldQueue.register<LaunchCompletionEntry>(LAUNCH_COMPLETION_MESSAGE_TYPE, {
+			isStale: entry =>
+				this.#isDisposed || !isLaunchCompletionOwner(entry.owner, this.sessionManager.getSessionId()),
+			build: buildLaunchCompletionBatchMessage,
+		});
 		if (this.#asyncJobManager && this.#agentId) {
 			const manager = this.#asyncJobManager;
-			this.#unregisterAsyncProgressQueue = this.yieldQueue.register<AsyncProgressEntry>(
-				ASYNC_PROGRESS_MESSAGE_TYPE,
-				{
-					skipIdleFlush: true,
-					isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
-					build: buildAsyncProgressBatchMessage,
-				},
-			);
-			this.#unregisterAsyncProgressWakeQueue = this.yieldQueue.register<AsyncProgressEntry>(
-				ASYNC_PROGRESS_WAKE_QUEUE_KIND,
-				{
-					isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
-					build: buildAsyncProgressBatchMessage,
-				},
-			);
 			this.yieldQueue.register<AsyncResultEntry>("async-result", {
 				isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
 				build: buildAsyncResultBatchMessage,
 			});
 			this.#unregisterAsyncProgressSink = manager.registerProgressSink(this.#agentId, {
-				state: () => (this.isStreaming ? "streaming" : "idle"),
 				deliver: (jobId, text, job, seq) => this.#deliverAsyncJobProgress(jobId, text, job, seq),
 			});
 			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(this.#agentId, (jobId, text, job) =>
@@ -1885,7 +1894,7 @@ export class AgentSession {
 	 */
 	#hasPendingAsyncWake(): boolean {
 		const manager = this.#asyncJobManager;
-		if (!manager) return false;
+		if (!manager) return this.#activeLaunchWakeMonitors.size > 0;
 		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
 		return (
 			manager.getRunningJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
@@ -1895,7 +1904,8 @@ export class AgentSession {
 			// longer reports it. Without this leg a terminal yield in the
 			// (idle-flush delay / step-boundary) handoff window would read as
 			// quiescent and the run driver would drop the queued result.
-			this.yieldQueue.has(ASYNC_RESULT_MESSAGE_TYPE)
+			this.yieldQueue.has(ASYNC_RESULT_MESSAGE_TYPE) ||
+			this.#activeLaunchWakeMonitors.size > 0
 		);
 	}
 
@@ -6167,6 +6177,38 @@ export class AgentSession {
 		);
 		this.yieldQueue.requestIdleFlush();
 		return delivered;
+	}
+
+	queueLaunchProgress(
+		notification: DaemonOutputNotification,
+		delivery: AsyncJobProgressDelivery,
+		startedAt: number,
+	): void {
+		if (this.#isDisposed) throw new Error("Session disposed before launch progress delivery");
+		const queueKind = delivery === "wake" ? ASYNC_PROGRESS_WAKE_QUEUE_KIND : ASYNC_PROGRESS_MESSAGE_TYPE;
+		this.yieldQueue.enqueue<AsyncProgressEntry>(queueKind, {
+			jobId: notification.name,
+			text: notification.text,
+			job: undefined,
+			source: {
+				id: notification.daemonId,
+				type: "process",
+				label: notification.name,
+				startedAt,
+			},
+			seq: notification.seq,
+			elapsedMs: Math.max(0, Date.now() - startedAt),
+			epoch: this.#asyncDeliveryEpoch,
+			delivery,
+		});
+	}
+
+	setLaunchMonitorActive(monitorId: string, delivery: AsyncJobProgressDelivery, active: boolean): void {
+		if (delivery !== "wake" || !active) {
+			this.#activeLaunchWakeMonitors.delete(monitorId);
+			return;
+		}
+		this.#activeLaunchWakeMonitors.add(monitorId);
 	}
 
 	#queueHiddenNextTurnMessage(message: CustomMessage, triggerTurn: boolean): void {

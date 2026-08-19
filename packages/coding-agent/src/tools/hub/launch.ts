@@ -9,9 +9,17 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import type { AsyncJobProgressDelivery } from "../../async";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { type DaemonBrokerClient, DaemonBrokerRejectedError, daemonClientForProject } from "../../launch/client";
-import type { DaemonOperation, DaemonRpcResult, DaemonSnapshot, DaemonSpec, DaemonState } from "../../launch/protocol";
+import type {
+	DaemonMonitorNotification,
+	DaemonOperation,
+	DaemonRpcResult,
+	DaemonSnapshot,
+	DaemonSpec,
+	DaemonState,
+} from "../../launch/protocol";
 import { renderTerminalOutputIsolated } from "../../launch/terminal-output-worker-client";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
@@ -52,6 +60,126 @@ const completionRegistrations = new WeakMap<
 	ToolSession,
 	Map<DaemonBrokerClient, Map<string, CompletionRegistration>>
 >();
+
+interface OutputRegistration {
+	id: string;
+	name: string;
+	owner: string;
+	delivery: AsyncJobProgressDelivery;
+	startedAt: number;
+	active: boolean;
+	cleanup: () => void;
+}
+
+const outputRegistrations = new WeakMap<ToolSession, Map<DaemonBrokerClient, Map<string, OutputRegistration>>>();
+
+interface OutputLease {
+	registration: OutputRegistration;
+	retain(): void;
+	reject(): void;
+}
+
+function registerOutputSink(
+	session: ToolSession,
+	client: DaemonBrokerClient,
+	name: string,
+	owner: string,
+	delivery: AsyncJobProgressDelivery,
+): OutputLease | undefined {
+	if (!session.queueLaunchProgress || !session.queueLaunchCompletion || !client.onOutput) return undefined;
+	let clients = outputRegistrations.get(session);
+	if (!clients) {
+		clients = new Map();
+		outputRegistrations.set(session, clients);
+	}
+	let monitors = clients.get(client);
+	if (!monitors) {
+		monitors = new Map();
+		clients.set(client, monitors);
+	}
+	const existing = monitors.get(name);
+	const previousDelivery = existing?.delivery;
+	if (existing) {
+		session.setLaunchMonitorActive?.(existing.id, existing.delivery, false);
+		existing.delivery = delivery;
+		session.setLaunchMonitorActive?.(existing.id, delivery, true);
+		let settled = false;
+		return {
+			registration: existing,
+			retain: () => {
+				settled = true;
+			},
+			reject: () => {
+				if (settled || previousDelivery === undefined) return;
+				session.setLaunchMonitorActive?.(existing.id, existing.delivery, false);
+				existing.delivery = previousDelivery;
+				session.setLaunchMonitorActive?.(existing.id, previousDelivery, true);
+			},
+		};
+	}
+
+	const id = crypto.randomUUID();
+	let unregisterDispose: (() => void) | void;
+	let unregisterSessionChange: (() => void) | void;
+	let unregisterOutput = (): void => {};
+	const registration: OutputRegistration = {
+		id,
+		name,
+		owner,
+		delivery,
+		startedAt: Date.now(),
+		active: true,
+		cleanup: () => {
+			if (!registration.active) return;
+			registration.active = false;
+			session.setLaunchMonitorActive?.(id, registration.delivery, false);
+			unregisterOutput();
+			unregisterDispose?.();
+			unregisterSessionChange?.();
+			monitors.delete(name);
+			if (monitors.size === 0) clients.delete(client);
+			if (clients.size === 0) outputRegistrations.delete(session);
+		},
+	};
+	const sink = async (notification: DaemonMonitorNotification): Promise<void> => {
+		if (!registration.active || session.isDisposed?.())
+			throw new Error("Session disposed before launch output delivery");
+		if (notification.event === "daemon-output") {
+			session.queueLaunchProgress?.(notification, registration.delivery, registration.startedAt);
+			return;
+		}
+		registration.cleanup();
+		if (notification.daemon.owner === owner) return;
+		await session.queueLaunchCompletion?.({
+			event: "daemon-completed",
+			completionId: `monitor:${id}:${notification.daemon.id}:${notification.daemon.exitedAt ?? Date.now()}`,
+			owner,
+			daemon: notification.daemon,
+		});
+	};
+	unregisterOutput = client.onOutput({ id, name, owner }, sink);
+	monitors.set(name, registration);
+	session.setLaunchMonitorActive?.(id, delivery, true);
+	unregisterDispose = session.registerDisposeCallback?.(registration.cleanup);
+	unregisterSessionChange = session.registerSessionChangeCallback?.(registration.cleanup);
+	let retained = false;
+	return {
+		registration,
+		retain: () => {
+			retained = true;
+		},
+		reject: () => {
+			if (!retained) registration.cleanup();
+		},
+	};
+}
+
+function detachOutputSink(session: ToolSession, client: DaemonBrokerClient, name: string): boolean {
+	const registration = outputRegistrations.get(session)?.get(client)?.get(name);
+	if (!registration) return false;
+	registration.cleanup();
+	return true;
+}
 
 function registerCompletionSink(
 	session: ToolSession,
@@ -112,7 +240,7 @@ function registerCompletionSink(
 
 /** Broker-facing launch parameters; the hub adapts its `ps` op to `list` before calling in. */
 export interface LaunchParams {
-	op: "start" | "list" | "logs" | "wait" | "send" | "stop" | "restart" | "describe";
+	op: "start" | "list" | "logs" | "wait" | "send" | "stop" | "restart" | "describe" | "monitor";
 	name?: string;
 	application?: string;
 	args?: string[];
@@ -123,6 +251,7 @@ export interface LaunchParams {
 	restart?: "no" | "on-failure" | "always";
 	persist?: boolean;
 	detached?: boolean;
+	progress?: AsyncJobProgressDelivery | "off";
 	lines?: number;
 	head?: boolean;
 	grep?: string;
@@ -167,6 +296,7 @@ export interface LaunchToolDetails {
 	matched?: string;
 	/** describe: immutable launch spec backing the command/cwd detail lines. */
 	spec?: DaemonSpec;
+	monitoring?: AsyncJobProgressDelivery | "off";
 }
 
 function requiredName(params: LaunchParams): string {
@@ -259,6 +389,7 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 		case "restart":
 			return { op: "restart", name: requiredName(params) };
 		case "describe":
+		case "monitor":
 			return { op: "describe", name: requiredName(params) };
 	}
 }
@@ -337,6 +468,9 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 		case "restart":
 			return `Restarted ${daemonLabel(result.daemon)}`;
 		case "describe":
+			if (params.op === "monitor") {
+				return `${params.progress === "off" ? "Stopped monitoring" : "Monitoring"} ${daemonLabel(result.daemon)}`;
+			}
 			return [
 				daemonLabel(result.daemon),
 				`Command: ${[result.spec.application, ...result.spec.args].join(" ")}`,
@@ -382,7 +516,12 @@ async function toolDetails(result: DaemonRpcResult, params: LaunchParams): Promi
 		case "restart":
 			return { op: "restart", daemon: result.daemon };
 		case "describe":
-			return { op: "describe", daemon: result.daemon, spec: result.spec };
+			return {
+				op: params.op === "monitor" ? "monitor" : "describe",
+				daemon: result.daemon,
+				spec: result.spec,
+				monitoring: params.op === "monitor" ? params.progress : undefined,
+			};
 		case "ping":
 		case "shutdown":
 			throw new ToolError(`Internal daemon result ${result.op} is not tool-visible`);
@@ -396,16 +535,50 @@ export async function executeLaunch(
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<LaunchToolDetails>> {
 	const client = await daemonClientForProject(session.cwd);
+	if (params.progress !== undefined && params.op !== "start" && params.op !== "monitor") {
+		throw new ToolError("progress is only valid with start or monitor");
+	}
+	if (params.op === "start" && params.progress === "off") throw new ToolError("start progress cannot be off");
+	if (params.op === "start" && params.detached && params.progress !== undefined) {
+		throw new ToolError("Live progress monitoring is unavailable for detached processes");
+	}
+	if (params.op === "monitor" && params.progress === undefined) {
+		throw new ToolError("monitor requires progress: wake, ambient, or off");
+	}
+	const name = params.op === "start" || params.op === "monitor" ? requiredName(params) : undefined;
+	const owner = session.getSessionId?.() ?? undefined;
+	if (params.op === "monitor" && params.progress === "off" && name) detachOutputSink(session, client, name);
+	const progressDelivery = params.progress === "wake" || params.progress === "ambient" ? params.progress : undefined;
+	const outputLease =
+		name && owner && progressDelivery
+			? registerOutputSink(session, client, name, owner, progressDelivery)
+			: undefined;
+	if (progressDelivery && !outputLease) throw new ToolError("This session cannot accept process progress delivery");
 	const operation = operationFor(params, session);
-	const owner = operation.op === "start" ? operation.owner : undefined;
+	const completionOwner = operation.op === "start" ? operation.owner : undefined;
 	const resumedOwner = params.op !== "start" ? (session.getSessionId?.() ?? undefined) : undefined;
-	const completionLease = owner
-		? registerCompletionSink(session, client, owner)
+	const completionLease = completionOwner
+		? registerCompletionSink(session, client, completionOwner)
 		: resumedOwner
 			? registerCompletionSink(session, client, resumedOwner)
 			: undefined;
 	try {
+		if (progressDelivery) {
+			const ping = await client.request({ op: "ping" }, signal);
+			if (ping.op !== "ping" || !ping.capabilities?.includes("output-monitor-v1")) {
+				throw new ToolError("The running daemon broker cannot monitor output; restart it with this omp build");
+			}
+		}
 		const result = await client.request(operation, signal);
+		if (outputLease && "daemon" in result && result.daemon) {
+			if (result.daemon.detached)
+				throw new ToolError("Live progress monitoring is unavailable for detached processes");
+			if (params.op === "monitor" && TERMINAL_STATES[result.daemon.state]) {
+				throw new ToolError(`Cannot monitor ${params.name}: process is ${result.daemon.state}`);
+			}
+			outputLease.registration.startedAt = result.daemon.startedAt;
+			outputLease.retain();
+		}
 		const sessionOwner = session.getSessionId?.();
 		let resumedDaemonFound = false;
 		const daemons =
@@ -422,7 +595,8 @@ export async function executeLaunch(
 			details: await toolDetails(result, params),
 		};
 	} catch (error) {
-		if (error instanceof DaemonBrokerRejectedError && owner) {
+		outputLease?.reject();
+		if (error instanceof DaemonBrokerRejectedError && completionOwner) {
 			if (completionLease?.hasConcurrentRequest()) {
 				completionLease.reject();
 			} else {
@@ -618,7 +792,8 @@ export function launchRenderResult(
 				}
 				break;
 			}
-			case "describe": {
+			case "describe":
+			case "monitor": {
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
 				const spec = details?.spec;
 				if (spec) {

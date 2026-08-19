@@ -22,24 +22,18 @@ function heldJob(manager: AsyncJobManager, ownerId = "Main", progressDelivery: A
 	return { jobId, report: started.promise, release: gate.resolve };
 }
 
-function recordingSink(active = true): {
+function recordingSink(): {
 	sink: AsyncJobProgressSink;
 	seen: Array<{ jobId: string; text: string; seq: number }>;
-	setActive(value: boolean): void;
 } {
 	const seen: Array<{ jobId: string; text: string; seq: number }> = [];
-	let state: "idle" | "streaming" = active ? "streaming" : "idle";
 	return {
 		sink: {
-			state: () => state,
 			deliver: (jobId, text, _job: AsyncJob, seq) => {
 				seen.push({ jobId, text, seq });
 			},
 		},
 		seen,
-		setActive(value) {
-			state = value ? "streaming" : "idle";
-		},
 	};
 }
 
@@ -78,9 +72,9 @@ describe("AsyncJobManager model progress", () => {
 		]);
 	});
 
-	test("respects wait/ack suppression and routes only to the owning active session", async () => {
+	test("routes ambient events to the owning queue while idle and respects wait/ack suppression", async () => {
 		const manager = new AsyncJobManager({});
-		const mine = recordingSink(false);
+		const mine = recordingSink();
 		const other = recordingSink();
 		manager.registerProgressSink("Main", mine.sink);
 		manager.registerProgressSink("Other", other.sink);
@@ -88,10 +82,7 @@ describe("AsyncJobManager model progress", () => {
 		const report = await job.report;
 
 		report("idle");
-		expect(mine.seen).toEqual([]);
-		mine.setActive(true);
-		report("active");
-		expect(mine.seen.map(item => item.text)).toEqual(["idle\nactive"]);
+		expect(mine.seen.map(item => item.text)).toEqual(["idle"]);
 		expect(other.seen).toEqual([]);
 
 		manager.watchJobs([job.jobId]);
@@ -108,7 +99,7 @@ describe("AsyncJobManager model progress", () => {
 
 	test("delivers wake progress to an idle owner", async () => {
 		const manager = new AsyncJobManager({});
-		const recorder = recordingSink(false);
+		const recorder = recordingSink();
 		manager.registerProgressSink("Main", recorder.sink);
 		const job = heldJob(manager, "Main", "wake");
 		const report = await job.report;
@@ -127,7 +118,6 @@ describe("AsyncJobManager model progress", () => {
 		const order: string[] = [];
 		const manager = new AsyncJobManager({});
 		manager.registerProgressSink("Main", {
-			state: () => "idle",
 			deliver: async () => {
 				order.push("progress:start");
 				progressStarted.resolve();
@@ -164,7 +154,6 @@ describe("AsyncJobManager model progress", () => {
 		const completions: string[] = [];
 		const manager = new AsyncJobManager({});
 		manager.registerProgressSink("Main", {
-			state: () => "streaming",
 			deliver: async () => {
 				throw new Error("sink failed");
 			},

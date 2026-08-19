@@ -18,7 +18,7 @@ Use ONLY for one binary or a short pipeline that computes a fact (`wc -l`, `sort
 {{#if hasGrep}}- NEVER use shell `grep`/`rg`; use built-in `grep`.{{/if}}
 {{#if hasRead}}{{#if hasGlob}}- List directories with `read` and find paths with `glob`; NEVER use `ls`/`find`.{{/if}}{{/if}}
 - Avoid `head`, `tail`, and redirection: output is captured, truncated, and linked as `artifact://<id>`.
-{{#if hasLaunch}}- Services, watchers, debuggers, and REPLs MUST use `hub` (`op:"start"`).{{/if}}
+{{#if hasLaunch}}- Services, watchers, debuggers, and REPLs MUST use `hub` (`op:"start"`); add `progress:"wake"` when pre-exit output may require action.{{/if}}
 </critical>
 
 {{#if autoBackgroundEnabled}}Long foreground calls may auto-background and deliver later. Need inline? Raise `timeout`.{{/if}}
