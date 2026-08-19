@@ -49,7 +49,7 @@
 ### Added
 
 - Added `providers.cacheRetention` setting (`/settings` → Providers → Protocol) to control prompt-cache retention per request: `auto` keeps the provider default (Anthropic: 5m entries with idle keep-alive refreshes), `short` forces 5m, `long` restores 1h TTLs where supported and disables the keep-alive refresh loop, `none` disables prompt caching.
-- Added drop-free batching of bounded ambient or wake progress events for asynchronous Bash jobs and Hub processes. Agents can also attach to an existing Hub process and receive output without polling ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
+- Added drop-free batching of bounded ambient or wake progress events for asynchronous Bash jobs and Hub processes. Bash `async: "auto"` keeps quick commands inline and activates notifications only when a slow command is promoted to background; agents can also attach to an existing Hub process without polling ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
 
 ### Changed
 

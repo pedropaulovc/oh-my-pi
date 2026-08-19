@@ -329,7 +329,9 @@ const bashSchemaWithAsync = type({
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
 	"pty?": "boolean",
-	"async?": type("boolean").describe("run in background"),
+	"async?": type("boolean | 'auto'").describe(
+		"true starts in background; auto starts inline and backgrounds only after the configured grace period",
+	),
 	"progress?": type("'ambient' | 'wake'").describe(
 		"deliver complete output lines to the agent while the background job runs; wake starts a follow-up turn while idle",
 	),
@@ -343,7 +345,7 @@ export interface BashToolInput {
 	timeout?: number;
 	cwd?: string;
 
-	async?: boolean;
+	async?: boolean | "auto";
 	pty?: boolean;
 	progress?: AsyncJobProgressDelivery;
 }
@@ -383,6 +385,7 @@ interface ManagedBashJobHandle {
 	completion: Promise<ManagedBashJobCompletion>;
 	getLatestText: () => string;
 	stopUpdates: () => void;
+	activateProgress: (delivery: AsyncJobProgressDelivery) => boolean;
 }
 
 function normalizeResultOutput(result: BashResult | BashInteractiveResult): string {
@@ -817,6 +820,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
 		forwardUpdates: boolean;
 		progressDelivery?: AsyncJobProgressDelivery;
+		deferredProgressDelivery?: AsyncJobProgressDelivery;
 	}): ManagedBashJobHandle {
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
@@ -834,7 +838,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			async ({ jobId, signal: runSignal, reportProgress, reportAgentProgress }) => {
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
-				const progressLines = options.progressDelivery ? new ProgressLines(reportAgentProgress) : undefined;
+				const progressLines =
+					options.progressDelivery || options.deferredProgressDelivery
+						? new ProgressLines(reportAgentProgress)
+						: undefined;
 				const wallTimeStart = performance.now();
 				try {
 					let result: BashResult;
@@ -907,6 +914,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			stopUpdates: () => {
 				forwardUpdates = false;
 			},
+			activateProgress: delivery => manager.activateProgressDelivery(jobId, delivery),
 		};
 	}
 
@@ -941,11 +949,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				command = cd.rest;
 			}
 		}
-		if (asyncRequested && !this.#asyncEnabled) {
+		const executionMode = asyncRequested === true ? "background" : asyncRequested === "auto" ? "auto" : "foreground";
+		if (executionMode !== "foreground" && !this.#asyncEnabled) {
 			throw new ToolError("Async bash execution is disabled. Enable async.enabled to use async mode.");
 		}
-		if (progress && !asyncRequested) {
-			throw new ToolError("progress requires `async: true`; foreground commands return their output directly.");
+		if (progress && executionMode === "foreground") {
+			throw new ToolError(
+				'progress requires `async: true` or `async: "auto"`; foreground commands return their output directly.',
+			);
 		}
 
 		// Check both the original command and the cwd-normalized command so
@@ -1025,7 +1036,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			if (timeoutClampNotice) pendingNotices.push(timeoutClampNotice);
 		}
 
-		if (asyncRequested) {
+		if (executionMode === "background") {
 			if (!this.session.asyncJobManager) {
 				throw new ToolError("Async job manager unavailable for this session.");
 			}
@@ -1057,12 +1068,17 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		);
 
 		const autoBgManager = this.session.asyncJobManager;
+		const autoRequested = executionMode === "auto";
+		if (autoRequested && !autoBgManager) {
+			throw new ToolError("Background job manager unavailable for this session.");
+		}
+		if (autoRequested && autoBgManager?.atCapacity) {
+			throw new ToolError("Background job limit reached. Wait for a running job to finish or cancel one.");
+		}
 		// At the running-job cap, fall through to direct foreground execution
 		// instead of failing every bash call until a slot frees up.
 		if (
-			this.#autoBackgroundEnabled &&
-			!pty &&
-			!bridgeTerminalAvailable &&
+			(autoRequested || (this.#autoBackgroundEnabled && !pty && !bridgeTerminalAvailable)) &&
 			autoBgManager &&
 			!autoBgManager.atCapacity
 		) {
@@ -1079,6 +1095,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				resolvedEnv,
 				onUpdate,
 				forwardUpdates: !startBackgrounded,
+				progressDelivery: startBackgrounded ? progress : undefined,
+				deferredProgressDelivery: startBackgrounded ? undefined : progress,
 			});
 			if (startBackgrounded) {
 				return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
@@ -1107,6 +1125,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				throw new ToolAbortError(job.getLatestText() || "Command aborted");
 			}
 			job.stopUpdates();
+			if (progress) job.activateProgress(progress);
 			autoBgManager.resumeDeliveries([job.jobId]);
 			// "steer": a queued user/peer message arrived mid-wait — background
 			// the command (it keeps running) so the message injects promptly.

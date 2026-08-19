@@ -14,7 +14,8 @@ const SETTINGS: Record<string, unknown> = {
 	"glob.enabled": false,
 };
 
-function makeSession(manager: AsyncJobManager): ToolSession {
+function makeSession(manager: AsyncJobManager, overrides: Record<string, unknown> = {}): ToolSession {
+	const settings = { ...SETTINGS, ...overrides };
 	return {
 		cwd: "/tmp",
 		hasUI: false,
@@ -24,7 +25,7 @@ function makeSession(manager: AsyncJobManager): ToolSession {
 		getSessionId: () => "progress-test",
 		getSessionFile: () => null,
 		settings: {
-			get: (key: string) => SETTINGS[key],
+			get: (key: string) => settings[key],
 			getBashInterceptorRules: () => [],
 			getShellConfig: () => ({}),
 		},
@@ -48,8 +49,8 @@ describe("bash progress parameter", () => {
 		const manager = new AsyncJobManager({});
 		const tool = new BashTool(makeSession(manager));
 
-		expect(tool.description).toContain("Quick commands foreground");
-		expect(tool.description).toContain("only for finite work crossing turns");
+		expect(tool.description).toContain('`async: "auto"` keeps quick work inline and backgrounds slow work');
+		expect(tool.description).toContain("`async: true` starts background immediately");
 		expect(tool.description).toContain("non-empty merged lines");
 		expect(tool.description).toContain("final 4,000 chars");
 		expect(tool.description).toContain("drop-free batches ≤1/s");
@@ -117,4 +118,64 @@ describe("bash progress parameter", () => {
 			/requires `async: true`/,
 		);
 	});
+
+	test("keeps a quick auto command inline without progress or completion delivery", async () => {
+		const manager = new AsyncJobManager({});
+		const progress = collectProgress(manager);
+		const completions: string[] = [];
+		manager.registerDeliverySink("Main", (_jobId, text) => {
+			completions.push(text);
+		});
+		const tool = new BashTool(makeSession(manager, { "bash.autoBackground.thresholdMs": 2_000 }));
+
+		const result = await tool.execute("auto-inline", {
+			command: "printf 'quick-result\\n'",
+			async: "auto",
+			progress: "wake",
+		});
+		await manager.waitForAll();
+		await manager.drainDeliveries({ timeoutMs: 10 });
+
+		expect(result.details?.async).toBeUndefined();
+		expect(result.content).toContainEqual(
+			expect.objectContaining({ type: "text", text: expect.stringContaining("quick-result") }),
+		);
+		expect(progress).toEqual([]);
+		expect(completions).toEqual([]);
+		await manager.dispose();
+	});
+
+	test("promotes a slow auto command and delivers only later lines before completion", async () => {
+		const manager = new AsyncJobManager({});
+		const events: string[] = [];
+		manager.registerProgressSink("Main", {
+			deliver: (_jobId, text) => {
+				events.push(`progress:${text}`);
+			},
+		});
+		manager.registerDeliverySink("Main", (_jobId, text) => {
+			events.push(`completion:${text}`);
+		});
+		const tool = new BashTool(makeSession(manager, { "bash.autoBackground.thresholdMs": 20 }));
+
+		const result = await tool.execute("auto-promote", {
+			command: "printf 'before-promotion\\n'; sleep 0.08; printf 'after-promotion\\n'",
+			async: "auto",
+			progress: "wake",
+		});
+
+		expect(result.details?.async?.state).toBe("running");
+		expect(result.content).toContainEqual(
+			expect.objectContaining({ type: "text", text: expect.stringContaining("before-promotion") }),
+		);
+		await manager.waitForAll();
+		await manager.drainDeliveries({ timeoutMs: 10 });
+
+		expect(events[0]).toBe("progress:after-promotion");
+		expect(events[1]).toContain("completion:");
+		expect(events[1]).toContain("before-promotion");
+		expect(events[1]).toContain("after-promotion");
+		expect(events.join("\n").match(/progress:before-promotion/g)).toBeNull();
+		await manager.dispose();
+	}, 10_000);
 });

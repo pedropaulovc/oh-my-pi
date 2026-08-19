@@ -26,12 +26,12 @@
 | `timeout` | `number` | No | Timeout in seconds. Default `300`. `0` disables the deadline. Positive values are capped by `tools.maxTimeout` when that setting is positive, then clamped to the Bash range `1..3600`. |
 | `cwd` | `string` | No | Working directory, resolved against `session.cwd` via `resolveToCwd`. Must exist and be a directory. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
-| `async` | `boolean` | No | Background execution request. Present only when `async.enabled` is true for the session. Returns immediately with a job id instead of waiting; it does not change the effective deadline, including a disabled deadline from `timeout: 0`. |
-| `progress` | `"ambient" \| "wake"` | No | With `async: true`, deliver complete non-empty output-line events to the model. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once per second, with every event in the interval retained in the batch. Oversized events retain the final 4,000 characters. |
+| `async` | `boolean \| "auto"` | No | `true` starts a background job immediately. `"auto"` starts inline, returns inline if the command finishes within `bash.autoBackground.thresholdMs`, and otherwise promotes the same process to a background job. Present only when `async.enabled` is true. Neither mode changes the command deadline, including `timeout: 0`. |
+| `progress` | `"ambient" \| "wake"` | No | With `async: true` or `async: "auto"`, deliver complete non-empty output-line events to the model. In auto mode, delivery activates only after promotion: earlier output appears in the foreground/background-start result instead. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once per second, with every event in the interval retained in the batch. Oversized events retain the final 4,000 characters. |
 
 ## Agent-facing guidance
 
-When async execution is enabled, the Bash tool description keeps quick commands foreground and reserves `async: true` for finite work that should cross a turn boundary. `progress: "wake"` is waking, events produced while the model is busy batch without drops, ambient progress never wakes, oversized events retain their final 4,000 characters, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
+When async execution is enabled, the Bash tool description recommends `async: "auto"` for finite commands: quick work still returns inline, while slow work crosses the turn boundary without restarting the process. `async: true` remains the immediate-background mode. `progress: "wake"` is waking, events produced while the model is busy batch without drops, ambient progress never wakes, oversized events retain their final 4,000 characters, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
 
 `wake` is a harness push, not a reason to hold the current turn open. Agents must not call `hub wait`, follow logs, or block to receive progress or keep the turn alive; they should use async progress and end the turn instead. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
 
@@ -50,7 +50,7 @@ When either async Bash or Hub process monitoring is available, the system prompt
 
 ```text
 <async-progress>
-Quick commands stay foreground. Finite work expected to outlive useful current-turn work → `bash` with `async: true`, `progress: "wake"`.
+Finite commands → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline); `async: true` starts background immediately.
 Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).
 NEVER call `hub wait`, follow logs, or block to receive progress or keep the turn alive; use async progress and end the turn instead.
 </async-progress>
@@ -65,7 +65,7 @@ This comparison uses the observed Claude Code 2.1.233 Monitor contract. Each sur
 | Capability | OMP async Bash | OMP Hub monitoring | Claude Code Monitor |
 | --- | --- | --- | --- |
 | Intended workload | Finite command spanning turns | Shared long-running process, watcher, service, debugger, or REPL | Command or WebSocket watcher |
-| Start operation | `bash` with `async: true`, `progress: "wake"` | `hub` `op:"start"`, `progress:"wake"` | Top-level `Monitor` call with a command or WebSocket URL |
+| Start operation | `bash` with `async: "auto"`, `progress: "wake"` (or `async: true` for immediate background) | `hub` `op:"start"`, `progress:"wake"` | Top-level `Monitor` call with a command or WebSocket URL |
 | Attach or retune | No; progress belongs to the command | `hub` `op:"monitor"` by stable process name | No attach/retune operation observed |
 | Detach without stopping work | No separate subscription | `progress:"off"` | Persistent monitor is stopped through task control |
 | Harness push while idle | Starts a follow-up turn | Starts a follow-up turn | Starts a follow-up turn |
@@ -81,7 +81,7 @@ OMP Hub monitoring is the persistent-process counterpart to Claude Code Monitor'
 
 ## Live model behavioral eval
 
-The opt-in eval runs a real authenticated model through the normal `AgentSession`. Its Bash wake scenario requires `async: true` with `progress: "wake"`; its Hub scenario requires a persistent `start` with `progress: "wake"`. In both cases the harness must inject the marker before completion, a later assistant message must acknowledge the pushed event, and the model must avoid blocking/polling calls. The quick-command case requires one foreground Bash call, no async notification, and a reported result. The user prompts do not mention these selection rules, so the criteria measure agent-facing policy rather than parroting eval instructions.
+The opt-in eval runs a real authenticated model through the normal `AgentSession`. Its Bash wake scenario accepts `async: "auto"` or immediate `async: true` with `progress: "wake"`; its Hub scenario requires a persistent `start` with `progress: "wake"`. In both cases the harness must inject the marker before completion, a later assistant message must acknowledge the pushed event, and the model must avoid blocking/polling calls. The quick-command case requires one Bash call that finishes inline, no async notification, and a reported result. The user prompts do not mention these selection rules, so the criteria measure agent-facing policy rather than parroting eval instructions.
 
 ```bash
 bun --cwd=packages/coding-agent run eval:async-progress --model <provider/model> --runs 3
@@ -103,7 +103,7 @@ The tool returns a single `text` content block plus optional `details`.
   - `details.timedOut: true`: present on local/PTY timeout results.
   - `details.meta.truncation`: present when output was truncated in memory; includes `artifactId` when full output spilled to an artifact.
   - non-zero exits and local/PTY timeouts return a tool result marked `isError`; definite non-zero output ends with `Command exited with code <n>`.
-- Success, background start (`async: true` or auto-background):
+- Success, background start (`async: true`, promoted `async: "auto"`, or settings-driven auto-background):
   - `content[0].text`: optional preview tail and notices, followed by `Backgrounded as job <id>; result will be delivered automatically.`
   - `details.async`: `{ state: "running", jobId, type: "bash" }`.
 - Background progress / completion:
@@ -196,9 +196,10 @@ Choose the setting by the desired outcome:
 7. `timeout: 0` disables the deadline. Otherwise `clampTimeout("bash", requestedTimeoutSec, tools.maxTimeout)` applies a positive global ceiling (when configured), then `TOOL_TIMEOUTS.bash` (`min: 1`, `max: 3600`). When clamped, `#buildCompletedResult()` / `#buildBackgroundStartResult()` append a notice line.
 8. Execution path splits:
    1. `async: true` -> `#startManagedBashJob()` registers a session async job and returns immediately.
-   2. Non-PTY with `bash.autoBackground.enabled`, an async job manager below its running-job cap, and no client-terminal bridge available (the bridge wins when both apply) -> starts a managed job, waits up to `min(thresholdMs, timeoutMs - 1000)`, and either returns the completed result or converts the run into a background job.
-   3. Non-PTY client-terminal bridge, when the session advertises terminal capability and `pty` is false -> creates a remote terminal, streams/polls current output, and releases the terminal after completion.
-   4. Otherwise runs foreground execution.
+   2. `async: "auto"` -> starts a managed job, waits up to `min(thresholdMs, timeoutMs - 1000)`, returns completed work inline, or promotes the same process and activates requested progress delivery. The explicit mode works independently of `bash.autoBackground.enabled` and errors rather than degrading at the job limit.
+   3. Non-PTY with `bash.autoBackground.enabled`, an async job manager below its running-job cap, and no client-terminal bridge available (the bridge wins when both apply) -> applies the same inline-then-promote lifecycle to unmarked foreground calls, without model-facing progress.
+   4. Non-PTY client-terminal bridge, when the session advertises terminal capability and `pty` is false -> creates a remote terminal, streams/polls current output, and releases the terminal after completion.
+   5. Otherwise runs foreground execution.
 9. Foreground non-PTY without client terminal calls `executeBash()` from `packages/coding-agent/src/exec/bash-executor.ts`; that path performs direnv/devenv preflight itself.
 10. Foreground PTY and client-terminal paths run the same direnv preflight in `BashTool` before dispatch. With `bash.direnv: "auto"` (the default), an allowed `.envrc` may merge environment changes into the command; `"off"` disables this. `bash.direnvLoadTimeoutMs` defaults to `30_000`, and a positive command timeout also bounds the preflight.
 11. Local non-PTY and PTY paths allocate an output artifact first when `session.allocateOutputArtifact` is available. The artifact path/id are passed into the sink so large output can spill to disk.
@@ -224,10 +225,13 @@ Choose the setting by the desired outcome:
 4. Explicit background job
    - Requires `async: true` and `async.enabled`.
    - Registers a job with `session.asyncJobManager` and returns `{ state: "running", jobId }` immediately. `timeout: 0` leaves the job without a tool-imposed deadline.
-5. Auto-backgrounded non-PTY job
+5. Explicit auto job
+   - Requires `async: "auto"`, `async.enabled`, and an async job manager below its running-job cap.
+   - Starts inline, returns short work directly, and activates progress only if it outlives the wait window and becomes a background job.
+6. Settings-driven auto-backgrounded non-PTY job
    - Requires `bash.autoBackground.enabled`, no PTY/client-terminal bridge, and an async job manager below its running-job cap.
-   - Starts like a foreground managed job, then backgrounds it when it outlives the wait window; at capacity, Bash falls back to direct foreground execution.
-6. Intercepted command
+   - Applies the same promotion lifecycle to unmarked calls; at capacity, Bash falls back to direct foreground execution.
+7. Intercepted command
    - No subprocess created.
    - Returns a `ToolError` pointing the model at `read`, `grep`, `glob`, `edit`, or `write`.
 

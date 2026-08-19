@@ -39,7 +39,7 @@ interface EvalConfig {
 interface BashCall {
 	op?: never;
 	command?: string;
-	async?: boolean;
+	async?: boolean | "auto";
 	progress?: string;
 }
 
@@ -122,7 +122,7 @@ function parseBashCall(value: unknown): BashCall {
 	if (!isRecord(value)) return {};
 	return {
 		command: typeof value.command === "string" ? value.command : undefined,
-		async: typeof value.async === "boolean" ? value.async : undefined,
+		async: typeof value.async === "boolean" || value.async === "auto" ? value.async : undefined,
 		progress: typeof value.progress === "string" ? value.progress : undefined,
 	};
 }
@@ -195,7 +195,8 @@ function scoreMessages(
 			messageText(message).includes(ACKNOWLEDGEMENT[surface]),
 	);
 	const selectedWake = toolCalls.some(call => {
-		if (surface === "bash") return "async" in call && call.async === true && call.progress === "wake";
+		if (surface === "bash")
+			return "async" in call && (call.async === true || call.async === "auto") && call.progress === "wake";
 		return "op" in call && call.op === "start" && call.progress === "wake";
 	});
 	const hubCalls = toolCalls.filter((call): call is HubCall => "op" in call);

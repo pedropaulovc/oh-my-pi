@@ -524,6 +524,14 @@ export class AsyncJobManager {
 		};
 	}
 
+	/** Enable model-facing progress for a running job after a caller-managed foreground phase. */
+	activateProgressDelivery(jobId: string, delivery: AsyncJobProgressDelivery): boolean {
+		const job = this.#jobs.get(jobId);
+		if (job?.status !== "running") return false;
+		job.progressDelivery = delivery;
+		return true;
+	}
+
 	#recordAgentProgress(job: AsyncJob, text: string): void {
 		if (
 			this.#disposed ||
