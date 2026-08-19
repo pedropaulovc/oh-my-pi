@@ -92,6 +92,28 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 		expect(AsyncJobManager.instance()).toBeUndefined();
 	}, 60000);
 
+	it("advertises harness-pushed Bash progress in the production system prompt", async () => {
+		const session = await spawnTopLevelSession({ "async.enabled": true });
+		try {
+			const systemPrompt = session.systemPrompt.join("\n\n");
+			expect(systemPrompt).toContain("# Background Bash Push Events");
+			expect(systemPrompt).toContain('`async: true` and `progress: "wake"` instead of polling');
+			expect(systemPrompt).toContain("Lines emitted while the agent is busy are retained and delivered together");
+			expect(systemPrompt).toContain("starts a follow-up turn when the agent is idle");
+		} finally {
+			await session.dispose();
+		}
+	}, 60000);
+
+	it("omits Bash push guidance when async execution is disabled", async () => {
+		const session = await spawnTopLevelSession({ "async.enabled": false });
+		try {
+			expect(session.systemPrompt.join("\n\n")).not.toContain("# Background Bash Push Events");
+		} finally {
+			await session.dispose();
+		}
+	}, 60000);
+
 	it("does not cancel the primary session's running jobs when a secondary session disposes", async () => {
 		const primary = await spawnTopLevelSession();
 		try {

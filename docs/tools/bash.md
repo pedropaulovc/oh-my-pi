@@ -45,7 +45,18 @@ The following output events were emitted by a background job. The harness pushed
 <all output events queued for this job>
 ```
 
-The tool guidance is part of the Bash tool schema rather than the system-message text. The progress message is a harness-injected `async-progress` message in the model's conversation.
+When async Bash is available, the system prompt includes this capability block in addition to the Bash tool schema:
+
+```text
+# Background Bash Push Events
+For a finite command whose output may require action before it exits, call `bash` with `async: true` and `progress: "wake"` instead of polling.
+- The harness pushes every complete, non-empty merged stdout/stderr line into the conversation and starts a follow-up turn when the agent is idle.
+- Lines emitted while the agent is busy are retained and delivered together in the next progress batch; no queued event is replaced by a newer event.
+- Use `progress: "ambient"` only when updates may wait for an already-active turn; ambient progress never starts a turn.
+- Progress and command completion are separate notifications. Continue other useful work after arming the command and react when the harness delivers either notification.
+```
+
+Each delivered progress batch is a harness-injected `async-progress` message in the model's conversation.
 
 ### Capability compared with Claude Code Monitor
 
