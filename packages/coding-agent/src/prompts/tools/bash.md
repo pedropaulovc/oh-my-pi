@@ -9,9 +9,8 @@ Use ONLY for one binary or a short pipeline that computes a fact (`wc -l`, `sort
 - Order-dependent commands use `&&` in one call; independent calls may run concurrently.
 - Internal URIs (`skill://`, `agent://`, …) auto-resolve to paths.
 {{#if hasShellBuiltins}}- aux utils available: mkdir, wc, sort, comm, diff, uniq, base64, cmp, md5sum, sha{1,224,256,384,512}sum, b2sum, basename, dirname, readlink, realpath, touch, stat, date, mktemp, seq, yes, printenv, truncate, tac, nproc, uname, whoami, hostname, which, ps, pgrep, pkill, pidwait, top, cut, tee, tr, paste, sed, xargs, jq, rm, mv, ln, ts, sponge, ifne, isutf8, combine{{#unless isWindows}}, errno{{/unless}}{{/if}}
-{{#if asyncEnabled}}- `async: true` defers a finite command; it does not extend `timeout`.
-- For actionable pre-exit output, set `progress: "wake"`: the harness retains every complete non-empty merged stdout/stderr line, batches pushes to at most once per second, and wakes the agent when idle.
-- Lines emitted while busy arrive together; `progress: "ambient"` waits for an active turn and never wakes. Completion is separate; do other work, then react to either notification.{{/if}}
+{{#if asyncEnabled}}- `async: true` defers a finite command without extending `timeout`. `progress: "wake"` retains every complete non-empty merged stdout/stderr line, pushes at most once per second, and wakes an idle agent.
+- Busy lines batch losslessly; `progress: "ambient"` waits for an active turn and never wakes. Completion is separate.{{/if}}
 </instruction>
 
 <critical>
