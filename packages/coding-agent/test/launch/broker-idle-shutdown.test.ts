@@ -7,7 +7,7 @@ import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
+import { type DaemonBrokerStartOptions, startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
 import { createDaemonBrokerClient } from "../../src/launch/client";
 import { daemonBrokerEndpoint } from "../../src/launch/paths";
 import {
@@ -20,7 +20,8 @@ import {
 } from "../../src/launch/protocol";
 
 const UNAUTHENTICATED_IDLE_GRACE_MS = 50;
-const UNAUTHENTICATED_HOLD_MS = 200;
+const DELAYED_AUTH_HOLD_MS = 200;
+const SILENT_AUTH_TIMEOUT_MS = 200;
 
 interface StartedBroker {
 	finished: Promise<void>;
@@ -32,7 +33,12 @@ function restoreEnv(name: string, value: string | undefined): void {
 	else process.env[name] = value;
 }
 
-function startBroker(projectDir: string, runtimeDir: string, idleGraceMs: number): StartedBroker {
+function startBroker(
+	projectDir: string,
+	runtimeDir: string,
+	idleGraceMs: number,
+	options: DaemonBrokerStartOptions = {},
+): StartedBroker {
 	const previousProjectDir = process.env[DAEMON_PROJECT_DIR_ENV];
 	const previousRuntimeDir = process.env[DAEMON_RUNTIME_DIR_ENV];
 	const previousGrace = process.env[DAEMON_IDLE_GRACE_ENV];
@@ -40,7 +46,7 @@ function startBroker(projectDir: string, runtimeDir: string, idleGraceMs: number
 	process.env[DAEMON_PROJECT_DIR_ENV] = projectDir;
 	process.env[DAEMON_RUNTIME_DIR_ENV] = runtimeDir;
 	process.env[DAEMON_IDLE_GRACE_ENV] = String(idleGraceMs);
-	const finished = startDaemonBrokerFromEnvironment({ onListening: resolveReady });
+	const finished = startDaemonBrokerFromEnvironment({ ...options, onListening: resolveReady });
 	restoreEnv(DAEMON_PROJECT_DIR_ENV, previousProjectDir);
 	restoreEnv(DAEMON_RUNTIME_DIR_ENV, previousRuntimeDir);
 	restoreEnv(DAEMON_IDLE_GRACE_ENV, previousGrace);
@@ -154,7 +160,7 @@ describe("daemon broker idle shutdown", () => {
 		const socket = await connect(daemonBrokerEndpoint(projectDir, runtimeDir));
 
 		try {
-			await Bun.sleep(UNAUTHENTICATED_HOLD_MS);
+			await Bun.sleep(DELAYED_AUTH_HOLD_MS);
 			const id = crypto.randomUUID();
 			const request: DaemonWireRequest = { id, token, operation: { op: "ping" } };
 			const response = readResponse(socket);
@@ -170,19 +176,22 @@ describe("daemon broker idle shutdown", () => {
 		}
 	}, 30_000);
 
-	it("rearms idle shutdown when a silent unauthenticated socket closes", async () => {
+	it("closes a silent unauthenticated socket and rearms idle shutdown", async () => {
 		using tempDir = TempDir.createSync("@omp-launch-idle-silent-");
 		const projectDir = path.join(tempDir.path(), "project");
 		const runtimeDir = path.join(tempDir.path(), "runtime");
 		await fs.mkdir(projectDir);
 		const client = await createDaemonBrokerClient(projectDir, { runtimeDir });
 		client.close();
-		const broker = startBroker(projectDir, runtimeDir, UNAUTHENTICATED_IDLE_GRACE_MS);
+		const broker = startBroker(projectDir, runtimeDir, UNAUTHENTICATED_IDLE_GRACE_MS, {
+			clientAuthTimeoutMs: SILENT_AUTH_TIMEOUT_MS,
+		});
 		await broker.ready;
 		const socket = await connect(daemonBrokerEndpoint(projectDir, runtimeDir));
 
-		await Bun.sleep(UNAUTHENTICATED_HOLD_MS);
-		socket.destroy();
+		const { promise: closed, resolve: resolveClosed } = Promise.withResolvers<void>();
+		socket.once("close", resolveClosed);
+		await closed;
 		await broker.finished;
 	}, 30_000);
 });

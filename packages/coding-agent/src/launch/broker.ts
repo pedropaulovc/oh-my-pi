@@ -354,6 +354,7 @@ class DaemonBroker {
 	readonly #token: string;
 	readonly #idleGraceMs: number;
 	readonly #restartBackoffBaseMs: number;
+	readonly #clientAuthTimeoutMs: number;
 	readonly #records = new Map<string, ManagedDaemon>();
 	/**
 	 * Names reserved by an in-flight `start` before its record lands in
@@ -379,6 +380,7 @@ class DaemonBroker {
 		token: string,
 		idleGraceMs: number,
 		restartBackoffBaseMs: number,
+		clientAuthTimeoutMs: number,
 	) {
 		this.#projectDir = projectDir;
 		this.#runtimeDir = runtimeDir;
@@ -386,6 +388,7 @@ class DaemonBroker {
 		this.#token = token;
 		this.#idleGraceMs = idleGraceMs;
 		this.#restartBackoffBaseMs = restartBackoffBaseMs;
+		this.#clientAuthTimeoutMs = clientAuthTimeoutMs;
 	}
 
 	async run(onListening?: () => void): Promise<void> {
@@ -434,7 +437,7 @@ class DaemonBroker {
 		this.#idleTimer = undefined;
 		let authenticated = false;
 		let buffer = "";
-		const authenticationTimer = setTimeout(() => socket.destroy(), CLIENT_AUTH_TIMEOUT_MS);
+		const authenticationTimer = setTimeout(() => socket.destroy(), this.#clientAuthTimeoutMs);
 		authenticationTimer.unref();
 		socket.setEncoding("utf8");
 		socket.on("data", chunk => {
@@ -1364,6 +1367,8 @@ class DaemonBroker {
 export interface DaemonBrokerStartOptions {
 	/** Base of the exponential child-restart backoff. */
 	restartBackoffBaseMs?: number;
+	/** Maximum time for a newly accepted socket to authenticate. */
+	clientAuthTimeoutMs?: number;
 	/** Called after the broker endpoint is ready to accept authenticated requests. */
 	onListening?: () => void;
 }
@@ -1384,6 +1389,11 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 		Number.isFinite(requestedRestartBackoffBaseMs) && requestedRestartBackoffBaseMs >= 0
 			? requestedRestartBackoffBaseMs
 			: RESTART_BACKOFF_BASE_MS;
+	const requestedClientAuthTimeoutMs = options.clientAuthTimeoutMs ?? CLIENT_AUTH_TIMEOUT_MS;
+	const clientAuthTimeoutMs =
+		Number.isFinite(requestedClientAuthTimeoutMs) && requestedClientAuthTimeoutMs >= 0
+			? requestedClientAuthTimeoutMs
+			: CLIENT_AUTH_TIMEOUT_MS;
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
 	const lease = await acquireBrokerLease(runtimeDir);
 	if (!lease) return;
@@ -1404,7 +1414,14 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 	});
 	const token = (await Bun.file(path.join(runtimeDir, TOKEN_FILE)).text()).trim();
 	if (!token) throw new Error("Daemon broker token is empty");
-	const broker = new DaemonBroker(projectDir, runtimeDir, token, idleGraceMs, restartBackoffBaseMs);
+	const broker = new DaemonBroker(
+		projectDir,
+		runtimeDir,
+		token,
+		idleGraceMs,
+		restartBackoffBaseMs,
+		clientAuthTimeoutMs,
+	);
 	const cancelCleanup = postmortem.register("daemon-broker", () => broker.shutdown());
 	try {
 		await broker.run(options.onListening);
