@@ -31,7 +31,7 @@
 
 ## Agent-facing guidance
 
-When async execution is enabled, the Bash tool description tells the model that `async: true` is for finite commands, `progress: "wake"` is waking, events produced while the model is busy batch without drops, `progress: "ambient"` never wakes, oversized events retain their final 4,000 characters, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
+When async execution is enabled, the Bash tool description keeps quick commands foreground and reserves `async: true` for finite work that should cross a turn boundary. `progress: "wake"` is waking, events produced while the model is busy batch without drops, ambient progress never wakes, oversized events retain their final 4,000 characters, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
 
 `wake` is a harness push, not a reason to hold the current turn open. Agents must not call `hub wait`, follow logs, or block to receive progress or keep the turn alive; they should use async progress and end the turn instead. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
 
@@ -50,7 +50,7 @@ When either async Bash or Hub process monitoring is available, the system prompt
 
 ```text
 <async-progress>
-Actionable finite-command output → `bash` with `async: true`, `progress: "wake"`.
+Quick commands stay foreground. Finite work expected to outlive useful current-turn work → `bash` with `async: true`, `progress: "wake"`.
 Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).
 NEVER call `hub wait`, follow logs, or block to receive progress or keep the turn alive; use async progress and end the turn instead.
 </async-progress>
@@ -64,7 +64,7 @@ This comparison uses the observed Claude Code 2.1.233 Monitor contract. Each sur
 
 | Capability | OMP async Bash | OMP Hub monitoring | Claude Code Monitor |
 | --- | --- | --- | --- |
-| Intended workload | Finite background command | Shared long-running process, watcher, service, debugger, or REPL | Command or WebSocket watcher |
+| Intended workload | Finite command spanning turns | Shared long-running process, watcher, service, debugger, or REPL | Command or WebSocket watcher |
 | Start operation | `bash` with `async: true`, `progress: "wake"` | `hub` `op:"start"`, `progress:"wake"` | Top-level `Monitor` call with a command or WebSocket URL |
 | Attach or retune | No; progress belongs to the command | `hub` `op:"monitor"` by stable process name | No attach/retune operation observed |
 | Detach without stopping work | No separate subscription | `progress:"off"` | Persistent monitor is stopped through task control |
@@ -81,13 +81,14 @@ OMP Hub monitoring is the persistent-process counterpart to Claude Code Monitor'
 
 ## Live model behavioral eval
 
-The opt-in eval runs a real authenticated model through the normal `AgentSession`. Its Bash scenario requires `async: true` with `progress: "wake"`; its Hub scenario requires a persistent `start` with `progress: "wake"`. In both cases the harness must inject the marker before completion, a later assistant message must acknowledge the pushed event, and the model must avoid blocking/polling calls. The user prompts do not forbid waits or polling, so this criterion measures the agent-facing tool policy rather than parroting an eval-specific instruction.
+The opt-in eval runs a real authenticated model through the normal `AgentSession`. Its Bash wake scenario requires `async: true` with `progress: "wake"`; its Hub scenario requires a persistent `start` with `progress: "wake"`. In both cases the harness must inject the marker before completion, a later assistant message must acknowledge the pushed event, and the model must avoid blocking/polling calls. The quick-command case requires one foreground Bash call, no async notification, and a reported result. The user prompts do not mention these selection rules, so the criteria measure agent-facing policy rather than parroting eval instructions.
 
 ```bash
 bun --cwd=packages/coding-agent run eval:async-progress --model <provider/model> --runs 3
+bun --cwd=packages/coding-agent run eval:async-progress --case quick --model <provider/model> --runs 3
 ```
 
-The default runs both surfaces; pass `--surface bash` or `--surface hub` to isolate one. Omit `--model` to use the configured default. The command exits non-zero if any run fails and prints the selected tool arguments plus each criterion. It is opt-in because it uses external credentials, incurs provider cost, and measures stochastic model behavior; deterministic queue, batching, and wake semantics remain covered by the regular test suite.
+The default wake case runs both surfaces; pass `--surface bash` or `--surface hub` to isolate one. The quick case is Bash-only. Omit `--model` to use the configured default. The command exits non-zero if any run fails and prints the selected tool arguments plus each criterion. It is opt-in because it uses external credentials, incurs provider cost, and measures stochastic model behavior; deterministic queue, batching, and wake semantics remain covered by the regular test suite.
 
 ## Outputs
 The tool returns a single `text` content block plus optional `details`.

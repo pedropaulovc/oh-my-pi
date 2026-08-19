@@ -48,12 +48,13 @@ describe("bash progress parameter", () => {
 		const manager = new AsyncJobManager({});
 		const tool = new BashTool(makeSession(manager));
 
-		expect(tool.description).toContain("emits each non-empty merged line");
+		expect(tool.description).toContain("Quick commands foreground");
+		expect(tool.description).toContain("only for finite work crossing turns");
+		expect(tool.description).toContain("non-empty merged lines");
 		expect(tool.description).toContain("final 4,000 chars");
-		expect(tool.description).toContain("at most once per second");
-		expect(tool.description).toContain("without drops");
+		expect(tool.description).toContain("drop-free batches ≤1/s");
 		expect(tool.description).toContain("wakes idle");
-		expect(tool.description).toContain('`progress: "ambient"` waits for an active turn and never wakes');
+		expect(tool.description).toContain("Ambient waits for an active turn and never wakes");
 		expect(tool.description).toContain("completion is separate");
 		expect(tool.description).toContain("NEVER wait for progress or to keep the turn alive");
 		expect(tool.description).toContain("use async, then end the turn");

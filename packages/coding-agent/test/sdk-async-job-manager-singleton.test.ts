@@ -104,7 +104,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			expect(progressIndex).toBeLessThan(workflowIndex);
 			expect(systemPrompt).toContain("<async-progress>");
 			expect(systemPrompt).toContain(
-				'Actionable finite-command output → `bash` with `async: true`, `progress: "wake"`.',
+				'Quick commands stay foreground. Finite work expected to outlive useful current-turn work → `bash` with `async: true`, `progress: "wake"`.',
 			);
 			expect(systemPrompt).toContain(
 				'Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).',
@@ -123,7 +123,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 		try {
 			const systemPrompt = session.systemPrompt.join("\n\n");
 			expect(systemPrompt).toContain("<async-progress>");
-			expect(systemPrompt).not.toContain("Actionable finite-command output");
+			expect(systemPrompt).not.toContain("Quick commands stay foreground");
 			expect(systemPrompt).toContain("Actionable process output");
 		} finally {
 			await session.dispose();

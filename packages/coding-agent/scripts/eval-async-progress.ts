@@ -3,6 +3,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import { closeDaemonClients } from "../src/launch/client";
+import bashQuickEvalPrompt from "../src/prompts/evals/async-progress-quick.md" with { type: "text" };
 import bashEvalPrompt from "../src/prompts/evals/async-progress-wake.md" with { type: "text" };
 import hubEvalPrompt from "../src/prompts/evals/hub-progress-wake.md" with { type: "text" };
 import { AgentRegistry, createAgentSession, Settings } from "../src/sdk";
@@ -14,6 +15,7 @@ import { SessionManager } from "../src/session/session-manager";
 const DEFAULT_RUNS = 1;
 const DEFAULT_TIMEOUT_MS = 90_000;
 type EvalSurface = "bash" | "hub";
+type EvalCase = "wake" | "quick";
 
 const SURFACES: EvalSurface[] = ["bash", "hub"];
 const READY_EVENT: Record<EvalSurface, string> = {
@@ -26,6 +28,7 @@ const ACKNOWLEDGEMENT: Record<EvalSurface, string> = {
 };
 
 interface EvalConfig {
+	case: EvalCase;
 	model?: string;
 	runs: number;
 	timeoutMs: number;
@@ -52,20 +55,24 @@ interface HubCall {
 type EvalToolCall = BashCall | HubCall;
 
 interface EvalCriteria {
-	selectedWake: boolean;
+	selectedWake?: boolean;
+	selectedForeground?: boolean;
 	onlyExpectedTool: boolean;
 	selectedPersistentProcess?: boolean;
 	singleToolCall?: boolean;
 	singleStart?: boolean;
-	noProcessPolling: boolean;
-	notificationDelivered: boolean;
-	completionObserved: boolean;
-	notificationBeforeCompletion: boolean;
-	acknowledgedAfterNotification: boolean;
+	noProcessPolling?: boolean;
+	noAsyncNotification?: boolean;
+	reportedQuickResult?: boolean;
+	notificationDelivered?: boolean;
+	completionObserved?: boolean;
+	notificationBeforeCompletion?: boolean;
+	acknowledgedAfterNotification?: boolean;
 }
 
 interface EvalRunResult {
 	run: number;
+	case: EvalCase;
 	surface: EvalSurface;
 	model: string;
 	passed: boolean;
@@ -96,12 +103,18 @@ function parseArgs(argv: string[]): EvalConfig {
 	if (surface !== "bash" && surface !== "hub" && surface !== "all") {
 		throw new Error("--surface must be bash, hub, or all");
 	}
+	const evalCase = valueFor("--case") ?? "wake";
+	if (evalCase !== "wake" && evalCase !== "quick") throw new Error("--case must be wake or quick");
+	if (evalCase === "quick" && surfaceValue !== undefined && surface !== "bash") {
+		throw new Error("--case quick supports only --surface bash");
+	}
 	return {
+		case: evalCase,
 		model: valueFor("--model"),
 		runs: parsePositiveInteger("--runs", valueFor("--runs"), DEFAULT_RUNS),
 		timeoutMs: parsePositiveInteger("--timeout-ms", valueFor("--timeout-ms"), DEFAULT_TIMEOUT_MS),
 		json: argv.includes("--json"),
-		surfaces: surface === "all" ? SURFACES : [surface],
+		surfaces: evalCase === "quick" ? ["bash"] : surface === "all" ? SURFACES : [surface],
 	};
 }
 
@@ -150,10 +163,23 @@ function isCompletionMessage(message: AgentMessage): boolean {
 
 function scoreMessages(
 	messages: AgentMessage[],
+	evalCase: EvalCase,
 	surface: EvalSurface,
 	toolCalls: EvalToolCall[],
 	executedTools: string[],
 ): EvalCriteria {
+	if (evalCase === "quick") {
+		const [call] = toolCalls;
+		return {
+			selectedForeground: toolCalls.length === 1 && call !== undefined && "async" in call && call.async !== true,
+			onlyExpectedTool: executedTools.length === 1 && executedTools[0] === "bash",
+			singleToolCall: toolCalls.length === 1,
+			noAsyncNotification: messages.every(message => !isProgressMessage(message) && !isCompletionMessage(message)),
+			reportedQuickResult: messages.some(
+				message => message.role === "assistant" && messageText(message).includes("QUICK_RESULT"),
+			),
+		};
+	}
 	const progressIndex = messages.findIndex(
 		message => isProgressMessage(message) && messageText(message).includes(READY_EVENT[surface]),
 	);
@@ -245,9 +271,11 @@ async function runOnce(config: EvalConfig, surface: EvalSurface, run: number): P
 	try {
 		if (!session.getToolByName(surface)) throw new Error(`Eval session did not expose the ${surface} tool`);
 		const evalPrompt =
-			surface === "bash"
-				? bashEvalPrompt.trim()
-				: prompt.render(hubEvalPrompt, { name: `monitor-eval-${process.pid}-${run}` }).trim();
+			config.case === "quick"
+				? bashQuickEvalPrompt.trim()
+				: surface === "bash"
+					? bashEvalPrompt.trim()
+					: prompt.render(hubEvalPrompt, { name: `monitor-eval-${process.pid}-${run}` }).trim();
 		const timeout = Promise.withResolvers<never>();
 		const timer = setTimeout(
 			() => timeout.reject(new Error(`Eval timed out after ${config.timeoutMs}ms`)),
@@ -259,7 +287,7 @@ async function runOnce(config: EvalConfig, surface: EvalSurface, run: number): P
 			clearTimeout(timer);
 		}
 		while (Date.now() < deadline) {
-			if (criteriaPass(scoreMessages(session.messages, surface, toolCalls, executedTools))) break;
+			if (criteriaPass(scoreMessages(session.messages, config.case, surface, toolCalls, executedTools))) break;
 			await Bun.sleep(100);
 		}
 	} catch (cause) {
@@ -267,12 +295,13 @@ async function runOnce(config: EvalConfig, surface: EvalSurface, run: number): P
 		await session.abort({ goalReason: "internal", reason: "Async progress eval timed out" }).catch(() => undefined);
 	}
 
-	const criteria = scoreMessages(session.messages, surface, toolCalls, executedTools);
+	const criteria = scoreMessages(session.messages, config.case, surface, toolCalls, executedTools);
 	const model = session.model ? `${session.model.provider}/${session.model.id}` : (config.model ?? "unresolved");
 	unsubscribe();
 	await session.dispose();
 	return {
 		run,
+		case: config.case,
 		surface,
 		model,
 		passed: !error && criteriaPass(criteria),
