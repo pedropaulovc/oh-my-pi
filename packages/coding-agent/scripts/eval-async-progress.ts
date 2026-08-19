@@ -195,8 +195,7 @@ function scoreMessages(
 			messageText(message).includes(ACKNOWLEDGEMENT[surface]),
 	);
 	const selectedWake = toolCalls.some(call => {
-		if (surface === "bash")
-			return "async" in call && (call.async === true || call.async === "auto") && call.progress === "wake";
+		if (surface === "bash") return "async" in call && call.async === "auto" && call.progress === "wake";
 		return "op" in call && call.op === "start" && call.progress === "wake";
 	});
 	const hubCalls = toolCalls.filter((call): call is HubCall => "op" in call);

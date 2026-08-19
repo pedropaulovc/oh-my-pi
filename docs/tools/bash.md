@@ -81,7 +81,7 @@ OMP Hub monitoring is the persistent-process counterpart to Claude Code Monitor'
 
 ## Live model behavioral eval
 
-The opt-in eval runs a real authenticated model through the normal `AgentSession`. Its Bash wake scenario accepts `async: "auto"` or immediate `async: true` with `progress: "wake"`; its Hub scenario requires a persistent `start` with `progress: "wake"`. In both cases the harness must inject the marker before completion, a later assistant message must acknowledge the pushed event, and the model must avoid blocking/polling calls. The quick-command case requires one Bash call that finishes inline, no async notification, and a reported result. The user prompts do not mention these selection rules, so the criteria measure agent-facing policy rather than parroting eval instructions.
+The opt-in eval runs a real authenticated model through the normal `AgentSession`. Its Bash wake scenario requires `async: "auto"` with `progress: "wake"`; its Hub scenario requires a persistent `start` with `progress: "wake"`. In both cases the harness must inject the marker before completion, a later assistant message must acknowledge the pushed event, and the model must avoid blocking/polling calls. The quick-command case requires one Bash call that finishes inline, no async notification, and a reported result. The user prompts do not mention these selection rules, so the criteria measure agent-facing policy rather than parroting eval instructions.
 
 ```bash
 bun --cwd=packages/coding-agent run eval:async-progress --model <provider/model> --runs 3
