@@ -331,7 +331,7 @@ const bashSchemaWithAsync = type({
 	"cwd?": "string",
 	"pty?": "boolean",
 	"async?": type("boolean | 'auto'").describe(
-		"true starts in background; auto starts inline and backgrounds after a brief grace period",
+		"auto starts inline and backgrounds after a brief grace period; true starts in background immediately",
 	),
 	"progress?": type("'ambient' | 'wake'").describe(
 		"deliver complete output lines to the agent while the background job runs; wake starts a follow-up turn while idle",

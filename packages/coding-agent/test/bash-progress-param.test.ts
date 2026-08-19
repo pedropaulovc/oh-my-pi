@@ -49,8 +49,10 @@ describe("bash progress parameter", () => {
 		const manager = new AsyncJobManager({});
 		const tool = new BashTool(makeSession(manager));
 
-		expect(tool.description).toContain('`async: "auto"` keeps quick work inline and backgrounds slow work');
-		expect(tool.description).toContain("`async: true` starts background immediately");
+		expect(tool.description).toContain(
+			'Finite commands of uncertain duration: `async: "auto"` keeps quick work inline and backgrounds slow work',
+		);
+		expect(tool.description).toContain("`async: true` only when immediate background is needed");
 		expect(tool.description).toContain("non-empty merged lines");
 		expect(tool.description).toContain("final 4,000 chars");
 		expect(tool.description).toContain("drop-free batches ≤1/s");
