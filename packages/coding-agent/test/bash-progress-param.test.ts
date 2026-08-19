@@ -49,18 +49,15 @@ describe("bash progress parameter", () => {
 		const manager = new AsyncJobManager({});
 		const tool = new BashTool(makeSession(manager));
 
-		expect(tool.description).toContain('Finite commands: `async: "auto"` (quick inline, slow background)');
-		expect(tool.description).toContain(
-			"NEVER use `async: true` unless the user explicitly requests immediate background",
-		);
+		expect(tool.description).toContain('Finite: `async: "auto"` (quick inline, slow background)');
+		expect(tool.description).toContain("`async: true` ONLY if the user asks for immediate background");
 		expect(tool.description).toContain("non-empty merged lines");
-		expect(tool.description).toContain("final 4,000 chars");
-		expect(tool.description).toContain("drop-free batches ≤1/s");
-		expect(tool.description).toContain("wakes idle");
-		expect(tool.description).toContain("Ambient waits for an active turn and never wakes");
-		expect(tool.description).toContain("completion is separate");
-		expect(tool.description).toContain("NEVER wait for progress or to keep the turn alive");
-		expect(tool.description).toContain("use async, then end the turn");
+		expect(tool.description).toContain("last 4,000 chars");
+		expect(tool.description).toContain("ordered, drop-free batches ≤1/s");
+		expect(tool.description).toContain("Ambient waits for a turn");
+		expect(tool.description).toContain("completion separate");
+		expect(tool.description).toContain("NEVER block to receive progress or keep the turn alive");
+		expect(tool.description).toContain("start async and end it");
 	});
 
 	test("defaults off", async () => {
@@ -158,10 +155,10 @@ describe("bash progress parameter", () => {
 		manager.registerDeliverySink("Main", (_jobId, text) => {
 			events.push(`completion:${text}`);
 		});
-		const tool = new BashTool(makeSession(manager, { "bash.autoBackground.thresholdMs": 20 }));
+		const tool = new BashTool(makeSession(manager, { "bash.autoBackground.thresholdMs": 200 }));
 
 		const result = await tool.execute("auto-promote", {
-			command: "printf 'before-promotion\\n'; sleep 0.08; printf 'after-promotion\\n'",
+			command: "printf 'before-promotion\\n'; sleep 0.5; printf 'after-promotion\\n'",
 			async: "auto",
 			progress: "wake",
 		});
