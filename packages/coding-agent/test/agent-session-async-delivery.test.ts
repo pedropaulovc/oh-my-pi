@@ -260,6 +260,18 @@ describe("AgentSession owner-routed async delivery", () => {
 		});
 
 		await expect(session.switchSession(targetFile)).resolves.toBe(true);
+		session.queueLaunchProgress(
+			{
+				event: "daemon-output",
+				monitorId: "new-monitor",
+				name: "new-process",
+				daemonId: "new-daemon",
+				seq: 1,
+				text: "FRESH SESSION PROCESS EVENT",
+			},
+			"ambient",
+			Date.now(),
+		);
 		await session.sendUserMessage("inspect target");
 
 		expect(session.hasPendingAsyncWork()).toBe(false);
@@ -274,6 +286,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			.join("\n");
 		expect(observedText).not.toContain("OLD SESSION PROCESS EVENT");
 		expect(observedText).not.toContain("QUEUED OLD AMBIENT EVENT");
+		expect(observedText).toContain("FRESH SESSION PROCESS EVENT");
 	});
 
 	it("purges finished owned jobs when starting a new session", async () => {

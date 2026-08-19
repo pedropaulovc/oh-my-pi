@@ -71,8 +71,11 @@ export class ProgressBatcher {
 	}
 
 	async finish(id: string): Promise<void> {
-		await this.flush(id);
-		this.clear(id);
+		try {
+			await this.flush(id);
+		} finally {
+			this.clear(id);
+		}
 	}
 
 	clear(id: string): void {

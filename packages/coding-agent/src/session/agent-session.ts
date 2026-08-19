@@ -1977,7 +1977,7 @@ export class AgentSession {
 			job,
 			seq,
 			elapsedMs: Math.max(0, Date.now() - job.startTime),
-			epoch: this.#launchProgressEpoch,
+			epoch: this.#asyncDeliveryEpoch,
 			delivery: job.progressDelivery,
 		});
 	}
@@ -6209,7 +6209,7 @@ export class AgentSession {
 			},
 			seq: notification.seq,
 			elapsedMs: Math.max(0, Date.now() - startedAt),
-			epoch: this.#asyncDeliveryEpoch,
+			epoch: this.#launchProgressEpoch,
 			delivery,
 		});
 		this.#signalLaunchMonitorChanged();
