@@ -50,7 +50,7 @@ export class ProgressBatcher {
 		const deliver = () => this.#deliver(id, text, seq);
 		let tail: Promise<void>;
 		if (state.deliveryTail) {
-			tail = state.deliveryTail.then(deliver);
+			tail = state.deliveryTail.then(deliver, deliver);
 		} else {
 			try {
 				tail = Promise.resolve(deliver());

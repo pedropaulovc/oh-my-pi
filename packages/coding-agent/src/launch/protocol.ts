@@ -387,7 +387,7 @@ export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 			name: stringValue(source.name, "output.name"),
 			daemonId: stringValue(source.daemonId, "output.daemonId"),
 			seq: numberValue(source.seq, "output.seq"),
-			text: stringValue(source.text, "output.text"),
+			text: rawString(source.text, "output.text"),
 		};
 	}
 	if (source.event === "daemon-monitor-completed") {

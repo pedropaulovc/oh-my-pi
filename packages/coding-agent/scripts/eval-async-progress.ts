@@ -52,6 +52,7 @@ type EvalToolCall = BashCall | HubCall;
 
 interface EvalCriteria {
 	selectedWake: boolean;
+	onlyExpectedTool: boolean;
 	selectedPersistentProcess?: boolean;
 	singleToolCall?: boolean;
 	singleStart?: boolean;
@@ -69,6 +70,7 @@ interface EvalRunResult {
 	passed: boolean;
 	criteria: EvalCriteria;
 	toolCalls: EvalToolCall[];
+	executedTools: string[];
 	assistantMessages: string[];
 	error?: string;
 }
@@ -85,7 +87,11 @@ function parseArgs(argv: string[]): EvalConfig {
 		const index = argv.indexOf(flag);
 		return index === -1 ? undefined : argv[index + 1];
 	};
-	const surface = valueFor("--surface") ?? "all";
+	const surfaceValue = valueFor("--surface");
+	if (argv.includes("--surface") && surfaceValue === undefined) {
+		throw new Error("--surface requires bash, hub, or all");
+	}
+	const surface = surfaceValue ?? "all";
 	if (surface !== "bash" && surface !== "hub" && surface !== "all") {
 		throw new Error("--surface must be bash, hub, or all");
 	}
@@ -141,7 +147,12 @@ function isCompletionMessage(message: AgentMessage): boolean {
 	return isRecord(message) && message.role === "custom" && message.customType === ASYNC_RESULT_MESSAGE_TYPE;
 }
 
-function scoreMessages(messages: AgentMessage[], surface: EvalSurface, toolCalls: EvalToolCall[]): EvalCriteria {
+function scoreMessages(
+	messages: AgentMessage[],
+	surface: EvalSurface,
+	toolCalls: EvalToolCall[],
+	executedTools: string[],
+): EvalCriteria {
 	const progressIndex = messages.findIndex(
 		message => isProgressMessage(message) && messageText(message).includes(READY_EVENT[surface]),
 	);
@@ -163,6 +174,7 @@ function scoreMessages(messages: AgentMessage[], surface: EvalSurface, toolCalls
 	const hubCalls = toolCalls.filter((call): call is HubCall => "op" in call);
 	return {
 		selectedWake,
+		onlyExpectedTool: executedTools.length > 0 && executedTools.every(toolName => toolName === surface),
 		...(surface === "hub"
 			? {
 					selectedPersistentProcess: hubCalls.some(call => call.op === "start" && call.persist === true),
@@ -214,10 +226,14 @@ async function runOnce(config: EvalConfig, surface: EvalSurface, run: number): P
 		deadline,
 	});
 	const toolCalls: EvalToolCall[] = [];
+	const executedTools: string[] = [];
 	const assistantMessages: string[] = [];
 	const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-		if (event.type === "tool_execution_start" && event.toolName === surface) {
-			toolCalls.push(surface === "bash" ? parseBashCall(event.args) : parseHubCall(event.args));
+		if (event.type === "tool_execution_start") {
+			executedTools.push(event.toolName);
+			if (event.toolName === surface) {
+				toolCalls.push(surface === "bash" ? parseBashCall(event.args) : parseHubCall(event.args));
+			}
 		}
 		if (event.type !== "message_end" || event.message.role !== "assistant") return;
 		const text = messageText(event.message);
@@ -242,7 +258,7 @@ async function runOnce(config: EvalConfig, surface: EvalSurface, run: number): P
 			clearTimeout(timer);
 		}
 		while (Date.now() < deadline) {
-			if (criteriaPass(scoreMessages(session.messages, surface, toolCalls))) break;
+			if (criteriaPass(scoreMessages(session.messages, surface, toolCalls, executedTools))) break;
 			await Bun.sleep(100);
 		}
 	} catch (cause) {
@@ -250,7 +266,7 @@ async function runOnce(config: EvalConfig, surface: EvalSurface, run: number): P
 		await session.abort({ goalReason: "internal", reason: "Async progress eval timed out" }).catch(() => undefined);
 	}
 
-	const criteria = scoreMessages(session.messages, surface, toolCalls);
+	const criteria = scoreMessages(session.messages, surface, toolCalls, executedTools);
 	const model = session.model ? `${session.model.provider}/${session.model.id}` : (config.model ?? "unresolved");
 	unsubscribe();
 	await session.dispose();
@@ -261,6 +277,7 @@ async function runOnce(config: EvalConfig, surface: EvalSurface, run: number): P
 		passed: !error && criteriaPass(criteria),
 		criteria,
 		toolCalls,
+		executedTools,
 		assistantMessages,
 		...(error ? { error } : {}),
 	};
@@ -272,6 +289,7 @@ function printRun(result: EvalRunResult): void {
 		process.stdout.write(`  ${passed ? "✓" : "✗"} ${criterion}\n`);
 	}
 	process.stdout.write(`  tool calls: ${JSON.stringify(result.toolCalls)}\n`);
+	process.stdout.write(`  executed tools: ${JSON.stringify(result.executedTools)}\n`);
 	if (!result.passed) process.stdout.write(`  assistant messages: ${JSON.stringify(result.assistantMessages)}\n`);
 	if (result.error) process.stdout.write(`  error: ${result.error}\n`);
 }

@@ -69,6 +69,7 @@ const SIGNAL_NUMBER: Record<DaemonSignal, number> = {
 };
 
 const OUTPUT_RECONNECT_GRACE_MS = 30_000;
+const MAX_PENDING_MONITOR_BYTES = 1024 * 1024;
 
 interface ManagedProcess {
 	pid: number;
@@ -105,6 +106,7 @@ interface OutputRegistration extends DaemonOutputSubscription {
 	socket?: net.Socket;
 	subscriptionId: string;
 	pending: DaemonMonitorNotification[];
+	pendingBytes: number;
 	offlineTimer?: NodeJS.Timeout;
 }
 
@@ -921,8 +923,9 @@ class DaemonBroker {
 				const replayedTerminal = existing.pending.some(
 					notification => notification.event === "daemon-monitor-completed",
 				);
-				for (const notification of existing.pending.splice(0))
-					this.#sendMonitorNotification(existing, notification);
+				const pending = existing.pending.splice(0);
+				existing.pendingBytes = 0;
+				for (const notification of pending) this.#sendMonitorNotification(existing, notification);
 				const record = this.#records.get(subscription.name);
 				if (record && terminalState(record.snapshot.state) && !replayedTerminal) {
 					this.#notifyMonitorCompletion(record, subscription.id);
@@ -935,6 +938,7 @@ class DaemonBroker {
 				socket,
 				subscriptionId,
 				pending: [],
+				pendingBytes: 0,
 			});
 			const record = this.#records.get(subscription.name);
 			if (record && terminalState(record.snapshot.state)) this.#notifyMonitorCompletion(record, subscription.id);
@@ -944,6 +948,17 @@ class DaemonBroker {
 	#sendMonitorNotification(registration: OutputRegistration, notification: DaemonMonitorNotification): void {
 		if (!registration.socket || registration.socket.destroyed) {
 			registration.pending.push(notification);
+			if (notification.event === "daemon-output") {
+				registration.pendingBytes += Buffer.byteLength(notification.text, "utf8");
+			}
+			while (registration.pendingBytes > MAX_PENDING_MONITOR_BYTES) {
+				const index = registration.pending.findIndex(item => item.event === "daemon-output");
+				if (index < 0) break;
+				const [removed] = registration.pending.splice(index, 1);
+				if (removed?.event === "daemon-output") {
+					registration.pendingBytes -= Buffer.byteLength(removed.text, "utf8");
+				}
+			}
 			return;
 		}
 		registration.socket.write(`${JSON.stringify(notification)}\n`);

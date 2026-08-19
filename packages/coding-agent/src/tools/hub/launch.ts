@@ -423,7 +423,7 @@ function readyPendingSummary(daemon: DaemonSnapshot, ready?: LaunchParams["ready
 	return parts;
 }
 
-function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
+function toolContent(result: DaemonRpcResult, params: LaunchParams, detached?: boolean): string {
 	switch (result.op) {
 		case "ping":
 		case "shutdown":
@@ -469,7 +469,8 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 			return `Restarted ${daemonLabel(result.daemon)}`;
 		case "describe":
 			if (params.op === "monitor") {
-				return `${params.progress === "off" ? "Stopped monitoring" : "Monitoring"} ${daemonLabel(result.daemon)}`;
+				if (params.progress !== "off") return `Monitoring ${daemonLabel(result.daemon)}`;
+				return `${detached ? "Stopped monitoring" : "No active monitor for"} ${daemonLabel(result.daemon)}`;
 			}
 			return [
 				daemonLabel(result.daemon),
@@ -569,7 +570,10 @@ export async function executeLaunch(
 			}
 		}
 		const result = await client.request(operation, signal);
-		if (params.op === "monitor" && params.progress === "off" && name) detachOutputSink(session, client, name);
+		const detached =
+			params.op === "monitor" && params.progress === "off" && name
+				? detachOutputSink(session, client, name)
+				: undefined;
 		if (outputLease && "daemon" in result && result.daemon) {
 			if (result.daemon.detached)
 				throw new ToolError("Live progress monitoring is unavailable for detached processes");
@@ -591,7 +595,7 @@ export async function executeLaunch(
 		if (params.op === "list" && resumedOwner && !resumedDaemonFound) completionLease?.reject(true);
 		else completionLease?.retain();
 		return {
-			content: [{ type: "text", text: replaceTabs(toolContent(result, params)) }],
+			content: [{ type: "text", text: replaceTabs(toolContent(result, params, detached)) }],
 			details: await toolDetails(result, params),
 		};
 	} catch (error) {

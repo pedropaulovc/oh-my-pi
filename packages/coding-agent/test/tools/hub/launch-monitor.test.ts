@@ -205,12 +205,23 @@ describe("hub process output monitoring", () => {
 		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "wake" });
 		const subscription = harness.getSubscription();
 		if (!subscription) throw new Error("Expected output subscription");
-		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "off" });
+		const detached = await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "off" });
+		const alreadyDetached = await executeLaunch(harness.session, {
+			op: "monitor",
+			name: daemon.name,
+			progress: "off",
+		});
 
 		expect(harness.unregisterCount()).toBe(1);
-		expect(harness.requests.map(operation => operation.op)).toEqual(["ping", "describe", "describe"]);
+		expect(harness.requests.map(operation => operation.op)).toEqual(["ping", "describe", "describe", "describe"]);
 		expect(harness.requests.some(operation => operation.op === "stop")).toBeFalse();
 		expect(harness.active.at(-1)).toEqual({ monitorId: subscription.id, delivery: "wake", active: false });
+		expect(detached.content).toEqual([
+			expect.objectContaining({ type: "text", text: expect.stringContaining("Stopped monitoring web:") }),
+		]);
+		expect(alreadyDetached.content).toEqual([
+			expect.objectContaining({ type: "text", text: expect.stringContaining("No active monitor for web:") }),
+		]);
 	});
 
 	it("keeps monitoring attached when an off request fails validation", async () => {

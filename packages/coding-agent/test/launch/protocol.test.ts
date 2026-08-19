@@ -127,6 +127,19 @@ describe("launch monitor notifications", () => {
 		});
 	});
 
+	it("preserves an empty output batch without breaking its sequence", () => {
+		expect(
+			parseDaemonWireMessage({
+				event: "daemon-output",
+				monitorId: "monitor-1",
+				name: "web",
+				daemonId: "daemon-1",
+				seq: 3,
+				text: "",
+			}),
+		).toMatchObject({ event: "daemon-output", seq: 3, text: "" });
+	});
+
 	it("decodes terminal state separately from output", () => {
 		expect(
 			parseDaemonWireMessage({

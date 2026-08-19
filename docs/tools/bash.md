@@ -48,7 +48,7 @@ When either async Bash or Hub process monitoring is available, the system prompt
 ```text
 <async-progress>
 Actionable finite-command output → `bash` with `async: true`, `progress: "wake"`.
-Actionable long-running-process output → `hub` with `op: "start"`, `progress: "wake"`.
+Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).
 Never poll.
 </async-progress>
 ```

@@ -107,7 +107,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 				'Actionable finite-command output → `bash` with `async: true`, `progress: "wake"`.',
 			);
 			expect(systemPrompt).toContain(
-				'Actionable long-running-process output → `hub` with `op: "start"`, `progress: "wake"`.',
+				'Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).',
 			);
 			expect(systemPrompt).toContain("Never poll.");
 			expect(systemPrompt).toContain("</async-progress>");
@@ -122,7 +122,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			const systemPrompt = session.systemPrompt.join("\n\n");
 			expect(systemPrompt).toContain("<async-progress>");
 			expect(systemPrompt).not.toContain("Actionable finite-command output");
-			expect(systemPrompt).toContain("Actionable long-running-process output");
+			expect(systemPrompt).toContain("Actionable process output");
 		} finally {
 			await session.dispose();
 		}

@@ -277,6 +277,10 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			const current = this.#outputSinks.get(subscription.id);
 			if (current?.sink !== sink) return;
 			this.#outputSinks.delete(subscription.id);
+			if (this.#completionSinks.size === 0 && this.#outputSinks.size === 0 && this.#completionReconnectTimer) {
+				clearTimeout(this.#completionReconnectTimer);
+				this.#completionReconnectTimer = undefined;
+			}
 			this.#publishSubscriptions();
 		};
 	}
