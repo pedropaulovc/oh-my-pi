@@ -26,7 +26,7 @@
 | `timeout` | `number` | No | Timeout in seconds. Default `300`. `0` disables the deadline. Positive values are capped by `tools.maxTimeout` when that setting is positive, then clamped to the Bash range `1..3600`. |
 | `cwd` | `string` | No | Working directory, resolved against `session.cwd` via `resolveToCwd`. Must exist and be a directory. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
-| `async` | `boolean \| "auto"` | No | `true` starts a background job immediately. `"auto"` starts inline, returns inline if the command finishes within `bash.autoBackground.thresholdMs`, and otherwise promotes the same process to a background job. Present only when `async.enabled` is true. Neither mode changes the command deadline, including `timeout: 0`. |
+| `async` | `boolean \| "auto"` | No | `true` starts a background job immediately. `"auto"` starts inline, waits up to one second (or a shorter configured `bash.autoBackground.thresholdMs`), then promotes the same process if it is still running. Present only when `async.enabled` is true. Neither mode changes the command deadline, including `timeout: 0`. |
 | `progress` | `"ambient" \| "wake"` | No | With `async: true` or `async: "auto"`, deliver complete non-empty output-line events to the model. In auto mode, delivery activates only after promotion: earlier output appears in the foreground/background-start result instead. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once per second, with every event in the interval retained in the batch. Oversized events retain the final 4,000 characters. |
 
 ## Agent-facing guidance
@@ -196,7 +196,7 @@ Choose the setting by the desired outcome:
 7. `timeout: 0` disables the deadline. Otherwise `clampTimeout("bash", requestedTimeoutSec, tools.maxTimeout)` applies a positive global ceiling (when configured), then `TOOL_TIMEOUTS.bash` (`min: 1`, `max: 3600`). When clamped, `#buildCompletedResult()` / `#buildBackgroundStartResult()` append a notice line.
 8. Execution path splits:
    1. `async: true` -> `#startManagedBashJob()` registers a session async job and returns immediately.
-   2. `async: "auto"` -> starts a managed job, waits up to `min(thresholdMs, timeoutMs - 1000)`, returns completed work inline, or promotes the same process and activates requested progress delivery. The explicit mode works independently of `bash.autoBackground.enabled` and errors rather than degrading at the job limit.
+   2. `async: "auto"` -> starts a managed job, waits up to `min(thresholdMs, 1000, timeoutMs - 1000)`, returns completed work inline, or promotes the same process and activates requested progress delivery. The explicit mode works independently of `bash.autoBackground.enabled` and errors rather than degrading at the job limit.
    3. Non-PTY with `bash.autoBackground.enabled`, an async job manager below its running-job cap, and no client-terminal bridge available (the bridge wins when both apply) -> applies the same inline-then-promote lifecycle to unmarked foreground calls, without model-facing progress.
    4. Non-PTY client-terminal bridge, when the session advertises terminal capability and `pty` is false -> creates a remote terminal, streams/polls current output, and releases the terminal after completion.
    5. Otherwise runs foreground execution.

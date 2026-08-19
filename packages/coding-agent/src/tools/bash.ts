@@ -65,6 +65,7 @@ import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
 
 const BASH_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ASYNC_AUTO_MAX_INLINE_MS = 1_000;
 const BASH_APPROVAL_SHELL_CONTROL_CHARS: Record<string, true> = {
 	"\n": true,
 	"\r": true,
@@ -330,7 +331,7 @@ const bashSchemaWithAsync = type({
 	"cwd?": "string",
 	"pty?": "boolean",
 	"async?": type("boolean | 'auto'").describe(
-		"true starts in background; auto starts inline and backgrounds only after the configured grace period",
+		"true starts in background; auto starts inline and backgrounds after a brief grace period",
 	),
 	"progress?": type("'ambient' | 'wake'").describe(
 		"deliver complete output lines to the agent while the background job runs; wake starts a follow-up turn while idle",
@@ -1082,7 +1083,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			autoBgManager &&
 			!autoBgManager.atCapacity
 		) {
-			const autoBackgroundWaitMs = resolveAutoBackgroundWaitMs(this.#autoBackgroundThresholdMs, timeoutMs);
+			const autoBackgroundThresholdMs = autoRequested
+				? Math.min(this.#autoBackgroundThresholdMs, ASYNC_AUTO_MAX_INLINE_MS)
+				: this.#autoBackgroundThresholdMs;
+			const autoBackgroundWaitMs = resolveAutoBackgroundWaitMs(autoBackgroundThresholdMs, timeoutMs);
 			const startBackgrounded = autoBackgroundWaitMs === 0;
 			const job = this.#startManagedBashJob({
 				command,
