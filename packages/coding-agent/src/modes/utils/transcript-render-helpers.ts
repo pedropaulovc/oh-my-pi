@@ -16,6 +16,7 @@ import {
 } from "../../session/messages";
 import { createIrcMessageCard } from "../../tools/hub";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { renderStatusLine } from "../../tui/status-line";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { ToolActivityContainer } from "../components/tool-activity";
 import { TranscriptBlock } from "../components/transcript-container";
@@ -79,14 +80,15 @@ export function buildAsyncProgressBlock(message: CustomOrHookMessage): Transcrip
 	for (const job of details?.jobs ?? []) {
 		const jobId = job.jobId ?? "unknown";
 		const elapsed = typeof job.elapsedMs === "number" ? formatDuration(job.elapsedMs) : undefined;
-		const header = [
-			theme.fg("dim", `${theme.status.running} Background job progress`),
-			theme.fg("dim", job.type ? `[${job.type}]` : "[job]"),
-			theme.fg("accent", jobId),
-			elapsed ? theme.fg("dim", `(${elapsed})`) : undefined,
-		]
-			.filter(Boolean)
-			.join(" ");
+		const typeLabel = job.type ? `[${job.type}]` : "[job]";
+		const header = renderStatusLine(
+			{
+				iconOverride: theme.fg("accent", theme.status.running),
+				title: `Background job progress ${typeLabel} ${jobId}`,
+				meta: elapsed ? [`(${elapsed})`] : undefined,
+			},
+			theme,
+		);
 		block.addChild(new Text(header, 1, 0));
 		for (const line of (job.text ?? "").split("\n")) {
 			if (line.trim().length === 0) continue;

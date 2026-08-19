@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import * as os from "node:os";
 import type { AsyncJob } from "@oh-my-pi/pi-coding-agent/async";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { buildAsyncProgressBlock } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import {
 	ASYNC_PROGRESS_MESSAGE_TYPE,
@@ -74,9 +74,13 @@ describe("async progress messages", () => {
 			entry("bg_7", `\u001b[31m${os.homedir()}/private/output\rone\tvalue\u001b[0m`),
 		]);
 		if (!message) throw new Error("Expected progress message");
-		const rendered = Bun.stripANSI(buildAsyncProgressBlock(message).render(80).join("\n"));
+		const raw = buildAsyncProgressBlock(message).render(80).join("\n");
+		const rendered = Bun.stripANSI(raw);
 
 		expect(rendered).toContain("Background job progress [bash] bg_7");
+		expect(rendered).toContain(`${theme.status.running} Background job progress`);
+		expect(raw).toContain(theme.fg("accent", theme.status.running));
+		expect(raw).toContain(theme.fg("accent", "Background job progress [bash] bg_7"));
 		expect(rendered).toContain("~/private/outputone");
 		expect(rendered).toMatch(/one +value/);
 		expect(rendered).not.toContain("\t");
