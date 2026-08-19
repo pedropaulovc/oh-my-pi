@@ -213,6 +213,53 @@ describe("hub process output monitoring", () => {
 		expect(harness.active.at(-1)).toEqual({ monitorId: subscription.id, delivery: "wake", active: false });
 	});
 
+	it("keeps monitoring attached when an off request fails validation", async () => {
+		const harness = createHarness();
+		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
+
+		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "wake" });
+		vi.spyOn(harness.client, "request").mockRejectedValue(new Error("broker unavailable"));
+		await expect(
+			executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "off" }),
+		).rejects.toThrow("broker unavailable");
+
+		expect(harness.unregisterCount()).toBe(0);
+		expect(harness.getOutputSink()).toBeDefined();
+		expect(harness.active.at(-1)?.active).toBe(true);
+	});
+
+	it("does not resurrect wake state when terminal cleanup races a retune", async () => {
+		const harness = createHarness();
+		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
+
+		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "wake" });
+		const subscription = harness.getSubscription();
+		const sink = harness.getOutputSink();
+		if (!subscription || !sink) throw new Error("Expected output subscription");
+		vi.spyOn(harness.client, "request").mockImplementation(async operation => {
+			if (operation.op === "ping") {
+				return { op: "ping", projectDir: process.cwd(), capabilities: ["output-monitor-v1"] };
+			}
+			await sink({
+				event: "daemon-monitor-completed",
+				monitorId: subscription.id,
+				daemon: { ...daemon, state: "exited", pid: undefined, exitedAt: 3, exitCode: 0 },
+			});
+			throw new Error("process exited during retune");
+		});
+
+		await expect(
+			executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "ambient" }),
+		).rejects.toThrow("process exited during retune");
+
+		expect(harness.unregisterCount()).toBe(1);
+		expect(harness.active.at(-1)).toEqual({
+			monitorId: subscription.id,
+			delivery: "ambient",
+			active: false,
+		});
+	});
+
 	it("session disposal removes monitoring but leaves process lifecycle untouched", async () => {
 		const harness = createHarness();
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);

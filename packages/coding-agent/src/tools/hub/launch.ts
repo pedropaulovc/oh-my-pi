@@ -110,7 +110,7 @@ function registerOutputSink(
 				settled = true;
 			},
 			reject: () => {
-				if (settled || previousDelivery === undefined) return;
+				if (settled || !existing.active || previousDelivery === undefined) return;
 				session.setLaunchMonitorActive?.(existing.id, existing.delivery, false);
 				existing.delivery = previousDelivery;
 				session.setLaunchMonitorActive?.(existing.id, previousDelivery, true);
@@ -547,7 +547,6 @@ export async function executeLaunch(
 	}
 	const name = params.op === "start" || params.op === "monitor" ? requiredName(params) : undefined;
 	const owner = session.getSessionId?.() ?? undefined;
-	if (params.op === "monitor" && params.progress === "off" && name) detachOutputSink(session, client, name);
 	const progressDelivery = params.progress === "wake" || params.progress === "ambient" ? params.progress : undefined;
 	const outputLease =
 		name && owner && progressDelivery
@@ -570,6 +569,7 @@ export async function executeLaunch(
 			}
 		}
 		const result = await client.request(operation, signal);
+		if (params.op === "monitor" && params.progress === "off" && name) detachOutputSink(session, client, name);
 		if (outputLease && "daemon" in result && result.daemon) {
 			if (result.daemon.detached)
 				throw new ToolError("Live progress monitoring is unavailable for detached processes");

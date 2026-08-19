@@ -18,6 +18,7 @@ import {
 	DAEMON_PTY_ROWS,
 	DAEMON_RUNTIME_DIR_ENV,
 	type DaemonCompletionNotification,
+	type DaemonMonitorNotification,
 	type DaemonOperation,
 	type DaemonOutputNotification,
 	type DaemonOutputSubscription,
@@ -67,6 +68,8 @@ const SIGNAL_NUMBER: Record<DaemonSignal, number> = {
 	SIGKILL: os.constants.signals.SIGKILL,
 };
 
+const OUTPUT_RECONNECT_GRACE_MS = 30_000;
+
 interface ManagedProcess {
 	pid: number;
 	exited: Promise<number>;
@@ -95,11 +98,14 @@ interface ManagedDaemon {
 	completionSubscriptionId?: string;
 	persistQueue: Promise<void>;
 	progressLines?: ProgressLines;
+	monitorRestarting: boolean;
 }
 
 interface OutputRegistration extends DaemonOutputSubscription {
-	socket: net.Socket;
+	socket?: net.Socket;
 	subscriptionId: string;
+	pending: DaemonMonitorNotification[];
+	offlineTimer?: NodeJS.Timeout;
 }
 
 interface BrokerLease {
@@ -437,6 +443,7 @@ class DaemonBroker {
 			await record.persistQueue;
 		}
 		this.#ownerSockets.clear();
+		for (const registration of this.#outputRegistrations.values()) clearTimeout(registration.offlineTimer);
 		this.#outputRegistrations.clear();
 		this.#progressBatcher.dispose();
 		for (const socket of this.#sockets) socket.destroy();
@@ -490,7 +497,13 @@ class DaemonBroker {
 				if (registration.socket === socket) this.#ownerSockets.delete(owner);
 			}
 			for (const [monitorId, registration] of this.#outputRegistrations) {
-				if (registration.socket === socket) this.#outputRegistrations.delete(monitorId);
+				if (registration.socket !== socket) continue;
+				registration.socket = undefined;
+				registration.offlineTimer = setTimeout(() => {
+					if (registration.socket || this.#outputRegistrations.get(monitorId) !== registration) return;
+					this.#outputRegistrations.delete(monitorId);
+				}, OUTPUT_RECONNECT_GRACE_MS);
+				registration.offlineTimer.unref();
 			}
 		});
 	}
@@ -685,6 +698,7 @@ class DaemonBroker {
 				readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
 				consecutiveFailures: 0,
 				persistQueue: Promise.resolve(),
+				monitorRestarting: false,
 				completionCapable: owner !== undefined && this.#completionSubscriptions.has(owner),
 				completionSubscriptionId: owner === undefined ? undefined : this.#completionSubscriptions.get(owner),
 				pendingCompletions: [],
@@ -887,18 +901,59 @@ class DaemonBroker {
 		const advertised = new Set(subscriptions.map(subscription => subscription.id));
 		for (const [monitorId, registration] of this.#outputRegistrations) {
 			if (registration.subscriptionId !== subscriptionId || advertised.has(monitorId)) continue;
+			clearTimeout(registration.offlineTimer);
 			this.#outputRegistrations.delete(monitorId);
 		}
+		const newNames = new Set(
+			subscriptions
+				.filter(subscription => !this.#outputRegistrations.has(subscription.id))
+				.map(subscription => subscription.name),
+		);
+		for (const name of newNames) void this.#progressBatcher.flush(name);
 		for (const subscription of subscriptions) {
-			this.#outputRegistrations.set(subscription.id, { ...subscription, socket, subscriptionId });
+			const existing = this.#outputRegistrations.get(subscription.id);
+			if (existing && existing.subscriptionId === subscriptionId) {
+				clearTimeout(existing.offlineTimer);
+				existing.offlineTimer = undefined;
+				existing.name = subscription.name;
+				existing.owner = subscription.owner;
+				existing.socket = socket;
+				const replayedTerminal = existing.pending.some(
+					notification => notification.event === "daemon-monitor-completed",
+				);
+				for (const notification of existing.pending.splice(0))
+					this.#sendMonitorNotification(existing, notification);
+				const record = this.#records.get(subscription.name);
+				if (record && terminalState(record.snapshot.state) && !replayedTerminal) {
+					this.#notifyMonitorCompletion(record, subscription.id);
+				}
+				continue;
+			}
+			if (existing) clearTimeout(existing.offlineTimer);
+			this.#outputRegistrations.set(subscription.id, {
+				...subscription,
+				socket,
+				subscriptionId,
+				pending: [],
+			});
+			const record = this.#records.get(subscription.name);
+			if (record && terminalState(record.snapshot.state)) this.#notifyMonitorCompletion(record, subscription.id);
 		}
+	}
+
+	#sendMonitorNotification(registration: OutputRegistration, notification: DaemonMonitorNotification): void {
+		if (!registration.socket || registration.socket.destroyed) {
+			registration.pending.push(notification);
+			return;
+		}
+		registration.socket.write(`${JSON.stringify(notification)}\n`);
 	}
 
 	#notifyOutput(name: string, text: string, seq: number): void {
 		const daemon = this.#records.get(name)?.snapshot;
 		if (!daemon) return;
 		for (const registration of this.#outputRegistrations.values()) {
-			if (registration.name !== name || registration.socket.destroyed) continue;
+			if (registration.name !== name) continue;
 			const notification: DaemonOutputNotification = {
 				event: "daemon-output",
 				monitorId: registration.id,
@@ -907,21 +962,19 @@ class DaemonBroker {
 				seq,
 				text,
 			};
-			registration.socket.write(`${JSON.stringify(notification)}\n`);
+			this.#sendMonitorNotification(registration, notification);
 		}
 	}
 
-	#notifyMonitorCompletion(record: ManagedDaemon): void {
+	#notifyMonitorCompletion(record: ManagedDaemon, monitorId?: string): void {
 		for (const registration of this.#outputRegistrations.values()) {
+			if (monitorId !== undefined && registration.id !== monitorId) continue;
 			if (registration.name !== record.snapshot.name) continue;
-			if (registration.socket.destroyed) continue;
-			registration.socket.write(
-				`${JSON.stringify({
-					event: "daemon-monitor-completed",
-					monitorId: registration.id,
-					daemon: { ...record.snapshot },
-				})}\n`,
-			);
+			this.#sendMonitorNotification(registration, {
+				event: "daemon-monitor-completed",
+				monitorId: registration.id,
+				daemon: { ...record.snapshot },
+			});
 		}
 	}
 
@@ -1079,6 +1132,7 @@ class DaemonBroker {
 		await record.log?.close();
 		record.log = undefined;
 		await record.persistQueue;
+		if (!record.monitorRestarting) await this.#progressBatcher.finish(record.snapshot.name);
 		if (
 			completion &&
 			this.#completionSubscriptions.has(completion.owner) &&
@@ -1086,7 +1140,7 @@ class DaemonBroker {
 		) {
 			this.#notifyCompletion(completion);
 		}
-		this.#notifyMonitorCompletion(record);
+		if (!record.monitorRestarting) this.#notifyMonitorCompletion(record);
 		// Terminal settlement can free the last live persistent daemon. The idle
 		// timer that fired while that daemon was alive returned without rearming
 		// (see #scheduleIdleShutdown), so rearm here or the broker, its endpoint,
@@ -1219,6 +1273,11 @@ class DaemonBroker {
 			this.#persist(record);
 			await record.log?.close();
 			record.log = undefined;
+			await record.persistQueue;
+			if (!record.monitorRestarting) {
+				await this.#progressBatcher.finish(record.snapshot.name);
+				this.#notifyMonitorCompletion(record);
+			}
 			return;
 		}
 		record.snapshot.state = "stopping";
@@ -1232,11 +1291,16 @@ class DaemonBroker {
 
 	async #restart(name: string): Promise<DaemonRpcResult> {
 		const record = this.#record(name);
-		await this.#stopRecord(record, 2_000);
-		await record.log?.close();
-		record.log = await DaemonLog.open(record.dir);
-		record.stopRequested = false;
-		await this.#launch(record);
+		record.monitorRestarting = true;
+		try {
+			await this.#stopRecord(record, 2_000);
+			await record.log?.close();
+			record.log = await DaemonLog.open(record.dir);
+			record.stopRequested = false;
+			await this.#launch(record);
+		} finally {
+			record.monitorRestarting = false;
+		}
 		await record.persistQueue;
 		return { op: "restart", daemon: record.snapshot };
 	}
@@ -1356,6 +1420,7 @@ class DaemonBroker {
 					readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
 					consecutiveFailures: 0,
 					persistQueue: Promise.resolve(),
+					monitorRestarting: false,
 					completionCapable: "completionEvents" in decoded && decoded.completionEvents === true,
 					completionSubscriptionId:
 						"completionSubscriptionId" in decoded && typeof decoded.completionSubscriptionId === "string"

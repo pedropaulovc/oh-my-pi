@@ -16,7 +16,7 @@ Merged from the former `irc`, `job`, and `launch` tools; each op family keeps it
   - `packages/coding-agent/src/registry/agent-registry.ts` — process-global agent directory and status.
   - `packages/coding-agent/src/registry/agent-lifecycle.ts` — revival of parked recipients on direct send.
   - `packages/coding-agent/src/session/agent-session.ts` — recipient-side message, progress, and completion injection and wake turns.
-  - `packages/coding-agent/src/session/async-job-delivery.ts` — shared lossless progress batching and model-facing progress messages.
+  - `packages/coding-agent/src/session/async-job-delivery.ts` — shared ordered progress batching and model-facing progress messages.
   - `packages/coding-agent/src/async/job-manager.ts` — job registry, cancellation, delivery suppression, smart poll ladder.
   - `packages/coding-agent/src/launch/client.ts` / `broker.ts` / `presence.ts` / `protocol.ts` — process-supervision broker.
   - `packages/coding-agent/src/config/settings-schema.ts` — `irc.timeoutMs`, `async.pollWaitDuration`, `launch.enabled`.
@@ -107,11 +107,15 @@ Names are stable and unique within one project directory. A live name must be st
 {"op":"monitor","name":"web","progress":"off"}
 ```
 
-`monitor` attaches to, retunes, or detaches the calling session's subscription for an already-running named process. It begins at the current output cursor and does not replay older logs. Each complete non-empty merged stdout/stderr line is retained. Delivery is batched at most once per second; if output arrives while the model is busy, all waiting lines are delivered together in the next batch. A final unterminated line is flushed when the process exits.
+`monitor` attaches to, retunes, or detaches the calling session's subscription for an already-running named process. It begins at the current output cursor and does not replay older logs. Each complete non-empty merged stdout/stderr line becomes an event; an oversized event retains its final 4,000 characters. Delivery is batched at most once per second; if output arrives while the model is busy, all waiting events are delivered together without drops. A final unterminated line is flushed when the process exits.
 
 Wake progress starts a follow-up model turn when the agent is idle. Ambient progress is delivered only at an already-active step boundary and never wakes an idle agent. Process termination is a separate completion notification, ordered after any final progress batch.
 
 Monitoring does not alter the daemon's lifecycle. `persist` controls whether the process survives the last omp client exiting; `detached` controls whether it survives broker shutdown. Detaching a monitor does not stop the process, and stopping the process does not require detaching first. Session disposal removes its subscriptions without stopping otherwise-surviving processes. Fully detached daemons cannot use live monitoring because no broker connection remains to deliver events.
+
+A live broker keeps a disconnected client's monitor and its one-second output batches for a 30-second reconnect window, then replays them in order before terminal state. This handoff covers local socket replacement; it is not a durable journal across broker-process failure.
+
+The authenticated behavioral eval described in [Bash tool](bash.md#live-model-behavioral-eval) includes a Hub scenario. It checks that a live model chooses persistent `start` with wake progress, receives a pushed marker, and acknowledges it without polling.
 
 ## Logs, input, signals (processes)
 ```json
@@ -131,7 +135,7 @@ The first process op starts a detached broker over a private socket under `~/.om
 - Poll window: `async.pollWaitDuration` — `5s`/`10s`/`30s`/`1m`/`5m`/`smart` (default); smart ladder `[5s..5m]` climbing per back-to-back wait, resetting after 60 s without waiting.
 - Job retention 5 min; manager max-running fallback 15; `async.maxJobs` clamped 1..100.
 - Launch names 1-48 chars; `ready.port` 1..65535; `logs`/`wait`/`stop` timeouts capped at one hour.
-- Live progress emits at most once per second. All complete non-empty lines accumulated during the interval are retained in the batch.
+- Live progress emits at most once per second. All bounded complete non-empty events accumulated during the interval are retained in the batch.
 
 ## Errors
 - Most validation/availability failures are text results with `isError: true`: messaging unavailable, missing `to`/`message`, self-send (`Cannot send a message to yourself.`), `await` with `to:"all"`, `to`+`name` on one send, missing `ids` on `cancel`, and launch disabled. The async-disabled `jobs`/`cancel` response is an exception: it returns `Async execution is disabled; no background jobs are available.` with an empty job list and no `isError` flag.

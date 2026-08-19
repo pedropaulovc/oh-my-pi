@@ -574,6 +574,7 @@ export class AgentSession {
 	#unregisterAsyncProgressQueue: (() => void) | undefined;
 	#unregisterAsyncProgressWakeQueue: (() => void) | undefined;
 	readonly #activeLaunchWakeMonitors = new Set<string>();
+	#launchMonitorStateChanged = Promise.withResolvers<void>();
 	/**
 	 * Async-delivery generation, bumped on every session transition that evicts
 	 * this owner's jobs (see {@link AgentSession.#cancelOwnAsyncJobs}). Stamped
@@ -1894,7 +1895,9 @@ export class AgentSession {
 	 */
 	#hasPendingAsyncWake(): boolean {
 		const manager = this.#asyncJobManager;
-		if (!manager) return this.#activeLaunchWakeMonitors.size > 0;
+		const queuedWake =
+			this.yieldQueue.has(ASYNC_PROGRESS_WAKE_QUEUE_KIND) || this.yieldQueue.has(LAUNCH_COMPLETION_MESSAGE_TYPE);
+		if (!manager) return this.#activeLaunchWakeMonitors.size > 0 || queuedWake;
 		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
 		return (
 			manager.getRunningJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
@@ -1905,7 +1908,8 @@ export class AgentSession {
 			// (idle-flush delay / step-boundary) handoff window would read as
 			// quiescent and the run driver would drop the queued result.
 			this.yieldQueue.has(ASYNC_RESULT_MESSAGE_TYPE) ||
-			this.#activeLaunchWakeMonitors.size > 0
+			this.#activeLaunchWakeMonitors.size > 0 ||
+			queuedWake
 		);
 	}
 
@@ -1929,10 +1933,14 @@ export class AgentSession {
 	 * jobs.
 	 */
 	async settleAsyncWork(): Promise<void> {
+		const launchMonitorChanged = this.#launchMonitorStateChanged.promise;
 		const manager = this.#asyncJobManager;
-		if (!manager || !this.#agentId) return;
-		await manager.waitForOwnerJobs(this.#agentId, { excludeSuppressed: true });
-		await manager.drainDeliveries({ filter: { ownerId: this.#agentId } });
+		if (manager && this.#agentId) {
+			await manager.waitForOwnerJobs(this.#agentId, { excludeSuppressed: true });
+			await manager.drainDeliveries({ filter: { ownerId: this.#agentId } });
+		}
+		await this.waitForIdle();
+		if (this.#activeLaunchWakeMonitors.size > 0) await launchMonitorChanged;
 		await this.waitForIdle();
 	}
 
@@ -6201,14 +6209,24 @@ export class AgentSession {
 			epoch: this.#asyncDeliveryEpoch,
 			delivery,
 		});
+		this.#signalLaunchMonitorChanged();
+	}
+
+	#signalLaunchMonitorChanged(): void {
+		const changed = this.#launchMonitorStateChanged;
+		this.#launchMonitorStateChanged = Promise.withResolvers<void>();
+		changed.resolve();
 	}
 
 	setLaunchMonitorActive(monitorId: string, delivery: AsyncJobProgressDelivery, active: boolean): void {
+		const wasActive = this.#activeLaunchWakeMonitors.has(monitorId);
 		if (delivery !== "wake" || !active) {
 			this.#activeLaunchWakeMonitors.delete(monitorId);
-			return;
+		} else {
+			this.#activeLaunchWakeMonitors.add(monitorId);
 		}
-		this.#activeLaunchWakeMonitors.add(monitorId);
+		if (wasActive === this.#activeLaunchWakeMonitors.has(monitorId)) return;
+		this.#signalLaunchMonitorChanged();
 	}
 
 	#queueHiddenNextTurnMessage(message: CustomMessage, triggerTurn: boolean): void {

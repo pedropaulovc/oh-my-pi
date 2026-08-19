@@ -44,14 +44,15 @@ function collectProgress(manager: AsyncJobManager): string[] {
 }
 
 describe("bash progress parameter", () => {
-	test("describes lossless batched progress delivery", () => {
+	test("describes bounded drop-free progress delivery", () => {
 		const manager = new AsyncJobManager({});
 		const tool = new BashTool(makeSession(manager));
 
-		expect(tool.description).toContain("retains every complete non-empty merged stdout/stderr line");
+		expect(tool.description).toContain("emits each non-empty merged line");
+		expect(tool.description).toContain("final 4,000 chars");
 		expect(tool.description).toContain("at most once per second");
-		expect(tool.description).toContain("wakes an idle agent");
-		expect(tool.description).toContain("Busy lines batch losslessly");
+		expect(tool.description).toContain("without drops");
+		expect(tool.description).toContain("wakes idle");
 		expect(tool.description).toContain('`progress: "ambient"` waits for an active turn and never wakes');
 		expect(tool.description).toContain("Completion is separate");
 	});

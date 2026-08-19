@@ -27,11 +27,11 @@
 | `cwd` | `string` | No | Working directory, resolved against `session.cwd` via `resolveToCwd`. Must exist and be a directory. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
 | `async` | `boolean` | No | Background execution request. Present only when `async.enabled` is true for the session. Returns immediately with a job id instead of waiting; it does not change the effective deadline, including a disabled deadline from `timeout: 0`. |
-| `progress` | `"ambient" \| "wake"` | No | With `async: true`, deliver complete non-empty output lines to the model. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once per second, with every line in the interval retained in the batch. |
+| `progress` | `"ambient" \| "wake"` | No | With `async: true`, deliver complete non-empty output-line events to the model. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once per second, with every event in the interval retained in the batch. Oversized events retain the final 4,000 characters. |
 
 ## Agent-facing guidance
 
-When async execution is enabled, the Bash tool description tells the model that `async: true` is for finite commands, `progress: "wake"` is lossless and waking, output produced while the model is busy is batched, `progress: "ambient"` never wakes, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
+When async execution is enabled, the Bash tool description tells the model that `async: true` is for finite commands, `progress: "wake"` is waking, events produced while the model is busy batch without drops, `progress: "ambient"` never wakes, oversized events retain their final 4,000 characters, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
 
 `wake` is a harness push, not a polling hint. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
 
@@ -66,7 +66,7 @@ This comparison uses the observed Claude Code 2.1.233 Monitor contract. Each sur
 | Attach or retune | No; progress belongs to the command | `hub` `op:"monitor"` by stable process name | No attach/retune operation observed |
 | Detach without stopping work | No separate subscription | `progress:"off"` | Persistent monitor is stopped through task control |
 | Harness push while idle | Starts a follow-up turn | Starts a follow-up turn | Starts a follow-up turn |
-| Events received while busy | Every line retained; waiting lines delivered together in the next batch | Same shared lossless batching contract | Events are buffered while busy and delivered together when the agent can run |
+| Events received while busy | Every bounded event retained; waiting events delivered together in the next batch | Same shared batching contract | Events are buffered while busy and delivered together when the agent can run |
 | Command event boundary | Complete non-empty merged stdout/stderr line | Complete non-empty merged stdout/stderr line | Stdout line |
 | WebSocket event boundary | Not supported | Not supported | Text frame |
 | Termination | Separate async-job completion/failure | Separate process completion | Separate monitor termination |
@@ -78,13 +78,13 @@ OMP Hub monitoring is the persistent-process counterpart to Claude Code Monitor'
 
 ## Live model behavioral eval
 
-The opt-in eval runs a real authenticated model through the normal `AgentSession` and checks both policy and runtime behavior: the model must select Bash with `async: true` and `progress: "wake"`, the harness must inject `MONITOR_READY` before command completion, and a later assistant message must acknowledge that pushed event without starting a polling command.
+The opt-in eval runs a real authenticated model through the normal `AgentSession`. Its Bash scenario requires `async: true` with `progress: "wake"`; its Hub scenario requires a persistent `start` with `progress: "wake"`. In both cases the harness must inject the marker before completion, and a later assistant message must acknowledge the pushed event without polling.
 
 ```bash
 bun --cwd=packages/coding-agent run eval:async-progress --model <provider/model> --runs 3
 ```
 
-Omit `--model` to use the configured default. The command exits non-zero if any run fails and prints the selected Bash arguments plus the individual criteria. It is deliberately opt-in because it uses external credentials, incurs provider cost, and measures stochastic model behavior; deterministic queue, batching, and wake semantics remain covered by the regular test suite.
+The default runs both surfaces; pass `--surface bash` or `--surface hub` to isolate one. Omit `--model` to use the configured default. The command exits non-zero if any run fails and prints the selected tool arguments plus each criterion. It is opt-in because it uses external credentials, incurs provider cost, and measures stochastic model behavior; deterministic queue, batching, and wake semantics remain covered by the regular test suite.
 
 ## Outputs
 The tool returns a single `text` content block plus optional `details`.

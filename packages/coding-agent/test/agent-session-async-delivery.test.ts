@@ -142,6 +142,64 @@ describe("AgentSession owner-routed async delivery", () => {
 		).toBe(true);
 	});
 
+	it("waits without spinning until a wake process monitor reaches terminal state", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			agentId: "SubAgent",
+		});
+		await session.prompt("start monitoring");
+
+		session.setLaunchMonitorActive("monitor-1", "wake", true);
+		expect(session.hasPendingAsyncWork()).toBe(true);
+		let settled = false;
+		const settling = session.settleAsyncWork().then(() => {
+			settled = true;
+		});
+		await Bun.sleep(1);
+		expect(settled).toBe(false);
+
+		session.queueLaunchProgress(
+			{
+				event: "daemon-output",
+				monitorId: "monitor-1",
+				name: "watched",
+				daemonId: "daemon-1",
+				seq: 1,
+				text: "PUSHED WHILE SETTLING",
+			},
+			"wake",
+			Date.now(),
+		);
+		session.setLaunchMonitorActive("monitor-1", "wake", false);
+		await settling;
+		expect(session.hasPendingAsyncWork()).toBe(false);
+		expect(
+			mock.calls.some(call =>
+				call.context.messages.some(message =>
+					typeof message.content === "string"
+						? message.content.includes("PUSHED WHILE SETTLING")
+						: message.content.some(
+								content => content.type === "text" && content.text.includes("PUSHED WHILE SETTLING"),
+							),
+				),
+			),
+		).toBe(true);
+	});
+
 	it("purges finished owned jobs when starting a new session", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
@@ -522,6 +580,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			text,
 		});
 
+		session.setLaunchMonitorActive("monitor-1", "wake", true);
 		session.queueLaunchProgress(progress("PROCESS EVENT ONE", 1), "wake", Date.now());
 		await busyStarted.promise;
 		session.queueLaunchProgress(progress("PROCESS EVENT TWO", 2), "wake", Date.now());
@@ -545,6 +604,8 @@ describe("AgentSession owner-routed async delivery", () => {
 				detached: false,
 			},
 		});
+		session.setLaunchMonitorActive("monitor-1", "wake", false);
+		expect(session.hasPendingAsyncWork()).toBe(true);
 		releaseBusy.resolve();
 
 		const batch = await batchObserved.promise;
@@ -554,6 +615,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			batch.lastIndexOf("Supervised process watcher exited"),
 		);
 		expect(mock.calls).toHaveLength(3);
+		expect(session.hasPendingAsyncWork()).toBe(false);
 	}, 10_000);
 
 	it("pushes wake progress into an idle session before the job completes", async () => {
