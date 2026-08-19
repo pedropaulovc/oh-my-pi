@@ -2,6 +2,7 @@
 
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
+import { closeDaemonClients } from "../src/launch/client";
 import bashEvalPrompt from "../src/prompts/evals/async-progress-wake.md" with { type: "text" };
 import hubEvalPrompt from "../src/prompts/evals/hub-progress-wake.md" with { type: "text" };
 import { AgentRegistry, createAgentSession, Settings } from "../src/sdk";
@@ -295,21 +296,25 @@ function printRun(result: EvalRunResult): void {
 }
 
 async function main(): Promise<void> {
-	const config = parseArgs(Bun.argv.slice(2));
-	const results: EvalRunResult[] = [];
-	for (const surface of config.surfaces) {
-		for (let run = 1; run <= config.runs; run += 1) {
-			results.push(await runOnce(config, surface, run));
+	try {
+		const config = parseArgs(Bun.argv.slice(2));
+		const results: EvalRunResult[] = [];
+		for (const surface of config.surfaces) {
+			for (let run = 1; run <= config.runs; run += 1) {
+				results.push(await runOnce(config, surface, run));
+			}
 		}
+		const passed = results.filter(result => result.passed).length;
+		if (config.json) {
+			process.stdout.write(`${JSON.stringify({ passed, runs: results.length, results }, null, 2)}\n`);
+		} else {
+			for (const result of results) printRun(result);
+			process.stdout.write(`summary: ${passed}/${results.length} runs passed\n`);
+		}
+		if (passed !== results.length) process.exitCode = 1;
+	} finally {
+		await closeDaemonClients();
 	}
-	const passed = results.filter(result => result.passed).length;
-	if (config.json) {
-		process.stdout.write(`${JSON.stringify({ passed, runs: results.length, results }, null, 2)}\n`);
-	} else {
-		for (const result of results) printRun(result);
-		process.stdout.write(`summary: ${passed}/${results.length} runs passed\n`);
-	}
-	if (passed !== results.length) process.exitCode = 1;
 }
 
 await main();
