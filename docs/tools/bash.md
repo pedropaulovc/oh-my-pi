@@ -33,7 +33,7 @@
 
 When async execution is enabled, the Bash tool description tells the model that `async: true` is for finite commands, `progress: "wake"` is waking, events produced while the model is busy batch without drops, `progress: "ambient"` never wakes, oversized events retain their final 4,000 characters, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
 
-`wake` is a harness push, not a reason to hold the current turn open. After arming it, the agent should continue independent work and end the turn when none remains so the harness can wake it. It must not call `hub wait`, follow logs, or use another blocking tool merely to receive that progress or keep the turn alive. Blocking remains appropriate when the user requires synchronous readiness/exit/pattern handling or the immediately next action cannot proceed without it. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
+`wake` is a harness push, not a reason to hold the current turn open. Agents must not call `hub wait`, follow logs, or block to receive progress or keep the turn alive; they should use async progress and end the turn instead. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
 
 ```xml
 <system-notice>
@@ -52,8 +52,7 @@ When either async Bash or Hub process monitoring is available, the system prompt
 <async-progress>
 Actionable finite-command output → `bash` with `async: true`, `progress: "wake"`.
 Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).
-After arming wake progress, continue other work; when none remains, end the turn so the harness can wake you.
-NEVER call `hub wait`, `hub logs` with follow, or another blocking tool merely to receive that progress or keep the turn alive. Block only when the user requires synchronous readiness/exit/pattern handling or the immediately next action cannot proceed without it.
+NEVER call `hub wait`, follow logs, or block to receive progress or keep the turn alive; use async progress and end the turn instead.
 </async-progress>
 ```
 

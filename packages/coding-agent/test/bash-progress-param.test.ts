@@ -55,8 +55,9 @@ describe("bash progress parameter", () => {
 		expect(tool.description).toContain("wakes idle");
 		expect(tool.description).toContain('`progress: "ambient"` waits for an active turn and never wakes');
 		expect(tool.description).toContain("Completion is separate");
-		expect(tool.description).toContain("continue other work; when none remains, end the turn");
-		expect(tool.description).toContain("NEVER block merely to receive its output or keep the turn alive");
+		expect(tool.description).toContain(
+			"NEVER block to receive progress or keep the turn alive; use async progress and end the turn instead",
+		);
 	});
 
 	test("defaults off", async () => {
