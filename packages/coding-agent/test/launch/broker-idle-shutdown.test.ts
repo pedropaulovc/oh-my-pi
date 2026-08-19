@@ -42,11 +42,12 @@ function startBroker(
 	const previousProjectDir = process.env[DAEMON_PROJECT_DIR_ENV];
 	const previousRuntimeDir = process.env[DAEMON_RUNTIME_DIR_ENV];
 	const previousGrace = process.env[DAEMON_IDLE_GRACE_ENV];
-	const { promise: ready, resolve: resolveReady } = Promise.withResolvers<void>();
+	const { promise: ready, resolve: resolveReady, reject: rejectReady } = Promise.withResolvers<void>();
 	process.env[DAEMON_PROJECT_DIR_ENV] = projectDir;
 	process.env[DAEMON_RUNTIME_DIR_ENV] = runtimeDir;
 	process.env[DAEMON_IDLE_GRACE_ENV] = String(idleGraceMs);
 	const finished = startDaemonBrokerFromEnvironment({ ...options, onListening: resolveReady });
+	void finished.catch(rejectReady);
 	restoreEnv(DAEMON_PROJECT_DIR_ENV, previousProjectDir);
 	restoreEnv(DAEMON_RUNTIME_DIR_ENV, previousRuntimeDir);
 	restoreEnv(DAEMON_IDLE_GRACE_ENV, previousGrace);

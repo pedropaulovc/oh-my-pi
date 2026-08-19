@@ -402,7 +402,12 @@ class DaemonBroker {
 		server.listen(this.#endpoint);
 		await listening;
 		if (process.platform !== "win32") await fs.chmod(this.#endpoint, 0o600);
-		onListening?.();
+		try {
+			onListening?.();
+		} catch (error) {
+			await this.shutdown();
+			throw error;
+		}
 		this.#scheduleIdleShutdown();
 		await this.#finished.promise;
 	}
