@@ -24,6 +24,20 @@ import { theme } from "../theme/theme";
 
 type CustomOrHookMessage = Extract<AgentMessage, { role: "custom" | "hookMessage" }>;
 type AssistantAgentMessage = Extract<AgentMessage, { role: "assistant" }>;
+type BackgroundWorkType = "bash" | "task" | "process";
+
+function backgroundWorkNoun(type: BackgroundWorkType | undefined): "command" | "task" | "process" | "job" {
+	switch (type) {
+		case "bash":
+			return "command";
+		case "task":
+			return "task";
+		case "process":
+			return "process";
+		default:
+			return "job";
+	}
+}
 
 /**
  * Render an `async-result` custom message (a completed background bash/task job,
@@ -54,11 +68,9 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 	const block = new TranscriptBlock();
 	for (const job of jobs) {
 		const jobId = job.jobId ?? "unknown";
-		const typeLabel = job.type ? `[${job.type}]` : "[job]";
 		const duration = typeof job.durationMs === "number" ? formatDuration(job.durationMs) : undefined;
 		const line = [
-			theme.fg("success", `${theme.status.done} Background job completed`),
-			theme.fg("dim", typeLabel),
+			theme.fg("success", `${theme.status.done} Background ${backgroundWorkNoun(job.type)} completed`),
 			theme.fg("accent", jobId),
 			duration ? theme.fg("dim", `(${duration})`) : undefined,
 		]
@@ -80,11 +92,10 @@ export function buildAsyncProgressBlock(message: CustomOrHookMessage): Transcrip
 	for (const job of details?.jobs ?? []) {
 		const jobId = job.jobId ?? "unknown";
 		const elapsed = typeof job.elapsedMs === "number" ? formatDuration(job.elapsedMs) : undefined;
-		const typeLabel = job.type ? `[${job.type}]` : "[job]";
 		const header = renderStatusLine(
 			{
 				iconOverride: theme.fg("accent", theme.status.running),
-				title: `Background job progress ${typeLabel} ${jobId}`,
+				title: `Background ${backgroundWorkNoun(job.type)} progress ${jobId}`,
 				meta: elapsed ? [`(${elapsed})`] : undefined,
 			},
 			theme,

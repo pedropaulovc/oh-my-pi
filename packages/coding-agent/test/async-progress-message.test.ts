@@ -2,11 +2,15 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import * as os from "node:os";
 import type { AsyncJob } from "@oh-my-pi/pi-coding-agent/async";
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { buildAsyncProgressBlock } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
+import {
+	buildAsyncProgressBlock,
+	buildAsyncResultBlock,
+} from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import {
 	ASYNC_PROGRESS_MESSAGE_TYPE,
 	type AsyncProgressEntry,
 	buildAsyncProgressBatchMessage,
+	buildAsyncResultBatchMessage,
 } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 
 function job(id: string): AsyncJob {
@@ -77,15 +81,32 @@ describe("async progress messages", () => {
 		const raw = buildAsyncProgressBlock(message).render(80).join("\n");
 		const rendered = Bun.stripANSI(raw);
 
-		expect(rendered).toContain("Background job progress [bash] bg_7");
-		expect(rendered).toContain(`${theme.status.running} Background job progress`);
+		expect(rendered).toContain("Background command progress bg_7");
+		expect(rendered).toContain(`${theme.status.running} Background command progress`);
 		expect(raw).toContain(theme.fg("accent", theme.status.running));
-		expect(raw).toContain(theme.fg("accent", "Background job progress [bash] bg_7"));
+		expect(raw).toContain(theme.fg("accent", "Background command progress bg_7"));
 		expect(rendered).toContain("~/private/outputone");
 		expect(rendered).toMatch(/one +value/);
 		expect(rendered).not.toContain("\t");
 		expect(rendered).not.toContain("\r");
 		expect(rendered).not.toContain(os.homedir());
 		expect(rendered).not.toContain("completed");
+	});
+
+	test("names the work instead of rendering an implementation badge", () => {
+		const runningJob = job("bg_8");
+		const progressMessage = buildAsyncProgressBatchMessage([{ ...entry("bg_8", "working"), job: runningJob }]);
+		const completionMessage = buildAsyncResultBatchMessage([
+			{ jobId: "bg_8", result: "done", job: runningJob, durationMs: 5_000, epoch: 0 },
+		]);
+		if (!progressMessage || !completionMessage) throw new Error("Expected progress and completion messages");
+
+		const progress = Bun.stripANSI(buildAsyncProgressBlock(progressMessage).render(80).join("\n"));
+		const completion = Bun.stripANSI(buildAsyncResultBlock(completionMessage).render(80).join("\n"));
+
+		expect(progress).toContain("Background command progress bg_8");
+		expect(completion).toContain("Background command completed bg_8");
+		expect(progress).not.toContain("[bash]");
+		expect(completion).not.toContain("[bash]");
 	});
 });
