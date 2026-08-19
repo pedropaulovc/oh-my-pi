@@ -9,7 +9,7 @@ Use ONLY for one binary or a short pipeline that computes a fact (`wc -l`, `sort
 - Order-dependent commands use `&&` in one call; independent calls may run concurrently.
 - Internal URIs (`skill://`, `agent://`, …) auto-resolve to paths.
 {{#if hasShellBuiltins}}- aux utils available: mkdir, wc, sort, comm, diff, uniq, base64, cmp, md5sum, sha{1,224,256,384,512}sum, b2sum, basename, dirname, readlink, realpath, touch, stat, date, mktemp, seq, yes, printenv, truncate, tac, nproc, uname, whoami, hostname, which, ps, pgrep, pkill, pidwait, top, cut, tee, tr, paste, sed, xargs, jq, rm, mv, ln, ts, sponge, ifne, isutf8, combine{{#unless isWindows}}, errno{{/unless}}{{/if}}
-{{#if asyncEnabled}}- `async: true` defers a finite command without extending `timeout`. `progress: "wake"` emits each non-empty merged line (final 4,000 chars), flushes a final partial line before completion, batches at most once per second, retains busy-turn output in order, and wakes idle.
+{{#if asyncEnabled}}- `async: true` defers a finite command without extending `timeout`. `progress: "wake"` emits each non-empty merged line (final 4,000 chars), includes a final partial before completion, batches at most once per second without drops, keeps busy order, and wakes idle.
 - `progress: "ambient"` waits for an active turn and never wakes. Completion is separate.{{/if}}
 </instruction>
 
