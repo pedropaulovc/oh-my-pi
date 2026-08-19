@@ -98,8 +98,9 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			const systemPrompt = session.systemPrompt.join("\n\n");
 			expect(systemPrompt).toContain("# Background Bash Push Events");
 			expect(systemPrompt).toContain('`async: true` and `progress: "wake"` instead of polling');
+			expect(systemPrompt).toContain("emits progress at most once per second");
 			expect(systemPrompt).toContain("Lines emitted while the agent is busy are retained and delivered together");
-			expect(systemPrompt).toContain("starts a follow-up turn when the agent is idle");
+			expect(systemPrompt).toContain("when the agent is idle, it starts a follow-up turn");
 		} finally {
 			await session.dispose();
 		}
