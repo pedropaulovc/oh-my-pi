@@ -22,6 +22,7 @@ import {
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 describe("AgentSession owner-routed async delivery", () => {
 	let session: AgentSession;
@@ -197,6 +198,82 @@ describe("AgentSession owner-routed async delivery", () => {
 				),
 			),
 		).toBe(true);
+	});
+
+	it("fences old process progress while switching to another session", async () => {
+		using tempDir = TempDir.createSync("@omp-launch-progress-switch-");
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
+		sessionManager.appendMessage({ role: "user", content: "old session", timestamp: 1 });
+		await sessionManager.flush();
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+
+		const targetManager = SessionManager.create(tempDir.path(), tempDir.path());
+		targetManager.appendMessage({ role: "user", content: "target session", timestamp: 2 });
+		await targetManager.flush();
+		const targetFile = targetManager.getSessionFile();
+		if (!targetFile) throw new Error("Expected target session file");
+		await targetManager.close();
+
+		session.setLaunchMonitorActive("old-monitor", "wake", true);
+		session.registerSessionChangeCallback(() => session.setLaunchMonitorActive("old-monitor", "wake", false));
+		session.queueLaunchProgress(
+			{
+				event: "daemon-output",
+				monitorId: "old-ambient-monitor",
+				name: "old-ambient-process",
+				daemonId: "old-ambient-daemon",
+				seq: 1,
+				text: "QUEUED OLD AMBIENT EVENT",
+			},
+			"ambient",
+			Date.now(),
+		);
+		session.setSessionBeforeSwitchReconciler(async () => {
+			session.queueLaunchProgress(
+				{
+					event: "daemon-output",
+					monitorId: "old-monitor",
+					name: "old-process",
+					daemonId: "old-daemon",
+					seq: 1,
+					text: "OLD SESSION PROCESS EVENT",
+				},
+				"wake",
+				Date.now(),
+			);
+		});
+
+		await expect(session.switchSession(targetFile)).resolves.toBe(true);
+		await session.sendUserMessage("inspect target");
+
+		expect(session.hasPendingAsyncWork()).toBe(false);
+		const observedText = mock.calls
+			.flatMap(call =>
+				call.context.messages.flatMap(message =>
+					typeof message.content === "string"
+						? [message.content]
+						: message.content.flatMap(content => (content.type === "text" ? [content.text] : [])),
+				),
+			)
+			.join("\n");
+		expect(observedText).not.toContain("OLD SESSION PROCESS EVENT");
+		expect(observedText).not.toContain("QUEUED OLD AMBIENT EVENT");
 	});
 
 	it("purges finished owned jobs when starting a new session", async () => {

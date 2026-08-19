@@ -575,6 +575,8 @@ export class AgentSession {
 	#unregisterAsyncProgressWakeQueue: (() => void) | undefined;
 	readonly #activeLaunchWakeMonitors = new Set<string>();
 	#launchMonitorStateChanged = Promise.withResolvers<void>();
+	#launchProgressBoundaryDepth = 0;
+	#launchProgressEpoch = 0;
 	/**
 	 * Async-delivery generation, bumped on every session transition that evicts
 	 * this owner's jobs (see {@link AgentSession.#cancelOwnAsyncJobs}). Stamped
@@ -1393,7 +1395,7 @@ export class AgentSession {
 		this.#unregisterAsyncProgressQueue = this.yieldQueue.register<AsyncProgressEntry>(ASYNC_PROGRESS_MESSAGE_TYPE, {
 			skipIdleFlush: true,
 			isStale: entry =>
-				entry.epoch !== this.#asyncDeliveryEpoch ||
+				entry.epoch !== (entry.source?.type === "process" ? this.#launchProgressEpoch : this.#asyncDeliveryEpoch) ||
 				(entry.job !== undefined && this.#asyncJobManager?.isDeliverySuppressed(entry.jobId) === true),
 			build: buildAsyncProgressBatchMessage,
 		});
@@ -1401,7 +1403,8 @@ export class AgentSession {
 			ASYNC_PROGRESS_WAKE_QUEUE_KIND,
 			{
 				isStale: entry =>
-					entry.epoch !== this.#asyncDeliveryEpoch ||
+					entry.epoch !==
+						(entry.source?.type === "process" ? this.#launchProgressEpoch : this.#asyncDeliveryEpoch) ||
 					(entry.job !== undefined && this.#asyncJobManager?.isDeliverySuppressed(entry.jobId) === true),
 				build: buildAsyncProgressBatchMessage,
 			},
@@ -1974,7 +1977,7 @@ export class AgentSession {
 			job,
 			seq,
 			elapsedMs: Math.max(0, Date.now() - job.startTime),
-			epoch: this.#asyncDeliveryEpoch,
+			epoch: this.#launchProgressEpoch,
 			delivery: job.progressDelivery,
 		});
 	}
@@ -6192,6 +6195,7 @@ export class AgentSession {
 		startedAt: number,
 	): void {
 		if (this.#isDisposed) throw new Error("Session disposed before launch progress delivery");
+		if (this.#launchProgressBoundaryDepth > 0) return;
 		const queueKind = delivery === "wake" ? ASYNC_PROGRESS_WAKE_QUEUE_KIND : ASYNC_PROGRESS_MESSAGE_TYPE;
 		this.yieldQueue.enqueue<AsyncProgressEntry>(queueKind, {
 			jobId: notification.name,
@@ -6215,6 +6219,19 @@ export class AgentSession {
 		const changed = this.#launchMonitorStateChanged;
 		this.#launchMonitorStateChanged = Promise.withResolvers<void>();
 		changed.resolve();
+	}
+
+	#beginLaunchProgressBoundary(): Disposable {
+		this.#launchProgressBoundaryDepth += 1;
+		this.#launchProgressEpoch += 1;
+		let active = true;
+		return {
+			[Symbol.dispose]: () => {
+				if (!active) return;
+				active = false;
+				this.#launchProgressBoundaryDepth -= 1;
+			},
+		};
 	}
 
 	setLaunchMonitorActive(monitorId: string, delivery: AsyncJobProgressDelivery, active: boolean): void {
@@ -6879,6 +6896,7 @@ export class AgentSession {
 		}
 
 		this.#disconnectFromAgent();
+		using _launchProgressBoundary = this.#beginLaunchProgressBoundary();
 		let advisorRecordersDetached = false;
 		await this.abort();
 		this.#cancelOwnAsyncJobs();
@@ -6988,6 +7006,7 @@ export class AgentSession {
 				return false;
 			}
 		}
+		using _launchProgressBoundary = this.#beginLaunchProgressBoundary();
 
 		await this.#bash.flushPending();
 		// Flush current session to ensure all entries are written
@@ -7940,6 +7959,7 @@ export class AgentSession {
 		}
 
 		this.#disconnectFromAgent();
+		using _launchProgressBoundary = switchingToDifferentSession ? this.#beginLaunchProgressBoundary() : undefined;
 		await this.abort({ goalReason: "internal" });
 		await this.#sessionBeforeSwitchReconciler?.();
 
@@ -8250,6 +8270,7 @@ export class AgentSession {
 			}
 			skipConversationRestore = result?.skipConversationRestore ?? false;
 		}
+		using _launchProgressBoundary = this.#beginLaunchProgressBoundary();
 
 		// Clear pending messages (bound to old session state)
 		this.#pendingNextTurnMessages = [];
@@ -8363,6 +8384,7 @@ export class AgentSession {
 		if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
 			throw new Error("Cannot branch /btw: session changed since /btw started");
 		}
+		using _launchProgressBoundary = this.#beginLaunchProgressBoundary();
 
 		await withTimeout(
 			this.#cancelPostPromptTasks(),
