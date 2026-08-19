@@ -109,7 +109,13 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			expect(systemPrompt).toContain(
 				'Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).',
 			);
-			expect(systemPrompt).toContain("Never poll.");
+			expect(systemPrompt).toContain(
+				"After arming wake progress, continue other work; when none remains, end the turn so the harness can wake you.",
+			);
+			expect(systemPrompt).toContain(
+				"NEVER call `hub wait`, `hub logs` with follow, or another blocking tool merely to receive that progress or keep the turn alive.",
+			);
+			expect(systemPrompt).toContain("the immediately next action cannot proceed without it");
 			expect(systemPrompt).toContain("</async-progress>");
 		} finally {
 			await session.dispose();

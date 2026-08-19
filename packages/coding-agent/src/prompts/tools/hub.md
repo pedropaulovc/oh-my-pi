@@ -3,7 +3,7 @@ Use `op: "list"` to discover peers. Address peers by exact roster ID — NEVER i
 
 # Messaging & Jobs
 
-Background jobs auto-deliver when they finish. You NEVER need to poll; if `jobs`/`wait` observes a settled job first, that snapshot is the delivery and suppresses duplicate `async-result`.
+Background jobs auto-deliver when they finish. Do not call `jobs`/`wait` merely to watch them; if either observes a settled job first, that snapshot is the delivery and suppresses duplicate `async-result`.
 
 - **`send`** (with `to`): fire-and-forget, NEVER blocks. Delivery receipts (`delivered`/`failed`) immediate; `failed` → peer gone, don't retry.
   Sending wakes `idle`/`parked` peers. Answering: lead with answer, NEVER quote, set `replyTo`.
@@ -30,7 +30,7 @@ Project-scoped long-running processes shared by every omp instance in the same d
   - For actionable output, set `progress: "wake"`. Every complete non-empty merged output line becomes an event (final 4,000 characters for an oversized line); a final partial line is flushed before completion. Pushes are batched at most once per second, and events emitted while busy arrive together in order. `progress: "ambient"` waits for an active turn and never wakes.
 - `progress` on `start` stays attached. Use **`monitor`** only to attach later, retune, or detach (`progress: "off"`). Monitoring starts with future output; it does not replay logs.
 - Monitoring and process lifetime are independent. `persist`/`detached` govern survival; monitoring never keeps a process alive. Detached processes cannot be live-monitored.
-- Progress and terminal completion are separate notifications. Continue other work and react to either; NEVER poll `logs`.
+- Progress and terminal completion are separate notifications. After arming wake progress, continue other work; when none remains, end the turn so the harness can wake you. NEVER call `wait` or `logs` with `follow:true` merely to receive monitored output or keep the turn alive. Block only when the user requires synchronous readiness/exit/pattern handling or the immediately next action cannot proceed without it.
 - **`ps`**, **`logs`**, **`wait`** (with `name`), **`send`** (with `name`), **`stop`**, **`restart`**, **`describe`**, and **`monitor`** address the stable `name`.
 - **`logs`** defaults to the last 100 lines. `head: true` reads the beginning. `grep` is a regex. `follow: true` waits for output after `cursor`; reuse the returned cursor on the next call.
 - **`wait`** with `name` blocks until readiness/exit/`pattern` or `timeout` (seconds).

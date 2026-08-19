@@ -33,14 +33,17 @@
 
 When async execution is enabled, the Bash tool description tells the model that `async: true` is for finite commands, `progress: "wake"` is waking, events produced while the model is busy batch without drops, `progress: "ambient"` never wakes, oversized events retain their final 4,000 characters, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
 
-`wake` is a harness push, not a polling hint. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
+`wake` is a harness push, not a reason to hold the current turn open. After arming it, the agent should continue independent work and end the turn when none remains so the harness can wake it. It must not call `hub wait`, follow logs, or use another blocking tool merely to receive that progress or keep the turn alive. Blocking remains appropriate when the user requires synchronous readiness/exit/pattern handling or the immediately next action cannot proceed without it. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
 
-```text
-The following output events were emitted by a background job. The harness pushed this event and started a follow-up turn so you can inspect the update and act if needed.
-
-### <job-id> (<elapsed>)
-
+```xml
+<system-notice>
+<job-progress id="<job-id>" type="bash" elapsed="<elapsed>">
+<output>
 <all output events queued for this job>
+</output>
+</job-progress>
+Resume your work using this update.
+</system-notice>
 ```
 
 When either async Bash or Hub process monitoring is available, the system prompt includes one terse selection rule under `§ Tool Policy`. With both tools active it renders as:
@@ -49,7 +52,8 @@ When either async Bash or Hub process monitoring is available, the system prompt
 <async-progress>
 Actionable finite-command output → `bash` with `async: true`, `progress: "wake"`.
 Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).
-Never poll.
+After arming wake progress, continue other work; when none remains, end the turn so the harness can wake you.
+NEVER call `hub wait`, `hub logs` with follow, or another blocking tool merely to receive that progress or keep the turn alive. Block only when the user requires synchronous readiness/exit/pattern handling or the immediately next action cannot proceed without it.
 </async-progress>
 ```
 
@@ -78,7 +82,7 @@ OMP Hub monitoring is the persistent-process counterpart to Claude Code Monitor'
 
 ## Live model behavioral eval
 
-The opt-in eval runs a real authenticated model through the normal `AgentSession`. Its Bash scenario requires `async: true` with `progress: "wake"`; its Hub scenario requires a persistent `start` with `progress: "wake"`. In both cases the harness must inject the marker before completion, and a later assistant message must acknowledge the pushed event without polling.
+The opt-in eval runs a real authenticated model through the normal `AgentSession`. Its Bash scenario requires `async: true` with `progress: "wake"`; its Hub scenario requires a persistent `start` with `progress: "wake"`. In both cases the harness must inject the marker before completion, a later assistant message must acknowledge the pushed event, and the model must avoid blocking/polling calls. The user prompts do not forbid waits or polling, so this criterion measures the agent-facing tool policy rather than parroting an eval-specific instruction.
 
 ```bash
 bun --cwd=packages/coding-agent run eval:async-progress --model <provider/model> --runs 3

@@ -111,6 +111,8 @@ Names are stable and unique within one project directory. A live name must be st
 
 Wake progress starts a follow-up model turn when the agent is idle. Ambient progress is delivered only at an already-active step boundary and never wakes an idle agent. Process termination is a separate completion notification, ordered after any final progress batch.
 
+After arming wake progress, agents should continue independent work and end the turn when none remains so the harness can wake them. They must not call `wait`, follow logs, or use another blocking tool merely to receive monitored output or keep the turn alive. Blocking remains appropriate when the user requires synchronous readiness/exit/pattern handling or the immediately next action cannot proceed without it.
+
 Monitoring does not alter the daemon's lifecycle. `persist` controls whether the process survives the last omp client exiting; `detached` controls whether it survives broker shutdown. Detaching a monitor does not stop the process, and stopping the process does not require detaching first. Session disposal removes its subscriptions without stopping otherwise-surviving processes. Fully detached daemons cannot use live monitoring because no broker connection remains to deliver events.
 
 A live broker keeps up to 1 MiB of a disconnected client's newest output batches for a 30-second reconnect window, then replays them in order before terminal state. Terminal state is retained even when older output exceeds the cap. This handoff covers local socket replacement; it is not a durable journal across broker-process failure.
