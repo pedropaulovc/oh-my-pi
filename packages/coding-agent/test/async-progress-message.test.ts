@@ -53,8 +53,21 @@ describe("async progress messages", () => {
 		expect(content(message)).toContain("second");
 		expect(content(message)).toContain(longEvent);
 		expect(content(message)).toContain("important");
-		expect(content(message)).toContain("output events were emitted");
-		expect(content(message)).toContain("no action is required");
+		expect(content(message)).toContain("<system-notice>");
+		expect(content(message)).toContain('<job-progress id="bg_1" type="bash" elapsed="5.0s">');
+		expect(content(message)).toContain("2 background jobs emitted output.");
+		expect(content(message)).not.toContain("Resume your work");
+		expect(content(message)).toEndWith("</system-notice>");
+	});
+
+	test("asks the agent to resume only when progress wakes a follow-up turn", () => {
+		const wakeEntry = { ...entry("bg_3", "ready"), delivery: "wake" as const };
+		const message = buildAsyncProgressBatchMessage([wakeEntry]);
+
+		expect(content(message)).toContain(
+			"Background job bg_3 emitted output. Resume your work using the update below.",
+		);
+		expect(content(message)).toContain("<output>\nready\n</output>");
 	});
 
 	test("renders the custom message as sanitized progress rather than a completion", () => {

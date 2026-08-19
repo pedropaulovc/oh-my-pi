@@ -1,7 +1,10 @@
-{{#if multiple}}The following output events were emitted by background jobs.{{else}}The following output events were emitted by a background job.{{/if}} {{#if wake}}The harness pushed this event and started a follow-up turn so you can inspect the update and act if needed.{{else}}This is an ambient progress update; no action is required.{{/if}}
-
-{{#each jobs}}
-### {{jobId}} ({{elapsed}})
-
+<system-notice>
+{{#if multiple}}{{jobs.length}} background jobs emitted output.{{#if wake}} Resume your work using the updates below.{{/if}}
+{{else}}Background job {{jobs.[0].jobId}} emitted output.{{#if wake}} Resume your work using the update below.{{/if}}
+{{/if}}{{#each jobs}}<job-progress id="{{jobId}}"{{#if type}} type="{{type}}"{{/if}} elapsed="{{elapsed}}">
+<output>
 {{text}}
-{{/each}}
+</output>
+</job-progress>{{#unless @last}}
+{{/unless}}{{/each}}
+</system-notice>
