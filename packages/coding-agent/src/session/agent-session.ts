@@ -1897,7 +1897,7 @@ export class AgentSession {
 		const manager = this.#asyncJobManager;
 		const queuedWake =
 			this.yieldQueue.has(ASYNC_PROGRESS_WAKE_QUEUE_KIND) || this.yieldQueue.has(LAUNCH_COMPLETION_MESSAGE_TYPE);
-		if (!manager) return this.#activeLaunchWakeMonitors.size > 0 || queuedWake;
+		if (!manager) return queuedWake;
 		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
 		return (
 			manager.getRunningJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
@@ -1908,20 +1908,19 @@ export class AgentSession {
 			// (idle-flush delay / step-boundary) handoff window would read as
 			// quiescent and the run driver would drop the queued result.
 			this.yieldQueue.has(ASYNC_RESULT_MESSAGE_TYPE) ||
-			this.#activeLaunchWakeMonitors.size > 0 ||
 			queuedWake
 		);
 	}
 
 	/**
-	 * Public view of the pending-async-wake state for run drivers: true while
-	 * owner-scoped async work can still re-wake this session's run (a running
-	 * background job with an unsuppressed delivery, or a queued / in-flight
-	 * delivery). The task executor's quiescence barrier polls this to
-	 * distinguish a scheduling pause from terminal completion.
+	 * Public view for run drivers: true while owner-scoped async work or an active
+	 * wake process monitor can re-wake this session. Active monitors belong here,
+	 * but not in {@link #hasPendingAsyncWake}: a subscription with no queued event
+	 * must keep a subagent alive without preventing its current model turn from
+	 * settling and making room for the future wake.
 	 */
 	hasPendingAsyncWork(): boolean {
-		return this.#hasPendingAsyncWake();
+		return this.#hasPendingAsyncWake() || this.#activeLaunchWakeMonitors.size > 0;
 	}
 
 	/**

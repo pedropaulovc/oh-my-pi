@@ -28,7 +28,7 @@ Project-scoped long-running processes shared by every omp instance in the same d
   - `restart` policy defaults `no`; `on-failure` and `always` use bounded backoff.
   - `persist: true` opts out of last-omp teardown; `detached: true` survives broker shutdown and all omp exits (implies persist, disables PTY input). Omit both unless their survival guarantees are required.
   - For actionable output, set `progress: "wake"`. Every complete non-empty merged output line becomes an event (final 4,000 characters for an oversized line); pushes are batched at most once per second, and events emitted while busy arrive together without drops. `progress: "ambient"` waits for an active turn and never wakes.
-- **`monitor`** changes an existing process's live-output subscription by `name`; use `progress: "wake"` or `"ambient"` to attach/retune, `"off"` to detach. Monitoring starts with future output; it does not replay logs.
+- `progress` on `start` stays attached. Use **`monitor`** only to attach later, retune, or detach (`progress: "off"`). Monitoring starts with future output; it does not replay logs.
 - Monitoring and process lifetime are independent. `persist`/`detached` govern survival; monitoring never keeps a process alive. Detached processes cannot be live-monitored.
 - Progress and terminal completion are separate notifications. Continue other work and react to either; NEVER poll `logs`.
 - **`ps`**, **`logs`**, **`wait`** (with `name`), **`send`** (with `name`), **`stop`**, **`restart`**, **`describe`**, and **`monitor`** address the stable `name`.

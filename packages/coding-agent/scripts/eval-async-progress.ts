@@ -53,7 +53,9 @@ type EvalToolCall = BashCall | HubCall;
 interface EvalCriteria {
 	selectedWake: boolean;
 	selectedPersistentProcess?: boolean;
-	singleToolCall: boolean;
+	singleToolCall?: boolean;
+	singleStart?: boolean;
+	noProcessPolling: boolean;
 	notificationDelivered: boolean;
 	completionObserved: boolean;
 	notificationBeforeCompletion: boolean;
@@ -158,16 +160,18 @@ function scoreMessages(messages: AgentMessage[], surface: EvalSurface, toolCalls
 		if (surface === "bash") return "async" in call && call.async === true && call.progress === "wake";
 		return "op" in call && call.op === "start" && call.progress === "wake";
 	});
+	const hubCalls = toolCalls.filter((call): call is HubCall => "op" in call);
 	return {
 		selectedWake,
 		...(surface === "hub"
 			? {
-					selectedPersistentProcess: toolCalls.some(
-						call => "op" in call && call.op === "start" && call.persist === true,
+					selectedPersistentProcess: hubCalls.some(call => call.op === "start" && call.persist === true),
+					singleStart: hubCalls.filter(call => call.op === "start").length === 1,
+					noProcessPolling: hubCalls.every(
+						call => call.op !== "logs" && call.op !== "wait" && call.op !== "ps" && call.op !== "describe",
 					),
 				}
-			: {}),
-		singleToolCall: toolCalls.length === 1,
+			: { singleToolCall: toolCalls.length === 1, noProcessPolling: toolCalls.length === 1 }),
 		notificationDelivered: progressIndex >= 0,
 		completionObserved: completionIndex >= 0,
 		notificationBeforeCompletion: progressIndex >= 0 && completionIndex >= 0 && progressIndex < completionIndex,

@@ -161,9 +161,8 @@ describe("AgentSession owner-routed async delivery", () => {
 			modelRegistry: new ModelRegistry(authStorage),
 			agentId: "SubAgent",
 		});
-		await session.prompt("start monitoring");
-
 		session.setLaunchMonitorActive("monitor-1", "wake", true);
+		await session.prompt("start monitoring");
 		expect(session.hasPendingAsyncWork()).toBe(true);
 		let settled = false;
 		const settling = session.settleAsyncWork().then(() => {
