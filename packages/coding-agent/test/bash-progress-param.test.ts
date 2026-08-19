@@ -26,6 +26,7 @@ function makeSession(manager: AsyncJobManager): ToolSession {
 		settings: {
 			get: (key: string) => SETTINGS[key],
 			getBashInterceptorRules: () => [],
+			getShellConfig: () => ({}),
 		},
 		getClientBridge: () => undefined,
 	} as unknown as ToolSession;
@@ -44,6 +45,18 @@ function collectProgress(manager: AsyncJobManager): string[] {
 }
 
 describe("bash progress parameter", () => {
+	test("describes lossless batched progress delivery", () => {
+		const manager = new AsyncJobManager({});
+		const tool = new BashTool(makeSession(manager));
+
+		expect(tool.description).toContain("retains every complete non-empty merged stdout/stderr line");
+		expect(tool.description).toContain("batches pushes to at most once per second");
+		expect(tool.description).toContain("wakes the agent when idle");
+		expect(tool.description).toContain("Lines emitted while busy arrive together");
+		expect(tool.description).toContain('`progress: "ambient"` waits for an active turn and never wakes');
+		expect(tool.description).toContain("Completion is separate");
+	});
+
 	test("defaults off", async () => {
 		const manager = new AsyncJobManager({});
 		const seen = collectProgress(manager);

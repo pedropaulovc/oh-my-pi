@@ -96,11 +96,15 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 		const session = await spawnTopLevelSession({ "async.enabled": true });
 		try {
 			const systemPrompt = session.systemPrompt.join("\n\n");
-			expect(systemPrompt).toContain("# Background Bash Push Events");
-			expect(systemPrompt).toContain('`async: true` and `progress: "wake"` instead of polling');
-			expect(systemPrompt).toContain("emits progress at most once per second");
-			expect(systemPrompt).toContain("Lines emitted while the agent is busy are retained and delivered together");
-			expect(systemPrompt).toContain("when the agent is idle, it starts a follow-up turn");
+			const toolPolicyIndex = systemPrompt.indexOf("§ Tool Policy");
+			const progressIndex = systemPrompt.indexOf("<async-bash-progress>");
+			const workflowIndex = systemPrompt.indexOf("§ Workflow");
+			expect(toolPolicyIndex).toBeGreaterThanOrEqual(0);
+			expect(progressIndex).toBeGreaterThan(toolPolicyIndex);
+			expect(progressIndex).toBeLessThan(workflowIndex);
+			expect(systemPrompt).toContain("<async-bash-progress>");
+			expect(systemPrompt).toContain('`async: true`, `progress: "wake"`; never poll');
+			expect(systemPrompt).toContain("</async-bash-progress>");
 		} finally {
 			await session.dispose();
 		}
@@ -109,7 +113,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 	it("omits Bash push guidance when async execution is disabled", async () => {
 		const session = await spawnTopLevelSession({ "async.enabled": false });
 		try {
-			expect(session.systemPrompt.join("\n\n")).not.toContain("# Background Bash Push Events");
+			expect(session.systemPrompt.join("\n\n")).not.toContain("<async-bash-progress>");
 		} finally {
 			await session.dispose();
 		}

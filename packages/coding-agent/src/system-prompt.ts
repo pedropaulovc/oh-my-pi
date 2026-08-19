@@ -852,6 +852,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		...contextPromptSources,
 	];
 	const injectedAlwaysApplyRules = dedupeAlwaysApplyRules(alwaysApplyRules, promptSources);
+	const asyncBashProgressPrompt =
+		asyncBashProgress === "enabled" && toolNames.includes("bash")
+			? prompt.render(asyncBashProgressTemplate, { toolRefs }).trim()
+			: "";
 
 	const environment = getEnvironmentInfo(cpuModel, gpu);
 	const data = {
@@ -894,12 +898,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		hasDynamicXdevTools: xdevTools.some(mounted => mounted.dynamic === true),
 		xdevDocs,
 		autoQaEnabled,
+		asyncBashProgressPrompt,
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
 	const systemPrompt = [rendered];
-	if (asyncBashProgress === "enabled" && toolNames.includes("bash")) {
-		systemPrompt.push(prompt.render(asyncBashProgressTemplate, data).trim());
-	}
 	if (toolNames.includes("computer")) {
 		systemPrompt.push(computerSafetyPrompt.trim());
 	}

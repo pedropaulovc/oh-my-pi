@@ -5,6 +5,10 @@
 {{#if appendPrompt}}
 {{appendPrompt}}
 {{/if}}
+{{#if asyncBashProgressPrompt}}
+§ Tool Policy
+{{asyncBashProgressPrompt}}
+{{/if}}
 {{#ifAny contextFiles.length git.isRepo}}
 <project>
 {{#if contextFiles.length}}
