@@ -12,7 +12,9 @@ import { formatDuration, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobProgressDelivery, AsyncJobType } from "../async";
 import asyncProgressTemplate from "../prompts/tools/async-progress.md" with { type: "text" };
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
+import { type OutputSpillConfig, resolveOutputSpillConfig } from "../tools/output-meta";
 import type { CustomMessage } from "./messages";
+import { truncateMiddle, truncateTail } from "./streaming-output";
 
 /**
  * `customType` of the injected async-result follow-up message. The task
@@ -52,6 +54,9 @@ export interface AsyncProgressEntry {
 	elapsedMs: number;
 	epoch: number;
 	delivery: AsyncJobProgressDelivery;
+	artifactId?: string;
+	sourceTruncated?: boolean;
+	inlinePolicy?: OutputSpillConfig;
 }
 
 export interface AsyncProgressSource {
@@ -67,6 +72,8 @@ type AsyncProgressJobDetails = {
 	label?: string;
 	elapsedMs: number;
 	text: string;
+	artifactId?: string;
+	truncated?: boolean;
 };
 
 export type AsyncProgressDetails = {
@@ -91,12 +98,29 @@ export function buildAsyncProgressBatchMessage(
 	const jobs = Array.from(entriesByJob.values()).map(jobEntries => {
 		const latest = jobEntries.at(-1)!;
 		const type = latest.job?.type;
+		const fullText = jobEntries.map(entry => sanitizeText(entry.text)).join("\n");
+		const policy = latest.inlinePolicy ?? resolveOutputSpillConfig(undefined);
+		const exceedsThreshold = Buffer.byteLength(fullText, "utf8") > policy.threshold;
+		const preview = exceedsThreshold
+			? policy.headBytes > 0
+				? truncateMiddle(fullText, {
+						maxBytes: policy.headBytes + policy.tailBytes,
+						maxLines: policy.tailLines * 2,
+						maxHeadBytes: policy.headBytes,
+						maxHeadLines: policy.tailLines,
+					})
+				: truncateTail(fullText, { maxBytes: policy.tailBytes, maxLines: policy.tailLines })
+			: undefined;
+		const truncated = jobEntries.some(entry => entry.sourceTruncated) || preview?.truncated === true;
+		const artifactId = [...jobEntries].reverse().find(entry => entry.artifactId)?.artifactId;
 		return {
 			jobId: latest.jobId,
 			type: latest.source?.type ?? (type === "eval" ? undefined : type),
 			label: latest.source?.label ?? latest.job?.label,
 			elapsedMs: latest.elapsedMs,
-			text: jobEntries.map(entry => sanitizeText(entry.text)).join("\n"),
+			text: preview?.content ?? fullText,
+			artifactId,
+			truncated,
 		};
 	});
 	return {

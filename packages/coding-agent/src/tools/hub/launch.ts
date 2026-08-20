@@ -22,8 +22,10 @@ import type {
 } from "../../launch/protocol";
 import { renderTerminalOutputIsolated } from "../../launch/terminal-output-worker-client";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
+import { OutputSink } from "../../session/streaming-output";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
 import type { ToolSession } from "..";
+import { resolveOutputSpillConfig } from "../output-meta";
 import { resolveToCwd } from "../path-utils";
 import {
 	capPreviewLines,
@@ -68,7 +70,8 @@ interface OutputRegistration {
 	delivery: AsyncJobProgressDelivery;
 	startedAt: number;
 	active: boolean;
-	cleanup: () => void;
+	artifactId?: string;
+	cleanup: () => Promise<void>;
 }
 
 const outputRegistrations = new WeakMap<ToolSession, Map<DaemonBrokerClient, Map<string, OutputRegistration>>>();
@@ -76,16 +79,16 @@ const outputRegistrations = new WeakMap<ToolSession, Map<DaemonBrokerClient, Map
 interface OutputLease {
 	registration: OutputRegistration;
 	retain(): void;
-	reject(): void;
+	reject(): Promise<void>;
 }
 
-function registerOutputSink(
+async function registerOutputSink(
 	session: ToolSession,
 	client: DaemonBrokerClient,
 	name: string,
 	owner: string,
 	delivery: AsyncJobProgressDelivery,
-): OutputLease | undefined {
+): Promise<OutputLease | undefined> {
 	if (!session.queueLaunchProgress || !session.queueLaunchCompletion || !client.onOutput) return undefined;
 	let clients = outputRegistrations.get(session);
 	if (!clients) {
@@ -109,7 +112,7 @@ function registerOutputSink(
 			retain: () => {
 				settled = true;
 			},
-			reject: () => {
+			reject: async () => {
 				if (settled || !existing.active || previousDelivery === undefined) return;
 				session.setLaunchMonitorActive?.(existing.id, existing.delivery, false);
 				existing.delivery = previousDelivery;
@@ -119,9 +122,22 @@ function registerOutputSink(
 	}
 
 	const id = crypto.randomUUID();
+	const artifact = await session.allocateOutputArtifact?.("hub-progress");
+	const artifactId = artifact?.id && artifact.path ? artifact.id : undefined;
+	const spill = resolveOutputSpillConfig(session.settings);
+	const artifactSink = artifactId
+		? new OutputSink({
+				artifactPath: artifact?.path,
+				artifactId,
+				artifactWriteMode: "mirror",
+				spillThreshold: spill.threshold,
+				headBytes: spill.headBytes,
+			})
+		: undefined;
 	let unregisterDispose: (() => void) | void;
 	let unregisterSessionChange: (() => void) | void;
 	let unregisterOutput = (): void => {};
+	let cleanupPromise: Promise<void> | undefined;
 	const registration: OutputRegistration = {
 		id,
 		name,
@@ -129,8 +145,9 @@ function registerOutputSink(
 		delivery,
 		startedAt: Date.now(),
 		active: true,
+		artifactId,
 		cleanup: () => {
-			if (!registration.active) return;
+			if (cleanupPromise) return cleanupPromise;
 			registration.active = false;
 			session.setLaunchMonitorActive?.(id, registration.delivery, false);
 			unregisterOutput();
@@ -139,16 +156,29 @@ function registerOutputSink(
 			monitors.delete(name);
 			if (monitors.size === 0) clients.delete(client);
 			if (clients.size === 0) outputRegistrations.delete(session);
+			cleanupPromise = artifactSink?.dispose() ?? Promise.resolve();
+			return cleanupPromise;
 		},
 	};
 	const sink = async (notification: DaemonMonitorNotification): Promise<void> => {
 		if (!registration.active || session.isDisposed?.())
 			throw new Error("Session disposed before launch output delivery");
 		if (notification.event === "daemon-output") {
-			session.queueLaunchProgress?.(notification, registration.delivery, registration.startedAt);
+			if (notification.rawText) {
+				artifactSink?.push(notification.rawText);
+				await artifactSink?.flushArtifact();
+			}
+			if (notification.text) {
+				session.queueLaunchProgress?.(
+					notification,
+					registration.delivery,
+					registration.startedAt,
+					registration.artifactId,
+				);
+			}
 			return;
 		}
-		registration.cleanup();
+		await registration.cleanup();
 		if (notification.daemon.owner === owner) return;
 		await session.queueLaunchCompletion?.({
 			event: "daemon-completed",
@@ -160,24 +190,24 @@ function registerOutputSink(
 	unregisterOutput = client.onOutput({ id, name, owner }, sink);
 	monitors.set(name, registration);
 	session.setLaunchMonitorActive?.(id, delivery, true);
-	unregisterDispose = session.registerDisposeCallback?.(registration.cleanup);
-	unregisterSessionChange = session.registerSessionChangeCallback?.(registration.cleanup);
+	unregisterDispose = session.registerDisposeCallback?.(() => void registration.cleanup());
+	unregisterSessionChange = session.registerSessionChangeCallback?.(() => void registration.cleanup());
 	let retained = false;
 	return {
 		registration,
 		retain: () => {
 			retained = true;
 		},
-		reject: () => {
-			if (!retained) registration.cleanup();
+		reject: async () => {
+			if (!retained) await registration.cleanup();
 		},
 	};
 }
 
-function detachOutputSink(session: ToolSession, client: DaemonBrokerClient, name: string): boolean {
+async function detachOutputSink(session: ToolSession, client: DaemonBrokerClient, name: string): Promise<boolean> {
 	const registration = outputRegistrations.get(session)?.get(client)?.get(name);
 	if (!registration) return false;
-	registration.cleanup();
+	await registration.cleanup();
 	return true;
 }
 
@@ -551,7 +581,7 @@ export async function executeLaunch(
 	const progressDelivery = params.progress === "wake" || params.progress === "ambient" ? params.progress : undefined;
 	const outputLease =
 		name && owner && progressDelivery
-			? registerOutputSink(session, client, name, owner, progressDelivery)
+			? await registerOutputSink(session, client, name, owner, progressDelivery)
 			: undefined;
 	if (progressDelivery && !outputLease) throw new ToolError("This session cannot accept process progress delivery");
 	const operation = operationFor(params, session);
@@ -572,7 +602,7 @@ export async function executeLaunch(
 		const result = await client.request(operation, signal);
 		const detached =
 			params.op === "monitor" && params.progress === "off" && name
-				? detachOutputSink(session, client, name)
+				? await detachOutputSink(session, client, name)
 				: undefined;
 		if (outputLease && "daemon" in result && result.daemon) {
 			if (result.daemon.detached)
@@ -599,7 +629,7 @@ export async function executeLaunch(
 			details: await toolDetails(result, params),
 		};
 	} catch (error) {
-		outputLease?.reject();
+		await outputLease?.reject();
 		if (error instanceof DaemonBrokerRejectedError && completionOwner) {
 			if (completionLease?.hasConcurrentRequest()) {
 				completionLease.reject();

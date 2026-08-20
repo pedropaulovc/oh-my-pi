@@ -1,6 +1,6 @@
 <system-notice>
 {{#each jobs}}<job-progress id="{{jobId}}"{{#if type}} type="{{type}}"{{/if}} elapsed="{{elapsed}}">
-<output>
+<output{{#if truncated}} truncated="true"{{#if artifactId}} full-output="artifact://{{artifactId}}"{{/if}}{{/if}}>
 {{text}}
 </output>
 </job-progress>{{#unless @last}}

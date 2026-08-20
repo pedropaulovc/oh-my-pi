@@ -15,6 +15,7 @@ import {
 	shouldRenderAbortReason,
 } from "../../session/messages";
 import { createIrcMessageCard } from "../../tools/hub";
+import { formatStyledArtifactReference } from "../../tools/output-meta";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { renderStatusLine } from "../../tui/status-line";
 import { canonicalizeMessage } from "../../utils/thinking-display";
@@ -85,7 +86,14 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 export function buildAsyncProgressBlock(message: CustomOrHookMessage): TranscriptBlock {
 	const details = (
 		message as CustomMessage<{
-			jobs?: Array<{ jobId?: string; type?: "bash" | "task" | "process"; elapsedMs?: number; text?: string }>;
+			jobs?: Array<{
+				jobId?: string;
+				type?: "bash" | "task" | "process";
+				elapsedMs?: number;
+				text?: string;
+				artifactId?: string;
+				truncated?: boolean;
+			}>;
 		}>
 	).details;
 	const block = new TranscriptBlock();
@@ -105,6 +113,9 @@ export function buildAsyncProgressBlock(message: CustomOrHookMessage): Transcrip
 			if (line.trim().length === 0) continue;
 			const rendered = truncateToWidth(replaceTabs(shortenPath(sanitizeText(line))), TRUNCATE_LENGTHS.LINE);
 			block.addChild(new Text(theme.fg("dim", `  ${rendered}`), 1, 0));
+		}
+		if (job.truncated && job.artifactId) {
+			block.addChild(new Text(`  ${formatStyledArtifactReference(job.artifactId, theme)}`, 1, 0));
 		}
 	}
 	return block;

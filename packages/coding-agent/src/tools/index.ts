@@ -393,6 +393,7 @@ export interface ToolSession {
 		notification: DaemonOutputNotification,
 		delivery: AsyncJobProgressDelivery,
 		startedAt: number,
+		artifactId?: string,
 	): void;
 	/** Track wake monitors so subagent quiescence waits for their terminal event. */
 	setLaunchMonitorActive?(monitorId: string, delivery: AsyncJobProgressDelivery, active: boolean): void;

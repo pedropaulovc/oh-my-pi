@@ -610,7 +610,14 @@ const kUnwrappedExecute = Symbol("OutputMeta.UnwrappedExecute");
 // =============================================================================
 
 /** Resolved artifact spill config sourced from the session settings (or schema defaults). */
-function getSpillConfig(s: Settings | undefined) {
+export interface OutputSpillConfig {
+	threshold: number;
+	tailBytes: number;
+	tailLines: number;
+	headBytes: number;
+}
+
+export function resolveOutputSpillConfig(s: Settings | undefined): OutputSpillConfig {
 	type Path =
 		| "tools.artifactSpillThreshold"
 		| "tools.artifactTailBytes"
@@ -631,7 +638,7 @@ function getSpillConfig(s: Settings | undefined) {
  * middle elision with the same per-user configuration.
  */
 export function resolveOutputSinkHeadBytes(s: Settings | undefined): number {
-	return getSpillConfig(s).headBytes;
+	return resolveOutputSpillConfig(s).headBytes;
 }
 
 /**
@@ -651,7 +658,7 @@ const INLINE_CAP_SLACK_BYTES = 2 * 1024;
  * from session settings: the user's spill threshold plus notice slack.
  */
 export function resolveInlineByteCapBudget(s: Settings | undefined): number {
-	return getSpillConfig(s).threshold + INLINE_CAP_SLACK_BYTES;
+	return resolveOutputSpillConfig(s).threshold + INLINE_CAP_SLACK_BYTES;
 }
 
 /**
@@ -677,7 +684,7 @@ async function spillLargeResultToArtifact(
 ): Promise<AgentToolResult> {
 	const sessionManager = context?.sessionManager;
 	if (!sessionManager) return result;
-	const { threshold, tailBytes, tailLines, headBytes } = getSpillConfig(context?.settings);
+	const { threshold, tailBytes, tailLines, headBytes } = resolveOutputSpillConfig(context?.settings);
 
 	// Skip if tool already saved an artifact
 	const existingMeta: OutputMeta | undefined = result.details?.meta;

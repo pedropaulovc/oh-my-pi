@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { isEexist, isEnoent, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
 import { ProgressBatcher } from "../async/progress-batcher";
-import { ProgressLines } from "../async/progress-lines";
+import { type ProgressLine, ProgressLines } from "../async/progress-lines";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { truncateHead, truncateHeadBytes, truncateTail, truncateTailBytes } from "../session/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
@@ -99,7 +99,13 @@ interface ManagedDaemon {
 	completionSubscriptionId?: string;
 	persistQueue: Promise<void>;
 	progressLines?: ProgressLines;
+	progressPreviewLines: ProgressLine[];
 	monitorRestarting: boolean;
+}
+
+interface MonitorProgressChunk {
+	rawText: string;
+	lines: ProgressLine[];
 }
 
 interface OutputRegistration extends DaemonOutputSubscription {
@@ -387,7 +393,9 @@ class DaemonBroker {
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
 	readonly #outputRegistrations = new Map<string, OutputRegistration>();
-	readonly #progressBatcher = new ProgressBatcher(1_000, (name, text, seq) => this.#notifyOutput(name, text, seq));
+	readonly #progressBatcher = new ProgressBatcher<MonitorProgressChunk>(1_000, (name, chunks, seq) =>
+		this.#notifyOutput(name, chunks, seq),
+	);
 	readonly #finished = Promise.withResolvers<void>();
 	readonly #sockets = new Set<net.Socket>();
 	#server: net.Server | undefined;
@@ -700,6 +708,7 @@ class DaemonBroker {
 				readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
 				consecutiveFailures: 0,
 				persistQueue: Promise.resolve(),
+				progressPreviewLines: [],
 				monitorRestarting: false,
 				completionCapable: owner !== undefined && this.#completionSubscriptions.has(owner),
 				completionSubscriptionId: owner === undefined ? undefined : this.#completionSubscriptions.get(owner),
@@ -748,7 +757,8 @@ class DaemonBroker {
 		record.outputOffset = 0;
 		record.progressLines = record.spec.detached
 			? undefined
-			: new ProgressLines(line => this.#progressBatcher.push(record.snapshot.name, line));
+			: new ProgressLines(line => record.progressPreviewLines.push(line));
+		record.progressPreviewLines = [];
 		this.#persist(record);
 		try {
 			if (record.spec.detached) await this.#launchDetached(record, generation);
@@ -891,7 +901,20 @@ class DaemonBroker {
 		record.snapshot.outputBytes += Buffer.byteLength(text, "utf8");
 		const sanitized = sanitizeText(text);
 		record.progressLines?.append(sanitized);
+		if (record.progressLines && this.#hasOutputRegistration(record.snapshot.name)) {
+			const lines = record.progressPreviewLines.splice(0);
+			this.#progressBatcher.push(record.snapshot.name, { rawText: output, lines });
+		} else {
+			record.progressPreviewLines.length = 0;
+		}
 		this.#trackOutput(record, generation, sanitized);
+	}
+
+	#hasOutputRegistration(name: string): boolean {
+		for (const registration of this.#outputRegistrations.values()) {
+			if (registration.name === name) return true;
+		}
+		return false;
 	}
 
 	#syncOutputSubscriptions(
@@ -950,6 +973,7 @@ class DaemonBroker {
 			registration.pending.push(notification);
 			if (notification.event === "daemon-output") {
 				registration.pendingBytes += Buffer.byteLength(notification.text, "utf8");
+				registration.pendingBytes += Buffer.byteLength(notification.rawText ?? "", "utf8");
 			}
 			while (registration.pendingBytes > MAX_PENDING_MONITOR_BYTES) {
 				const index = registration.pending.findIndex(item => item.event === "daemon-output");
@@ -957,6 +981,7 @@ class DaemonBroker {
 				const [removed] = registration.pending.splice(index, 1);
 				if (removed?.event === "daemon-output") {
 					registration.pendingBytes -= Buffer.byteLength(removed.text, "utf8");
+					registration.pendingBytes -= Buffer.byteLength(removed.rawText ?? "", "utf8");
 				}
 			}
 			return;
@@ -964,9 +989,13 @@ class DaemonBroker {
 		registration.socket.write(`${JSON.stringify(notification)}\n`);
 	}
 
-	#notifyOutput(name: string, text: string, seq: number): void {
+	#notifyOutput(name: string, chunks: readonly MonitorProgressChunk[], seq: number): void {
 		const daemon = this.#records.get(name)?.snapshot;
 		if (!daemon) return;
+		const lines = chunks.flatMap(chunk => chunk.lines);
+		const text = lines.map(line => line.text).join("\n");
+		const rawText = chunks.map(chunk => chunk.rawText).join("");
+		const truncated = lines.some(line => line.truncated);
 		for (const registration of this.#outputRegistrations.values()) {
 			if (registration.name !== name) continue;
 			const notification: DaemonOutputNotification = {
@@ -976,6 +1005,8 @@ class DaemonBroker {
 				daemonId: daemon.id,
 				seq,
 				text,
+				rawText,
+				truncated,
 			};
 			this.#sendMonitorNotification(registration, notification);
 		}
@@ -1092,6 +1123,14 @@ class DaemonBroker {
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		record.progressLines?.finish();
 		record.progressLines = undefined;
+		if (record.progressPreviewLines.length > 0 && this.#hasOutputRegistration(record.snapshot.name)) {
+			this.#progressBatcher.push(record.snapshot.name, {
+				rawText: "",
+				lines: record.progressPreviewLines.splice(0),
+			});
+		} else {
+			record.progressPreviewLines.length = 0;
+		}
 		await this.#progressBatcher.flush(record.snapshot.name);
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		record.process = undefined;
@@ -1435,6 +1474,7 @@ class DaemonBroker {
 					readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
 					consecutiveFailures: 0,
 					persistQueue: Promise.resolve(),
+					progressPreviewLines: [],
 					monitorRestarting: false,
 					completionCapable: "completionEvents" in decoded && decoded.completionEvents === true,
 					completionSubscriptionId:

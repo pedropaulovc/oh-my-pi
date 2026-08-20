@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed daemon broker idle shutdown closing newly accepted clients before their authentication request could be processed under load.
+- Async Bash and Hub progress now keeps one stable full-output artifact per monitored command or process, bounds model-facing batches with the existing artifact spill settings, and links truncated previews to `artifact://<id>`.
 
 ## [17.4.0] - 2026-08-20
 

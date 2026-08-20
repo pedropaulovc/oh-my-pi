@@ -1,29 +1,29 @@
-interface ProgressBatchState {
+interface ProgressBatchState<T> {
 	lastEmitAt: number;
-	pendingTexts: string[];
+	pending: T[];
 	seq: number;
 	deliveryTail?: Promise<void>;
 	timer?: NodeJS.Timeout;
 }
 
 /** Lossless, ordered, per-source progress batching with a fixed maximum delivery cadence. */
-export class ProgressBatcher {
-	readonly #states = new Map<string, ProgressBatchState>();
+export class ProgressBatcher<T> {
+	readonly #states = new Map<string, ProgressBatchState<T>>();
 	readonly #intervalMs: number;
-	readonly #deliver: (id: string, text: string, seq: number) => void | Promise<void>;
+	readonly #deliver: (id: string, values: readonly T[], seq: number) => void | Promise<void>;
 
-	constructor(intervalMs: number, deliver: (id: string, text: string, seq: number) => void | Promise<void>) {
+	constructor(intervalMs: number, deliver: (id: string, values: readonly T[], seq: number) => void | Promise<void>) {
 		this.#intervalMs = intervalMs;
 		this.#deliver = deliver;
 	}
 
-	push(id: string, text: string): void {
+	push(id: string, value: T): void {
 		let state = this.#states.get(id);
 		if (!state) {
-			state = { lastEmitAt: 0, pendingTexts: [], seq: 0 };
+			state = { lastEmitAt: 0, pending: [], seq: 0 };
 			this.#states.set(id, state);
 		}
-		state.pendingTexts.push(text);
+		state.pending.push(value);
 		const waitMs = state.lastEmitAt + this.#intervalMs - Date.now();
 		if (waitMs <= 0) {
 			void this.flush(id);
@@ -41,13 +41,13 @@ export class ProgressBatcher {
 			clearTimeout(state.timer);
 			state.timer = undefined;
 		}
-		if (state.pendingTexts.length === 0) return state.deliveryTail ?? Promise.resolve();
-		const text = state.pendingTexts.join("\n");
-		state.pendingTexts = [];
+		if (state.pending.length === 0) return state.deliveryTail ?? Promise.resolve();
+		const values = state.pending;
+		state.pending = [];
 		state.lastEmitAt = Date.now();
 		state.seq += 1;
 		const seq = state.seq;
-		const deliver = () => this.#deliver(id, text, seq);
+		const deliver = () => this.#deliver(id, values, seq);
 		let tail: Promise<void>;
 		if (state.deliveryTail) {
 			tail = state.deliveryTail.then(deliver, deliver);

@@ -67,16 +67,27 @@ export interface AsyncJob {
 	queued?: boolean;
 	/** How intentional progress reaches the owning agent; undefined keeps the channel off. */
 	progressDelivery?: AsyncJobProgressDelivery;
+	/** Stable artifact containing the complete raw output behind bounded progress previews. */
+	progressArtifactId?: string;
 }
 
 export type AsyncJobProgressDelivery = "ambient" | "wake";
+
+export interface AsyncJobProgressInfo {
+	artifactId?: string;
+	truncated?: boolean;
+}
+
+interface AsyncJobProgressRecord extends AsyncJobProgressInfo {
+	text: string;
+}
 
 /** Delivery callback for a settled job's result text. */
 export type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
 
 /** Best-effort owner-routed delivery for progress from a still-running job. */
 export interface AsyncJobProgressSink {
-	deliver(jobId: string, text: string, job: AsyncJob, seq: number): void | Promise<void>;
+	deliver(jobId: string, text: string, job: AsyncJob, seq: number, info: AsyncJobProgressInfo): void | Promise<void>;
 }
 
 export interface AsyncJobManagerOptions {
@@ -165,8 +176,9 @@ export class AsyncJobManager {
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
 	readonly #deliverySinks = new Map<string, AsyncJobDeliverySink>();
 	readonly #progressSinks = new Map<string, AsyncJobProgressSink>();
-	readonly #progressBatcher = new ProgressBatcher(AGENT_PROGRESS_INTERVAL_MS, (jobId, text, seq) =>
-		this.#deliverAgentProgress(jobId, text, seq),
+	readonly #progressBatcher = new ProgressBatcher<AsyncJobProgressRecord>(
+		AGENT_PROGRESS_INTERVAL_MS,
+		(jobId, records, seq) => this.#deliverAgentProgress(jobId, records, seq),
 	);
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
@@ -210,7 +222,7 @@ export class AsyncJobManager {
 			signal: AbortSignal;
 			reportProgress: (text: string, details?: Record<string, unknown>) => Promise<void>;
 			/** Report intentional progress to the owning model, separately from TUI updates. */
-			reportAgentProgress: (text: string) => void;
+			reportAgentProgress: (text: string, info?: AsyncJobProgressInfo) => void;
 			/** Clear the queued flag once the job actually starts executing. */
 			markRunning: () => void;
 		}) => Promise<string>,
@@ -268,7 +280,7 @@ export class AsyncJobManager {
 					jobId: id,
 					signal: abortController.signal,
 					reportProgress,
-					reportAgentProgress: text => this.#recordAgentProgress(job, text),
+					reportAgentProgress: (text, info) => this.#recordAgentProgress(job, text, info),
 					markRunning: () => {
 						job.queued = false;
 					},
@@ -525,7 +537,7 @@ export class AsyncJobManager {
 		return true;
 	}
 
-	#recordAgentProgress(job: AsyncJob, text: string): void {
+	#recordAgentProgress(job: AsyncJob, text: string, info: AsyncJobProgressInfo = {}): void {
 		if (
 			this.#disposed ||
 			job.status !== "running" ||
@@ -534,18 +546,23 @@ export class AsyncJobManager {
 		)
 			return;
 		if (job.ownerId === undefined || !this.#progressSinks.has(job.ownerId)) return;
-		this.#progressBatcher.push(job.id, text);
+		if (info.artifactId) job.progressArtifactId = info.artifactId;
+		this.#progressBatcher.push(job.id, { text, artifactId: info.artifactId, truncated: info.truncated });
 	}
 
-	async #deliverAgentProgress(jobId: string, text: string, seq: number): Promise<void> {
+	async #deliverAgentProgress(jobId: string, records: readonly AsyncJobProgressRecord[], seq: number): Promise<void> {
 		const job = this.#jobs.get(jobId);
 		if (job?.status !== "running" || this.isDeliverySuppressed(jobId)) {
 			return;
 		}
 		const sink = job.ownerId === undefined ? undefined : this.#progressSinks.get(job.ownerId);
 		if (!sink) return;
+		const info: AsyncJobProgressInfo = {
+			artifactId: records.findLast(record => record.artifactId !== undefined)?.artifactId ?? job.progressArtifactId,
+			truncated: records.some(record => record.truncated === true),
+		};
 		try {
-			await sink.deliver(jobId, text, job, seq);
+			await sink.deliver(jobId, records.map(record => record.text).join("\n"), job, seq, info);
 		} catch (error) {
 			logger.warn("Async job progress delivery failed", {
 				jobId,

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as path from "node:path";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import type { DaemonBrokerClient } from "../../../src/launch/client";
 import * as daemonClient from "../../../src/launch/client";
 import type {
@@ -45,7 +47,11 @@ interface MonitorHarness {
 	client: DaemonBrokerClient;
 	session: ToolSession;
 	requests: DaemonOperation[];
-	progress: Array<{ notification: Extract<DaemonMonitorNotification, { event: "daemon-output" }>; delivery: string }>;
+	progress: Array<{
+		notification: Extract<DaemonMonitorNotification, { event: "daemon-output" }>;
+		delivery: string;
+		artifactId?: string;
+	}>;
 	completions: DaemonCompletionNotification[];
 	active: Array<{ monitorId: string; delivery: string; active: boolean }>;
 	disposeCallbacks: Array<() => void>;
@@ -54,7 +60,7 @@ interface MonitorHarness {
 	unregisterCount(): number;
 }
 
-function createHarness(): MonitorHarness {
+function createHarness(artifact?: { id: string; path: string }): MonitorHarness {
 	const requests: DaemonOperation[] = [];
 	const progress: MonitorHarness["progress"] = [];
 	const completions: DaemonCompletionNotification[] = [];
@@ -91,13 +97,17 @@ function createHarness(): MonitorHarness {
 	} as DaemonBrokerClient;
 	const session = {
 		cwd: process.cwd(),
+		settings: { get: () => undefined },
+		allocateOutputArtifact: async () => artifact ?? {},
 		getSessionId: () => OWNER,
 		isDisposed: () => false,
 		queueLaunchProgress: (
 			notification: Extract<DaemonMonitorNotification, { event: "daemon-output" }>,
 			delivery: string,
+			_startedAt: number,
+			artifactId?: string,
 		) => {
-			progress.push({ notification, delivery });
+			progress.push({ notification, delivery, artifactId });
 		},
 		queueLaunchCompletion: async (notification: DaemonCompletionNotification) => {
 			completions.push(notification);
@@ -165,9 +175,41 @@ describe("hub process output monitoring", () => {
 					text: "ready",
 				},
 				delivery: "wake",
+				artifactId: undefined,
 			},
 		]);
 		expect(harness.active).toEqual([{ monitorId: subscription.id, delivery: "wake", active: true }]);
+	});
+
+	it("stores raw monitored output behind one stable progress artifact", async () => {
+		using tempDir = TempDir.createSync("@omp-hub-progress-artifact-");
+		const artifact = { id: "artifact-1", path: path.join(tempDir.path(), "hub-output.txt") };
+		const harness = createHarness(artifact);
+		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
+
+		await executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "wake" });
+		const subscription = harness.getSubscription();
+		if (!subscription) throw new Error("Expected output subscription");
+		await harness.getOutputSink()?.({
+			event: "daemon-output",
+			monitorId: subscription.id,
+			name: daemon.name,
+			daemonId: daemon.id,
+			seq: 1,
+			text: "x".repeat(4_000),
+			rawText: `${"x".repeat(5_000)}\n`,
+			truncated: true,
+		});
+		await harness.getOutputSink()?.({
+			event: "daemon-monitor-completed",
+			monitorId: subscription.id,
+			daemon: { ...daemon, state: "exited", pid: undefined, exitedAt: 3, exitCode: 0 },
+		});
+
+		expect(await Bun.file(artifact.path).text()).toBe(`${"x".repeat(5_000)}\n`);
+		expect(harness.progress).toHaveLength(1);
+		expect(harness.progress[0]?.artifactId).toBe(artifact.id);
+		expect(harness.progress[0]?.notification).toMatchObject({ truncated: true, text: "x".repeat(4_000) });
 	});
 
 	it("attaches to an existing process and updates its delivery mode in place", async () => {

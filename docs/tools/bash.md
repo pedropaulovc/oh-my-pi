@@ -27,7 +27,7 @@
 | `cwd` | `string` | No | Working directory, resolved against `session.cwd` via `resolveToCwd`. Must exist and be a directory. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
 | `async` | `boolean \| "auto"` | No | `true` starts a background job immediately. `"auto"` starts inline, waits for `bash.asyncAuto.inlineGraceMs` (default one second), then promotes the same process if it is still running. Present only when `async.enabled` is true. Neither mode changes the command deadline, including `timeout: 0`. |
-| `progress` | `"ambient" \| "wake"` | No | With `async: true` or `async: "auto"`, deliver complete non-empty output-line events to the model. In auto mode, delivery activates only after promotion: earlier output appears in the foreground/background-start result instead. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once per second, with every event in the interval retained in the batch. Oversized events retain the final 4,000 characters. |
+| `progress` | `"ambient" \| "wake"` | No | With `async: true` or `async: "auto"`, deliver complete non-empty output-line events to the model. In auto mode, delivery activates only after promotion: earlier output appears in the foreground/background-start result instead. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once per second, with every event in the interval retained in the batch. Oversized events retain the final 4,000 characters and link the complete capture as `artifact://<id>`. |
 
 ## Agent-facing guidance
 
@@ -40,7 +40,7 @@ A command that finishes within `bash.asyncAuto.inlineGraceMs` returns one ordina
 ```xml
 <system-notice>
 <job-progress id="<job-id>" type="bash" elapsed="<elapsed>">
-<output>
+<output truncated="true" full-output="artifact://<id>">
 <all output events queued for this job>
 </output>
 </job-progress>
@@ -55,6 +55,7 @@ When either async Bash or Hub process monitoring is available, the system prompt
 Finite commands → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline). NEVER use `async: true` unless the user explicitly requests immediate background.
 Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).
 Noisy output → lower source verbosity (quiet or warning-only) or filter to actionable lines. If safe to retry, stop/cancel and start again with less output.
+Truncated progress links its complete capture as `artifact://<id>`.
 Hub can instead retune its monitor to `ambient` or `off` without stopping the process.
 Bash cannot retune progress; if retry is unsafe, let it finish.
 NEVER call `hub wait`, follow logs, or block to receive progress or keep the turn alive; use async progress and end the turn instead.
@@ -62,6 +63,8 @@ NEVER call `hub wait`, follow logs, or block to receive progress or keep the tur
 ```
 
 Each delivered progress batch is a harness-injected `async-progress` message in the model's conversation.
+
+The XML attributes appear only when the inline batch or one source line was truncated. Bash uses the same artifact as its final command output, so the URI stays stable for the job. The preview uses `tools.artifactSpillThreshold`, `tools.artifactHeadBytes`, `tools.artifactTailBytes`, and `tools.artifactTailLines`.
 
 ### Choosing a progress mode
 

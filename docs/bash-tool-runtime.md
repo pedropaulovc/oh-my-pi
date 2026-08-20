@@ -189,6 +189,7 @@ The bash executor builds the sink with `headBytes` and `maxColumns` from setting
 - per-line column cap: when `maxColumns > 0` (`tools.outputMaxColumns`, default 768 bytes) over-wide lines are ellipsis-truncated at write time and the rest of the line is dropped,
 - tracks total bytes/lines seen,
 - mirrors the **raw, uncapped** stream to the artifact file when output overflows, a column cap dropped bytes, or the file is already active,
+- mirrors from the first byte for async Bash with model-facing progress, so a truncated progress event can cite the same stable artifact as the final result,
 - marks `truncated` on tail overflow, middle elision, column-cap drops, or file spill.
 
 `dump()` returns:

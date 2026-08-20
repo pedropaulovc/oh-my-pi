@@ -843,10 +843,16 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			label,
 			async ({ jobId, signal: runSignal, reportProgress, reportAgentProgress }) => {
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
+				const progressArtifactId = artifactPath && artifactId ? artifactId : undefined;
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 				const progressLines =
 					options.progressDelivery || options.deferredProgressDelivery
-						? new ProgressLines(reportAgentProgress)
+						? new ProgressLines(line =>
+								reportAgentProgress(line.text, {
+									artifactId: progressArtifactId,
+									truncated: line.truncated,
+								}),
+							)
 						: undefined;
 				const wallTimeStart = performance.now();
 				try {
@@ -860,6 +866,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 							env: options.resolvedEnv,
 							artifactPath,
 							artifactId,
+							artifactWriteMode: progressLines ? "mirror" : "spill",
 							onChunk: chunk => {
 								tailBuffer.append(chunk);
 								latestText = tailBuffer.text();

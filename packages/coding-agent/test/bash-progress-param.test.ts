@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import * as path from "node:path";
+import { AsyncJobManager, type AsyncJobProgressInfo } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 const SETTINGS: Record<string, unknown> = {
 	"async.enabled": true,
@@ -107,6 +109,38 @@ describe("bash progress parameter", () => {
 		expect(seen).toHaveLength(1);
 		expect(seen[0]).toHaveLength(4_000);
 		expect(seen[0]).toBe("0".repeat(4_000));
+	});
+
+	test("keeps the full raw stream in the same artifact referenced by bounded progress", async () => {
+		using tempDir = TempDir.createSync("@omp-bash-progress-artifact-");
+		const artifact = { id: "bash-progress-1", path: path.join(tempDir.path(), "output.txt") };
+		const manager = new AsyncJobManager({});
+		const seen: Array<{ text: string; info: AsyncJobProgressInfo; artifactText: string }> = [];
+		manager.registerDeliverySink("Main", () => {});
+		manager.registerProgressSink("Main", {
+			deliver: async (_jobId, text, _job, _seq, info) => {
+				seen.push({ text, info, artifactText: await Bun.file(artifact.path).text() });
+			},
+		});
+		const session = makeSession(manager);
+		session.allocateOutputArtifact = async () => artifact;
+		const tool = new BashTool(session);
+
+		await tool.execute("artifact-backed-line", {
+			command: "printf '%05000d' 0",
+			async: true,
+			progress: "wake",
+		});
+		await manager.waitForAll();
+
+		expect(seen).toEqual([
+			{
+				text: "0".repeat(4_000),
+				info: { artifactId: artifact.id, truncated: true },
+				artifactText: "0".repeat(5_000),
+			},
+		]);
+		expect(await Bun.file(artifact.path).text()).toBe("0".repeat(5_000));
 	});
 
 	test("rejects progress for a foreground command", async () => {

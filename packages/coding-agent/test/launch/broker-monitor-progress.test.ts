@@ -122,6 +122,8 @@ process.stdin.once("data", () => {
 					notification.event === "daemon-output",
 			);
 			expect(output.map(notification => notification.text)).toEqual(["IMMEDIATE", "partial\nfinal"]);
+			expect(output.map(notification => notification.rawText ?? "").join("")).toBe("IMMEDIATE\npartial\n\nfinal");
+			expect(output.map(notification => notification.truncated)).toEqual([false, false]);
 			expect(output.map(notification => notification.seq)).toEqual([1, 2]);
 			expect(notifications.at(-1)).toMatchObject({
 				event: "daemon-monitor-completed",

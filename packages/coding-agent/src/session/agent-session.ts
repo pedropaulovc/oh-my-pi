@@ -103,6 +103,7 @@ import {
 	type AsyncJob,
 	AsyncJobManager,
 	type AsyncJobProgressDelivery,
+	type AsyncJobProgressInfo,
 } from "../async";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
@@ -196,6 +197,7 @@ import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
 import { releaseComputerSessionsForOwner } from "../tools/computer/supervisor";
+import { resolveOutputSpillConfig } from "../tools/output-meta";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import {
 	buildResolveReminderMessage,
@@ -1424,7 +1426,7 @@ export class AgentSession {
 				build: buildAsyncResultBatchMessage,
 			});
 			this.#unregisterAsyncProgressSink = manager.registerProgressSink(this.#agentId, {
-				deliver: (jobId, text, job, seq) => this.#deliverAsyncJobProgress(jobId, text, job, seq),
+				deliver: (jobId, text, job, seq, info) => this.#deliverAsyncJobProgress(jobId, text, job, seq, info),
 			});
 			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(this.#agentId, (jobId, text, job) =>
 				this.#deliverAsyncJobResult(manager, jobId, text, job),
@@ -1968,7 +1970,7 @@ export class AgentSession {
 		this.yieldQueue.enqueue<AsyncResultEntry>("async-result", { jobId, result: formatted, job, durationMs, epoch });
 	}
 
-	#deliverAsyncJobProgress(jobId: string, text: string, job: AsyncJob, seq: number): void {
+	#deliverAsyncJobProgress(jobId: string, text: string, job: AsyncJob, seq: number, info: AsyncJobProgressInfo): void {
 		if (this.#isDisposed || job.progressDelivery === undefined) return;
 		const queueKind = job.progressDelivery === "wake" ? ASYNC_PROGRESS_WAKE_QUEUE_KIND : ASYNC_PROGRESS_MESSAGE_TYPE;
 		this.yieldQueue.enqueue<AsyncProgressEntry>(queueKind, {
@@ -1979,6 +1981,9 @@ export class AgentSession {
 			elapsedMs: Math.max(0, Date.now() - job.startTime),
 			epoch: this.#asyncDeliveryEpoch,
 			delivery: job.progressDelivery,
+			artifactId: info.artifactId,
+			sourceTruncated: info.truncated,
+			inlinePolicy: resolveOutputSpillConfig(this.settings),
 		});
 	}
 
@@ -6193,6 +6198,7 @@ export class AgentSession {
 		notification: DaemonOutputNotification,
 		delivery: AsyncJobProgressDelivery,
 		startedAt: number,
+		artifactId?: string,
 	): void {
 		if (this.#isDisposed) throw new Error("Session disposed before launch progress delivery");
 		if (this.#launchProgressBoundaryDepth > 0) return;
@@ -6211,6 +6217,9 @@ export class AgentSession {
 			elapsedMs: Math.max(0, Date.now() - startedAt),
 			epoch: this.#launchProgressEpoch,
 			delivery,
+			artifactId,
+			sourceTruncated: notification.truncated,
+			inlinePolicy: resolveOutputSpillConfig(this.settings),
 		});
 		this.#signalLaunchMonitorChanged();
 	}

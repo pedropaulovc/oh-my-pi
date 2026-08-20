@@ -73,6 +73,29 @@ describe("async progress messages", () => {
 		expect(content(message)).not.toContain("Background job bg_3 emitted output");
 	});
 
+	test("bounds model output and points truncated progress at its stable artifact", () => {
+		const message = buildAsyncProgressBatchMessage([
+			{
+				...entry("bg_4", `HEAD\n${Array.from({ length: 20 }, (_, index) => `middle-${index}`).join("\n")}\nTAIL`),
+				artifactId: "async-output-4",
+				sourceTruncated: true,
+				inlinePolicy: { threshold: 128, headBytes: 64, tailBytes: 64, tailLines: 2 },
+			},
+		]);
+		if (!message) throw new Error("Expected progress message");
+
+		expect(message.details?.jobs[0]).toMatchObject({
+			jobId: "bg_4",
+			artifactId: "async-output-4",
+			truncated: true,
+		});
+		expect(message.details?.jobs[0]?.text).toContain("HEAD");
+		expect(message.details?.jobs[0]?.text).toContain("TAIL");
+		expect(content(message)).toContain('<output truncated="true" full-output="artifact://async-output-4">');
+		const rendered = Bun.stripANSI(buildAsyncProgressBlock(message).render(100).join("\n"));
+		expect(rendered).toContain("Read artifact://async-output-4 for full output");
+	});
+
 	test("renders the custom message as sanitized progress rather than a completion", () => {
 		const message = buildAsyncProgressBatchMessage([
 			entry("bg_7", `\u001b[31m${os.homedir()}/private/output\rone\tvalue\u001b[0m`),

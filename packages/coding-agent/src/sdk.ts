@@ -1742,8 +1742,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			queueLaunchCompletion: notification =>
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
-			queueLaunchProgress: (notification, delivery, startedAt) =>
-				session?.queueLaunchProgress(notification, delivery, startedAt),
+			queueLaunchProgress: (notification, delivery, startedAt, artifactId) =>
+				session?.queueLaunchProgress(notification, delivery, startedAt, artifactId),
 			setLaunchMonitorActive: (monitorId, delivery, active) =>
 				session?.setLaunchMonitorActive(monitorId, delivery, active),
 			registerDisposeCallback: callback => {
@@ -3357,8 +3357,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			queueLaunchCompletion: notification =>
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
-			queueLaunchProgress: (notification, delivery, startedAt) =>
-				session?.queueLaunchProgress(notification, delivery, startedAt),
+			queueLaunchProgress: (notification, delivery, startedAt, artifactId) =>
+				session?.queueLaunchProgress(notification, delivery, startedAt, artifactId),
 			setLaunchMonitorActive: (monitorId, delivery, active) =>
 				session?.setLaunchMonitorActive(monitorId, delivery, active),
 			getAgentId: () => "advisor",

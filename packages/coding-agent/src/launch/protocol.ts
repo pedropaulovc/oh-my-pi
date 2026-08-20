@@ -160,6 +160,10 @@ export interface DaemonOutputNotification {
 	daemonId: string;
 	seq: number;
 	text: string;
+	/** Complete raw output represented by this cadence batch; omitted by legacy brokers. */
+	rawText?: string;
+	/** True when at least one model-facing line preview was clipped. */
+	truncated?: boolean;
 }
 
 /** Terminal process state for a monitor whose owner is not the process owner. */
@@ -388,6 +392,8 @@ export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 			daemonId: stringValue(source.daemonId, "output.daemonId"),
 			seq: numberValue(source.seq, "output.seq"),
 			text: rawString(source.text, "output.text"),
+			rawText: optionalRawString(source.rawText, "output.rawText"),
+			truncated: source.truncated === undefined ? undefined : booleanValue(source.truncated, "output.truncated"),
 		};
 	}
 	if (source.event === "daemon-monitor-completed") {

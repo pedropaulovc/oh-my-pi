@@ -11,7 +11,8 @@ describe("ProgressBatcher", () => {
 		vi.useFakeTimers();
 		const firstDelivery = Promise.withResolvers<void>();
 		const seen: string[] = [];
-		const batcher = new ProgressBatcher(1_000, (_id, text) => {
+		const batcher = new ProgressBatcher<string>(1_000, (_id, values) => {
+			const text = values.join("\n");
 			seen.push(text);
 			if (text === "first") return firstDelivery.promise;
 		});
@@ -30,7 +31,7 @@ describe("ProgressBatcher", () => {
 		setSystemTime(100);
 		const sequences: number[] = [];
 		let rejectDelivery = true;
-		const batcher = new ProgressBatcher(1_000, (_id, _text, seq) => {
+		const batcher = new ProgressBatcher<string>(1_000, (_id, _values, seq) => {
 			sequences.push(seq);
 			if (!rejectDelivery) return;
 			rejectDelivery = false;

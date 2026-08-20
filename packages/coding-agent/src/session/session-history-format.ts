@@ -290,7 +290,11 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
 				const entry = (job ?? {}) as Record<string, unknown>;
 				const id = typeof entry.jobId === "string" ? entry.jobId : "job";
 				const text = typeof entry.text === "string" ? entry.text : "";
-				return text ? `${id}: ${oneLine(text)}` : id;
+				const artifact =
+					entry.truncated === true && typeof entry.artifactId === "string"
+						? ` [full output: artifact://${entry.artifactId}]`
+						: "";
+				return text ? `${id}: ${oneLine(text)}${artifact}` : `${id}${artifact}`;
 			});
 			return `[async-progress] ${parts.join("; ")}`;
 		}

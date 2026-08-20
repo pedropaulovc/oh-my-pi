@@ -116,6 +116,8 @@ describe("launch monitor notifications", () => {
 				daemonId: "daemon-1",
 				seq: 2,
 				text: "second\nthird",
+				rawText: "second\nthird\n",
+				truncated: true,
 			}),
 		).toEqual({
 			event: "daemon-output",
@@ -124,6 +126,8 @@ describe("launch monitor notifications", () => {
 			daemonId: "daemon-1",
 			seq: 2,
 			text: "second\nthird",
+			rawText: "second\nthird\n",
+			truncated: true,
 		});
 	});
 
@@ -165,6 +169,17 @@ describe("launch monitor notifications", () => {
 				text: "progress",
 			}),
 		).toThrow("output.seq must be a finite number");
+		expect(() =>
+			parseDaemonWireMessage({
+				event: "daemon-output",
+				monitorId: "monitor-1",
+				name: "web",
+				daemonId: "daemon-1",
+				seq: 2,
+				text: "progress",
+				rawText: 42,
+			}),
+		).toThrow("output.rawText must be a string");
 	});
 });
 
