@@ -5,9 +5,9 @@ import * as path from "node:path";
 import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { isEexist, isEnoent, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
 import { type ProgressBatch, ProgressBatcher } from "../async/progress-batcher";
-import { type ProgressLine, ProgressLines } from "../async/progress-lines";
+import { ProgressLines } from "../async/progress-lines";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
-import { buildProgressPreview } from "../session/progress-preview";
+import { mergeProgressPreviews, type ProgressPreview, ProgressPreviewAccumulator } from "../session/progress-preview";
 import {
 	OutputSink,
 	truncateHead,
@@ -106,13 +106,12 @@ interface ManagedDaemon {
 	completionSubscriptionId?: string;
 	persistQueue: Promise<void>;
 	progressLines?: ProgressLines;
-	progressPreviewLines: ProgressLine[];
+	progressPreview: ProgressPreviewAccumulator;
 	monitorRestarting: boolean;
 }
 
 interface MonitorProgressChunk {
-	rawText: string;
-	lines: ProgressLine[];
+	preview: ProgressPreview;
 }
 
 interface OutputRegistration extends DaemonOutputSubscription {
@@ -400,8 +399,11 @@ class DaemonBroker {
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
 	readonly #outputRegistrations = new Map<string, OutputRegistration>();
-	readonly #progressBatcher = new ProgressBatcher<MonitorProgressChunk>((name, batch) =>
-		this.#notifyOutput(name, batch),
+	readonly #progressBatcher = new ProgressBatcher<MonitorProgressChunk>(
+		(name, batch) => this.#notifyOutput(name, batch),
+		{
+			merge: (left, right) => ({ preview: mergeProgressPreviews(left.preview, right.preview) }),
+		},
 	);
 	readonly #finished = Promise.withResolvers<void>();
 	readonly #sockets = new Set<net.Socket>();
@@ -722,7 +724,7 @@ class DaemonBroker {
 				readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
 				consecutiveFailures: 0,
 				persistQueue: Promise.resolve(),
-				progressPreviewLines: [],
+				progressPreview: new ProgressPreviewAccumulator(),
 				monitorRestarting: false,
 				completionCapable: owner !== undefined && this.#completionSubscriptions.has(owner),
 				completionSubscriptionId: owner === undefined ? undefined : this.#completionSubscriptions.get(owner),
@@ -771,8 +773,8 @@ class DaemonBroker {
 		record.outputOffset = 0;
 		record.progressLines = record.spec.detached
 			? undefined
-			: new ProgressLines(line => record.progressPreviewLines.push(line));
-		record.progressPreviewLines = [];
+			: new ProgressLines(line => record.progressPreview.append(line.text, line.truncated));
+		record.progressPreview.clear();
 		this.#persist(record);
 		try {
 			if (record.spec.detached) await this.#launchDetached(record, generation);
@@ -915,15 +917,15 @@ class DaemonBroker {
 		record.snapshot.outputBytes += Buffer.byteLength(text, "utf8");
 		const sanitized = sanitizeText(text);
 		record.progressLines?.append(sanitized);
-		if (record.progressLines && this.#hasOutputRegistration(record.snapshot.name)) {
-			const lines = record.progressPreviewLines.splice(0);
-			for (const registration of this.#outputRegistrations.values()) {
-				if (registration.name !== record.snapshot.name) continue;
-				registration.artifactSink.push(output);
-				this.#progressBatcher.push(registration.id, { rawText: "", lines });
+		const registrations = [...this.#outputRegistrations.values()].filter(
+			registration => registration.name === record.snapshot.name,
+		);
+		for (const registration of registrations) registration.artifactSink.push(output);
+		const preview = record.progressPreview.take();
+		if (record.progressLines && preview) {
+			for (const registration of registrations) {
+				this.#progressBatcher.push(registration.id, { preview });
 			}
-		} else {
-			record.progressPreviewLines.length = 0;
 		}
 		this.#trackOutput(record, generation, sanitized);
 	}
@@ -1028,14 +1030,8 @@ class DaemonBroker {
 		if (!registration) return;
 		const daemon = this.#records.get(registration.name)?.snapshot;
 		if (!daemon) return;
-		const lines = batch.values.flatMap(chunk => chunk.lines);
-		const fullText = batch.kind === "progress" ? lines.map(line => line.text).join("\n") : "";
-		const preview = buildProgressPreview(
-			fullText,
-			lines.some(line => line.truncated),
-		);
-		const text = preview.text ?? `${preview.head ?? ""}${preview.tail ?? ""}`;
-		const rawText = batch.values.map(chunk => chunk.rawText).join("");
+		const preview = batch.kind === "progress" ? batch.values[0]?.preview : undefined;
+		const text = preview?.text ?? `${preview?.head ?? ""}${preview?.tail ?? ""}`;
 		await registration.artifactSink.flushArtifact();
 		const notification: DaemonOutputNotification = {
 			event: "daemon-output",
@@ -1047,8 +1043,7 @@ class DaemonBroker {
 			batchKind: batch.kind,
 			suppressedEvents: batch.suppressedEvents,
 			reminder: batch.reminder,
-			rawText: rawText || undefined,
-			truncated: batch.kind === "progress" ? preview.truncated : undefined,
+			truncated: batch.kind === "progress" ? preview?.truncated : undefined,
 		};
 		this.#sendMonitorNotification(registration, notification);
 	}
@@ -1164,13 +1159,12 @@ class DaemonBroker {
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		record.progressLines?.finish();
 		record.progressLines = undefined;
-		if (record.progressPreviewLines.length > 0 && this.#hasOutputRegistration(record.snapshot.name)) {
-			const chunk = { rawText: "", lines: record.progressPreviewLines.splice(0) };
+		const finalPreview = record.progressPreview.take();
+		if (finalPreview && this.#hasOutputRegistration(record.snapshot.name)) {
+			const chunk = { preview: finalPreview };
 			for (const monitorId of this.#outputMonitorIds(record.snapshot.name)) {
 				this.#progressBatcher.push(monitorId, chunk);
 			}
-		} else {
-			record.progressPreviewLines.length = 0;
 		}
 		await this.#flushOutputProgress(record.snapshot.name);
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
@@ -1515,7 +1509,7 @@ class DaemonBroker {
 					readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
 					consecutiveFailures: 0,
 					persistQueue: Promise.resolve(),
-					progressPreviewLines: [],
+					progressPreview: new ProgressPreviewAccumulator(),
 					monitorRestarting: false,
 					completionCapable: "completionEvents" in decoded && decoded.completionEvents === true,
 					completionSubscriptionId:

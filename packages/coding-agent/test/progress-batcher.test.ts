@@ -31,6 +31,24 @@ describe("ProgressBatcher", () => {
 		]);
 	});
 
+	test("combines arrivals inside the window when a bounded representation is configured", () => {
+		vi.useFakeTimers();
+		const seen: ProgressBatch<string>[] = [];
+		const batcher = new ProgressBatcher<string>(
+			(_id, batch) => {
+				seen.push(batch);
+			},
+			{ merge: (left, right) => `${left}|${right}` },
+		);
+
+		batcher.push("source", "first");
+		batcher.push("source", "second");
+		batcher.push("source", "third");
+		vi.advanceTimersByTime(PROGRESS_BATCH_INTERVAL_MS);
+
+		expect(seen[0]?.values).toEqual(["first|second|third"]);
+	});
+
 	test("allows an eleven-event burst, suppresses nine, then reports the gap before event twenty-one", () => {
 		vi.useFakeTimers();
 		const seen: ProgressBatch<string>[] = [];
@@ -147,6 +165,37 @@ describe("ProgressBatcher", () => {
 				values: [],
 				seq: 13,
 				suppressedEvents: 1,
+			},
+		]);
+	});
+
+	test("attempts the terminal suppression summary after the final progress delivery rejects", async () => {
+		vi.useFakeTimers();
+		const seen: ProgressBatch<string>[] = [];
+		const batcher = new ProgressBatcher<string>((_id, batch) => {
+			seen.push(batch);
+			if (batch.seq === 12) throw new Error("final progress unavailable");
+		});
+
+		for (let event = 1; event <= 11; event++) {
+			batcher.push("source", `event-${event}`);
+			await batcher.flush("source");
+		}
+		batcher.push("source", "final-suppressed");
+
+		await expect(batcher.finish("source")).rejects.toThrow("final progress unavailable");
+		expect(seen.slice(-2)).toEqual([
+			{
+				kind: "artifact-only",
+				values: ["final-suppressed"],
+				seq: 12,
+				suppressedEvents: 0,
+			},
+			{
+				kind: "suppression-summary",
+				values: [],
+				seq: 13,
+				suppressedEvents: 2,
 			},
 		]);
 	});

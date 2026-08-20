@@ -120,6 +120,20 @@ describe("async progress messages", () => {
 		expect(content(message)).not.toContain("Bash: progress cannot be retuned");
 	});
 
+	test("does not emit an empty chatty reminder for unsupported progress sources", () => {
+		const message = buildAsyncProgressBatchMessage([
+			{
+				...entry("task-chatty", "still working", 62),
+				job: { ...job("task-chatty"), type: "task" },
+				suppressedEvents: 4,
+				reminder: "chatty-monitor",
+			},
+		]);
+
+		expect(content(message)).toContain('<suppressed events="4" reason="rate-limit"');
+		expect(content(message)).not.toContain("<system-reminder>");
+	});
+
 	test("asks the agent to resume only when progress wakes a follow-up turn", () => {
 		const wakeEntry = { ...entry("bg_3", "ready"), delivery: "wake" as const };
 		const message = buildAsyncProgressBatchMessage([wakeEntry]);

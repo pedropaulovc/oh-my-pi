@@ -75,6 +75,7 @@ type AsyncProgressJobDetails = {
 	label?: string;
 	elapsedMs: number;
 	text?: string;
+	hasOutput: boolean;
 	head?: string;
 	tail?: string;
 	artifactId?: string;
@@ -131,7 +132,9 @@ export function buildAsyncProgressBatchMessage(
 			reminder,
 		};
 	});
-	const chattyJobs = jobs.filter(job => job.reminder === "chatty-monitor");
+	const chattyJobs = jobs.filter(
+		job => job.reminder === "chatty-monitor" && (job.type === "bash" || job.type === "process"),
+	);
 	const chattyGuidance =
 		chattyJobs.length === 0
 			? undefined

@@ -5,6 +5,7 @@ import {
 	type AsyncJobProgressDelivery,
 	type AsyncJobProgressSink,
 } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import type { ProgressReminder } from "@oh-my-pi/pi-coding-agent/async/progress-batcher";
 
 function heldJob(manager: AsyncJobManager, ownerId = "Main", progressDelivery: AsyncJobProgressDelivery = "ambient") {
 	const gate = Promise.withResolvers<void>();
@@ -24,9 +25,15 @@ function heldJob(manager: AsyncJobManager, ownerId = "Main", progressDelivery: A
 
 function recordingSink(): {
 	sink: AsyncJobProgressSink;
-	seen: Array<{ jobId: string; text: string; seq: number; suppressedEvents?: number; reminder?: string }>;
+	seen: Array<{ jobId: string; text: string; seq: number; suppressedEvents?: number; reminder?: ProgressReminder }>;
 } {
-	const seen: Array<{ jobId: string; text: string; seq: number; suppressedEvents?: number; reminder?: string }> = [];
+	const seen: Array<{
+		jobId: string;
+		text: string;
+		seq: number;
+		suppressedEvents?: number;
+		reminder?: ProgressReminder;
+	}> = [];
 	return {
 		sink: {
 			deliver: (jobId, text, _job: AsyncJob, seq, info) => {

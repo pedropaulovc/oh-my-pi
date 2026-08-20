@@ -15,6 +15,11 @@ export interface ProgressBatch<T> {
 	reminder?: ProgressReminder;
 }
 
+export interface ProgressBatcherOptions<T> {
+	/** Combine arrivals as they enter a window so the pending representation can remain bounded. */
+	merge?: (left: T, right: T) => T;
+}
+
 interface ProgressBatchState<T> {
 	pending: T[];
 	seq: number;
@@ -34,9 +39,14 @@ interface ProgressBatchState<T> {
 export class ProgressBatcher<T> {
 	readonly #states = new Map<string, ProgressBatchState<T>>();
 	readonly #deliver: (id: string, batch: ProgressBatch<T>) => void | Promise<void>;
+	readonly #merge?: (left: T, right: T) => T;
 
-	constructor(deliver: (id: string, batch: ProgressBatch<T>) => void | Promise<void>) {
+	constructor(
+		deliver: (id: string, batch: ProgressBatch<T>) => void | Promise<void>,
+		options: ProgressBatcherOptions<T> = {},
+	) {
 		this.#deliver = deliver;
+		this.#merge = options.merge;
 	}
 
 	push(id: string, value: T): void {
@@ -52,7 +62,9 @@ export class ProgressBatcher<T> {
 			};
 			this.#states.set(id, state);
 		}
-		state.pending.push(value);
+		const previous = state.pending.at(-1);
+		if (this.#merge && previous !== undefined) state.pending[state.pending.length - 1] = this.#merge(previous, value);
+		else state.pending.push(value);
 		if (state.timer) return;
 		state.timer = setTimeout(() => void this.flush(id), PROGRESS_BATCH_INTERVAL_MS);
 		state.timer.unref();
@@ -95,22 +107,33 @@ export class ProgressBatcher<T> {
 	async finish(id: string): Promise<void> {
 		const state = this.#states.get(id);
 		if (!state) return;
+		let flushError: unknown;
+		let summaryError: unknown;
 		try {
 			await this.flush(id);
-			if (state.suppressedEvents === 0) return;
-			state.seq += 1;
-			const suppressedEvents = state.suppressedEvents;
-			state.suppressedEvents = 0;
-			await this.#enqueueDelivery(id, state, {
-				kind: "suppression-summary",
-				values: [],
-				seq: state.seq,
-				suppressedEvents,
-				...this.#suppressionReminder(state, suppressedEvents),
-			});
+		} catch (error) {
+			flushError = error;
+		}
+		try {
+			if (state.suppressedEvents > 0) {
+				state.seq += 1;
+				const suppressedEvents = state.suppressedEvents;
+				state.suppressedEvents = 0;
+				await this.#enqueueDelivery(id, state, {
+					kind: "suppression-summary",
+					values: [],
+					seq: state.seq,
+					suppressedEvents,
+					...this.#suppressionReminder(state, suppressedEvents),
+				});
+			}
+		} catch (error) {
+			summaryError = error;
 		} finally {
 			this.clear(id);
 		}
+		if (flushError !== undefined) throw flushError;
+		if (summaryError !== undefined) throw summaryError;
 	}
 
 	clear(id: string): void {
