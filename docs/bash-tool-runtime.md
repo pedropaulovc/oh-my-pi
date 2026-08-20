@@ -219,6 +219,8 @@ When `async.enabled` is true and the call passes `async: true`, `BashTool` start
 
 `progress: "wake"` opts that managed job into model-facing progress. The Bash output sampler carries partial lines across chunks, reports each complete non-empty merged stdout/stderr line, and flushes a final unterminated line on exit. The shared delivery channel retains every reported line and emits batches at most once per second. Output produced while the model is busy remains queued and is delivered together in the next batch; no newer event replaces an older one. Wake delivery starts a follow-up turn when the model is idle. `progress: "ambient"` uses the same capture and batching path but is injected only at an already-active step boundary.
 
+The capture guarantee is identical for wake and ambient delivery. Wake may start an extra inference turn for each idle-time batch. Ambient queues those batches until completion or another event starts a turn, reducing model requests and thinking tokens when intermediate output is informational. The cost is delayed reaction: output that changes the next action should use wake.
+
 Progress and job completion are independent, ordered notifications: any final progress batch is delivered before the async result. The progress choice does not change the command timeout; `timeout: 0` is still the explicit way to disable the deadline. Long-running services, watchers, debuggers, and REPLs belong in `hub`, whose process monitor reuses this delivery contract while keeping process lifetime separate from the subscription.
 
 ## Result shaping, metadata, and error mapping

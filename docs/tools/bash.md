@@ -33,6 +33,8 @@
 
 When async execution is enabled, the Bash tool description recommends `async: "auto"` for finite commands: quick work still returns inline, while slow work crosses the turn boundary without restarting the process. `async: true` remains the immediate-background mode. `progress: "wake"` is waking, events produced while the model is busy batch without drops, ambient progress never wakes, oversized events retain their final 4,000 characters, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
 
+A command that finishes within `bash.asyncAuto.inlineGraceMs` returns one ordinary Bash result. It does not emit separate progress or completion notifications. If the command outlives the grace, the same process is promoted without a restart. Settings-driven auto-backgrounding of an unmarked call can still deliver completion, but it does not enable progress; progress requires explicit `async: "auto"` or `async: true`.
+
 `wake` is a harness push, not a reason to hold the current turn open. Agents must not call `hub wait`, follow logs, or block to receive progress or keep the turn alive; they should use async progress and end the turn instead. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
 
 ```xml
@@ -57,6 +59,44 @@ NEVER call `hub wait`, follow logs, or block to receive progress or keep the tur
 ```
 
 Each delivered progress batch is a harness-injected `async-progress` message in the model's conversation.
+
+### Choosing a progress mode
+
+Both modes retain every bounded output event while the subscription is active. The difference is when the model runs.
+
+| Mode | When the agent receives it | Cost and tradeoff | Use it for |
+| --- | --- | --- | --- |
+| `wake` | Starts a follow-up turn when the agent is idle | May add model requests, thinking tokens, and latency, but the agent can act immediately | Readiness, failures, requests for input, or a newly available artifact |
+| `ambient` | Waits for the next turn caused by completion, a user message, or another event | Several batches can share one model request; reaction to intermediate output may be delayed | Test, build, install, download, benchmark, or low-priority diagnostic progress |
+
+Ambient does not discard or replace output. It avoids spending an inference turn on updates that would produce no useful action, such as another passing test file or download percentage. When completion starts the next turn, queued ambient progress is delivered before the completion result.
+
+Use ambient for a long test suite when only the final status changes the plan:
+
+```json
+{
+  "command": "bun test",
+  "async": "auto",
+  "progress": "ambient"
+}
+```
+
+Use wake when an intermediate line should change the agent's next action:
+
+```json
+{
+  "command": "bun scripts/wait-for-preview.ts",
+  "async": "auto",
+  "progress": "wake"
+}
+```
+
+The same choice applies to Hub processes. A low-priority diagnostic stream can remain ambient, while a readiness or failure monitor should wake the agent:
+
+```json
+{"op":"monitor","name":"benchmark","progress":"ambient"}
+{"op":"monitor","name":"preview","progress":"wake"}
+```
 
 ### Capability compared with Claude Code Monitor
 

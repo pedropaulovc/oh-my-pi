@@ -111,6 +111,8 @@ Names are stable and unique within one project directory. A live name must be st
 
 Wake progress starts a follow-up model turn when the agent is idle. Ambient progress is delivered only at an already-active step boundary and never wakes an idle agent. Process termination is a separate completion notification, ordered after any final progress batch.
 
+Both modes retain the same bounded output events. `wake` may spend an additional model request and thinking tokens so the agent can react immediately. `ambient` waits for a turn that would happen anyway, often combining several progress batches with process completion or a user message. Use wake for readiness, failures, or other output that changes the next action. Use ambient for benchmark iterations and low-priority diagnostics where only the final state requires action. See [Choosing a Bash progress mode](bash.md#choosing-a-progress-mode) for the full comparison and examples; Hub uses the same delivery channel.
+
 Agents must not call `wait`, follow logs, or block to receive progress or keep the turn alive; they should use async progress and end the turn instead.
 
 Monitoring does not alter the daemon's lifecycle. `persist` controls whether the process survives the last omp client exiting; `detached` controls whether it survives broker shutdown. Detaching a monitor does not stop the process, and stopping the process does not require detaching first. Session disposal removes its subscriptions without stopping otherwise-surviving processes. Fully detached daemons cannot use live monitoring because no broker connection remains to deliver events.
