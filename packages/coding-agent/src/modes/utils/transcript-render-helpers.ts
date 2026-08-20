@@ -24,7 +24,7 @@ import { theme } from "../theme/theme";
 
 type CustomOrHookMessage = Extract<AgentMessage, { role: "custom" | "hookMessage" }>;
 type AssistantAgentMessage = Extract<AgentMessage, { role: "assistant" }>;
-type BackgroundWorkType = "bash" | "task" | "process";
+type BackgroundWorkType = AsyncJobType | "process";
 
 function backgroundWorkNoun(type: BackgroundWorkType | undefined): "command" | "task" | "process" | "job" {
 	switch (type) {

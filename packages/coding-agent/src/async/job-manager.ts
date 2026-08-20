@@ -34,13 +34,6 @@ interface PollEscalationState {
 /** Kind of work a managed job runs; drives job-row badges and delivery labels. */
 export type AsyncJobType = "bash" | "task" | "eval";
 
-interface AgentProgressState {
-	lastEmitAt: number;
-	pendingTexts: string[];
-	seq: number;
-	deliveryTail?: Promise<void>;
-	timer?: NodeJS.Timeout;
-}
 export interface AsyncJob {
 	id: string;
 	type: AsyncJobType;
