@@ -55,7 +55,7 @@ describe("bash progress parameter", () => {
 		expect(tool.description).toContain("last 4,000 chars");
 		expect(tool.description).toContain("ordered, drop-free batches ≤1/s");
 		expect(tool.description).toContain("Ambient waits for a turn");
-		expect(tool.description).toContain("completion separate");
+		expect(tool.description).toContain("final partial before completion");
 		expect(tool.description).toContain("NEVER block to receive progress or keep the turn alive");
 		expect(tool.description).toContain("start async and end it");
 	});

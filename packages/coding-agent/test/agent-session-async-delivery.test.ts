@@ -143,7 +143,7 @@ describe("AgentSession owner-routed async delivery", () => {
 		).toBe(true);
 	});
 
-	it("waits without spinning until a wake process monitor reaches terminal state", async () => {
+	it("settles each wake process event then parks again while its monitor remains active", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
 		const agent = new Agent({
@@ -184,9 +184,8 @@ describe("AgentSession owner-routed async delivery", () => {
 			"wake",
 			Date.now(),
 		);
-		session.setLaunchMonitorActive("monitor-1", "wake", false);
 		await settling;
-		expect(session.hasPendingAsyncWork()).toBe(false);
+		expect(session.hasPendingAsyncWork()).toBe(true);
 		expect(
 			mock.calls.some(call =>
 				call.context.messages.some(message =>
@@ -198,6 +197,17 @@ describe("AgentSession owner-routed async delivery", () => {
 				),
 			),
 		).toBe(true);
+
+		let settledAgain = false;
+		const settlingAgain = session.settleAsyncWork().then(() => {
+			settledAgain = true;
+		});
+		await Bun.sleep(1);
+		expect(settledAgain).toBe(false);
+
+		session.setLaunchMonitorActive("monitor-1", "wake", false);
+		await settlingAgain;
+		expect(session.hasPendingAsyncWork()).toBe(false);
 	});
 
 	it("fences old process progress while switching to another session", async () => {

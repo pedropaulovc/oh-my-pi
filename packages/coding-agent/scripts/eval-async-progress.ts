@@ -103,7 +103,11 @@ function parseArgs(argv: string[]): EvalConfig {
 	if (surface !== "bash" && surface !== "hub" && surface !== "all") {
 		throw new Error("--surface must be bash, hub, or all");
 	}
-	const evalCase = valueFor("--case") ?? "wake";
+	const caseValue = valueFor("--case");
+	if (argv.includes("--case") && caseValue === undefined) {
+		throw new Error("--case requires wake or quick");
+	}
+	const evalCase = caseValue ?? "wake";
 	if (evalCase !== "wake" && evalCase !== "quick") throw new Error("--case must be wake or quick");
 	if (evalCase === "quick" && surfaceValue !== undefined && surface !== "bash") {
 		throw new Error("--case quick supports only --surface bash");
