@@ -256,6 +256,8 @@ export class ModelRegistry {
 			ignoreLocalModelConfig?: boolean;
 			/** Settings source for availability and context-window policies. */
 			settings?: Settings;
+			/** Model discovery cache database. Defaults beside an explicit models config. */
+			cacheDbPath?: string;
 			fetch?: FetchImpl;
 		},
 	) {
@@ -267,7 +269,8 @@ export class ModelRegistry {
 				? () => Promise.reject(new Error("network disabled in model-registry runtime test"))
 				: wrapFetchForExtraCa(fetch));
 		this.#modelsConfigFile = ModelsConfigFile.relocate(modelsPath ?? path.join(getAgentDir(), "models.yml"));
-		this.#cacheDbPath = modelsPath ? path.join(path.dirname(modelsPath), "models.db") : undefined;
+		this.#cacheDbPath =
+			options?.cacheDbPath ?? (modelsPath ? path.join(path.dirname(modelsPath), "models.db") : undefined);
 		// Set up fallback resolver for custom provider API keys
 		this.authStorage.setFallbackResolver(provider => {
 			const keyConfig = this.#customProviderApiKeys.get(provider);
