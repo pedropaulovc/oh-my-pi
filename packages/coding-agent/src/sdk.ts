@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import {
 	Agent,
 	type AgentEvent,
@@ -1253,7 +1254,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		options.modelRegistry ??
 		new ModelRegistry(
 			options.authStorage ?? (await logger.time("discoverModels", discoverAuthStorage, agentDir)),
-			undefined,
+			path.join(agentDir, "models.yml"),
 			{
 				settings,
 			},
