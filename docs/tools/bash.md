@@ -26,7 +26,7 @@
 | `timeout` | `number` | No | Timeout in seconds. Default `300`. `0` disables the deadline. Positive values are capped by `tools.maxTimeout` when that setting is positive, then clamped to the Bash range `1..3600`. |
 | `cwd` | `string` | No | Working directory, resolved against `session.cwd` via `resolveToCwd`. Must exist and be a directory. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
-| `async` | `boolean \| "auto"` | No | `true` starts a background job immediately. `"auto"` starts inline, waits up to one second (or a shorter configured `bash.autoBackground.thresholdMs`), then promotes the same process if it is still running. Present only when `async.enabled` is true. Neither mode changes the command deadline, including `timeout: 0`. |
+| `async` | `boolean \| "auto"` | No | `true` starts a background job immediately. `"auto"` starts inline, waits for `bash.asyncAuto.inlineGraceMs` (default one second), then promotes the same process if it is still running. Present only when `async.enabled` is true. Neither mode changes the command deadline, including `timeout: 0`. |
 | `progress` | `"ambient" \| "wake"` | No | With `async: true` or `async: "auto"`, deliver complete non-empty output-line events to the model. In auto mode, delivery activates only after promotion: earlier output appears in the foreground/background-start result instead. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once per second, with every event in the interval retained in the batch. Oversized events retain the final 4,000 characters. |
 
 ## Agent-facing guidance

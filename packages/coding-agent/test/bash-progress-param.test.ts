@@ -125,7 +125,7 @@ describe("bash progress parameter", () => {
 		manager.registerDeliverySink("Main", (_jobId, text) => {
 			completions.push(text);
 		});
-		const tool = new BashTool(makeSession(manager, { "bash.autoBackground.thresholdMs": 2_000 }));
+		const tool = new BashTool(makeSession(manager, { "bash.asyncAuto.inlineGraceMs": 2_000 }));
 
 		const result = await tool.execute("auto-inline", {
 			command: "printf 'quick-result\\n'",
@@ -155,7 +155,12 @@ describe("bash progress parameter", () => {
 		manager.registerDeliverySink("Main", (_jobId, text) => {
 			events.push(`completion:${text}`);
 		});
-		const tool = new BashTool(makeSession(manager, { "bash.autoBackground.thresholdMs": 200 }));
+		const tool = new BashTool(
+			makeSession(manager, {
+				"bash.autoBackground.thresholdMs": 2_000,
+				"bash.asyncAuto.inlineGraceMs": 200,
+			}),
+		);
 
 		const result = await tool.execute("auto-promote", {
 			command: "printf 'before-promotion\\n'; sleep 0.5; printf 'after-promotion\\n'",

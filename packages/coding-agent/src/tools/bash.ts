@@ -65,7 +65,7 @@ import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
 
 const BASH_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const ASYNC_AUTO_MAX_INLINE_MS = 1_000;
+const DEFAULT_ASYNC_AUTO_INLINE_GRACE_MS = 1_000;
 const BASH_APPROVAL_SHELL_CONTROL_CHARS: Record<string, true> = {
 	"\n": true,
 	"\r": true,
@@ -625,6 +625,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	readonly #asyncEnabled: boolean;
 	readonly #autoBackgroundEnabled: boolean;
 	readonly #autoBackgroundThresholdMs: number;
+	readonly #asyncAutoInlineGraceMs: number;
 
 	constructor(private readonly session: ToolSession) {
 		this.#asyncEnabled = this.session.settings.get("async.enabled");
@@ -634,6 +635,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			Math.floor(
 				this.session.settings.get("bash.autoBackground.thresholdMs") ?? DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
 			),
+		);
+		this.#asyncAutoInlineGraceMs = Math.max(
+			0,
+			Math.floor(this.session.settings.get("bash.asyncAuto.inlineGraceMs") ?? DEFAULT_ASYNC_AUTO_INLINE_GRACE_MS),
 		);
 		this.parameters = this.#asyncEnabled ? bashSchemaWithAsync : bashSchemaBase;
 	}
@@ -1084,7 +1089,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			!autoBgManager.atCapacity
 		) {
 			const autoBackgroundThresholdMs = autoRequested
-				? Math.min(this.#autoBackgroundThresholdMs, ASYNC_AUTO_MAX_INLINE_MS)
+				? this.#asyncAutoInlineGraceMs
 				: this.#autoBackgroundThresholdMs;
 			const autoBackgroundWaitMs = resolveAutoBackgroundWaitMs(autoBackgroundThresholdMs, timeoutMs);
 			const startBackgrounded = autoBackgroundWaitMs === 0;
