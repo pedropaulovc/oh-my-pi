@@ -7,6 +7,7 @@ import { startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
 import { createDaemonBrokerClient } from "../../src/launch/client";
 import {
 	DAEMON_IDLE_GRACE_ENV,
+	DAEMON_OUTPUT_MONITOR_CAPABILITY,
 	DAEMON_PROJECT_DIR_ENV,
 	DAEMON_RUNTIME_DIR_ENV,
 	type DaemonMonitorNotification,
@@ -92,7 +93,7 @@ process.stdin.once("data", () => {
 			// This ping publishes the subscription before start, closing the immediate-output race.
 			const ping = await client.request({ op: "ping" });
 			if (ping.op !== "ping") throw new Error("unexpected ping result");
-			expect(ping.capabilities).toContain("output-monitor-v1");
+			expect(ping.capabilities).toContain(DAEMON_OUTPUT_MONITOR_CAPABILITY);
 			const started = await client.request({
 				op: "start",
 				owner: "owner-1",

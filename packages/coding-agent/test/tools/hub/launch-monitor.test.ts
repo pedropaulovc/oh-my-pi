@@ -12,6 +12,7 @@ import type {
 	DaemonSnapshot,
 	DaemonSpec,
 } from "../../../src/launch/protocol";
+import { DAEMON_OUTPUT_MONITOR_CAPABILITY } from "../../../src/launch/protocol";
 import type { ToolSession } from "../../../src/tools";
 import { executeLaunch } from "../../../src/tools/hub/launch";
 
@@ -87,7 +88,7 @@ function createHarness(artifact?: { id: string; path: string }): MonitorHarness 
 			requests.push(operation);
 			if (operation.op === "ping") {
 				expect(subscription).toMatchObject({ name: daemon.name, owner: OWNER });
-				return { op: "ping", projectDir: process.cwd(), capabilities: ["output-monitor-v1"] };
+				return { op: "ping", projectDir: process.cwd(), capabilities: [DAEMON_OUTPUT_MONITOR_CAPABILITY] };
 			}
 			if (operation.op === "start") return { op: "start", daemon, readyTimedOut: false };
 			if (operation.op === "describe") return { op: "describe", daemon, spec };
@@ -281,6 +282,22 @@ describe("hub process output monitoring", () => {
 		expect(harness.active.at(-1)?.active).toBe(true);
 	});
 
+	it("rejects a broker that cannot provide recoverable raw monitor output", async () => {
+		const harness = createHarness();
+		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
+		vi.spyOn(harness.client, "request").mockResolvedValue({
+			op: "ping",
+			projectDir: process.cwd(),
+			capabilities: ["output-monitor-v1"],
+		});
+
+		await expect(
+			executeLaunch(harness.session, { op: "monitor", name: daemon.name, progress: "wake" }),
+		).rejects.toThrow("restart it with this omp build");
+		expect(harness.unregisterCount()).toBe(1);
+		expect(harness.active.at(-1)?.active).toBe(false);
+	});
+
 	it("does not resurrect wake state when terminal cleanup races a retune", async () => {
 		const harness = createHarness();
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(harness.client);
@@ -291,7 +308,7 @@ describe("hub process output monitoring", () => {
 		if (!subscription || !sink) throw new Error("Expected output subscription");
 		vi.spyOn(harness.client, "request").mockImplementation(async operation => {
 			if (operation.op === "ping") {
-				return { op: "ping", projectDir: process.cwd(), capabilities: ["output-monitor-v1"] };
+				return { op: "ping", projectDir: process.cwd(), capabilities: [DAEMON_OUTPUT_MONITOR_CAPABILITY] };
 			}
 			await sink({
 				event: "daemon-monitor-completed",

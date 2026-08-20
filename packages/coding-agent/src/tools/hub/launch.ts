@@ -20,6 +20,7 @@ import type {
 	DaemonSpec,
 	DaemonState,
 } from "../../launch/protocol";
+import { DAEMON_OUTPUT_MONITOR_CAPABILITY } from "../../launch/protocol";
 import { renderTerminalOutputIsolated } from "../../launch/terminal-output-worker-client";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { OutputSink } from "../../session/streaming-output";
@@ -595,7 +596,7 @@ export async function executeLaunch(
 	try {
 		if (progressDelivery) {
 			const ping = await client.request({ op: "ping" }, signal);
-			if (ping.op !== "ping" || !ping.capabilities?.includes("output-monitor-v1")) {
+			if (ping.op !== "ping" || !ping.capabilities?.includes(DAEMON_OUTPUT_MONITOR_CAPABILITY)) {
 				throw new ToolError("The running daemon broker cannot monitor output; restart it with this omp build");
 			}
 		}

@@ -13,6 +13,7 @@ import { daemonBrokerEndpoint, writeDaemonScopeMeta } from "./paths";
 import { hasLiveDaemonProjectPresence, pruneDeadDaemonRuntimeDirs } from "./presence";
 import {
 	DAEMON_IDLE_GRACE_ENV,
+	DAEMON_OUTPUT_MONITOR_CAPABILITY,
 	DAEMON_PROJECT_DIR_ENV,
 	DAEMON_PTY_COLUMNS,
 	DAEMON_PTY_ROWS,
@@ -611,7 +612,7 @@ class DaemonBroker {
 	async #dispatch(operation: DaemonOperation): Promise<DaemonRpcResult> {
 		switch (operation.op) {
 			case "ping":
-				return { op: "ping", projectDir: this.#projectDir, capabilities: ["output-monitor-v1"] };
+				return { op: "ping", projectDir: this.#projectDir, capabilities: [DAEMON_OUTPUT_MONITOR_CAPABILITY] };
 			case "start":
 				return this.#start(operation.spec, operation.owner);
 			case "list": {
