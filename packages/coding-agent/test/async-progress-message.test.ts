@@ -42,7 +42,7 @@ beforeAll(async () => {
 
 describe("async progress messages", () => {
 	test("preserves every queued event while batching updates by job", () => {
-		const longEvent = "x".repeat(5_000);
+		const longEvent = "x".repeat(500);
 		const message = buildAsyncProgressBatchMessage([
 			entry("bg_1", "first", 1),
 			entry("bg_1", `second\n${longEvent}`, 2),
@@ -74,12 +74,11 @@ describe("async progress messages", () => {
 	});
 
 	test("bounds model output and points truncated progress at its stable artifact", () => {
+		const middle = "middle-data\n".repeat(500);
 		const message = buildAsyncProgressBatchMessage([
 			{
-				...entry("bg_4", `HEAD\n${Array.from({ length: 20 }, (_, index) => `middle-${index}`).join("\n")}\nTAIL`),
+				...entry("bg_4", `HEAD\n${middle}TAIL`),
 				artifactId: "async-output-4",
-				sourceTruncated: true,
-				inlinePolicy: { threshold: 128, headBytes: 64, tailBytes: 64, tailLines: 2 },
 			},
 		]);
 		if (!message) throw new Error("Expected progress message");
@@ -89,11 +88,41 @@ describe("async progress messages", () => {
 			artifactId: "async-output-4",
 			truncated: true,
 		});
-		expect(message.details?.jobs[0]?.text).toContain("HEAD");
-		expect(message.details?.jobs[0]?.text).toContain("TAIL");
+		const preview = message.details?.jobs[0];
+		expect(preview?.text).toBeUndefined();
+		expect(preview?.head).toStartWith("HEAD");
+		expect(preview?.tail).toEndWith("TAIL");
+		expect(preview?.head).not.toContain("TAIL");
+		expect(preview?.tail).not.toContain("HEAD");
+		expect(Buffer.byteLength(`${preview?.head ?? ""}${preview?.tail ?? ""}`, "utf8")).toBeLessThanOrEqual(3_000);
 		expect(content(message)).toContain('<output truncated="true" full-output="artifact://async-output-4">');
+		expect(content(message)).toContain("<head>\nHEAD");
+		expect(content(message)).toContain("TAIL\n</tail>");
+		expect(content(message)).not.toContain('<output truncated="true" full-output="artifact://async-output-4">\nHEAD');
 		const rendered = Bun.stripANSI(buildAsyncProgressBlock(message).render(100).join("\n"));
+		expect(rendered).toContain("HEAD");
+		expect(rendered).toContain("TAIL");
 		expect(rendered).toContain("Read artifact://async-output-4 for full output");
+	});
+
+	test("renders a source-truncated line as structured head and tail", () => {
+		const message = buildAsyncProgressBatchMessage([
+			{
+				...entry("bg_5", `${"H".repeat(250)}${"T".repeat(250)}`),
+				artifactId: "async-output-5",
+				sourceTruncated: true,
+			},
+		]);
+		if (!message) throw new Error("Expected progress message");
+
+		expect(message.details?.jobs[0]).toMatchObject({
+			head: "H".repeat(250),
+			tail: "T".repeat(250),
+			artifactId: "async-output-5",
+			truncated: true,
+		});
+		expect(content(message)).toContain(`<head>\n${"H".repeat(250)}\n</head>`);
+		expect(content(message)).toContain(`<tail>\n${"T".repeat(250)}\n</tail>`);
 	});
 
 	test("renders the custom message as sanitized progress rather than a completion", () => {

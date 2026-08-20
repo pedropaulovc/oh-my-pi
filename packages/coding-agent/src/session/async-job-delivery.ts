@@ -12,9 +12,8 @@ import { formatDuration, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobProgressDelivery, AsyncJobType } from "../async";
 import asyncProgressTemplate from "../prompts/tools/async-progress.md" with { type: "text" };
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
-import { type OutputSpillConfig, resolveOutputSpillConfig } from "../tools/output-meta";
 import type { CustomMessage } from "./messages";
-import { truncateMiddle, truncateTail } from "./streaming-output";
+import { truncateHeadBytes, truncateTailBytes } from "./streaming-output";
 
 /**
  * `customType` of the injected async-result follow-up message. The task
@@ -29,6 +28,7 @@ export const ASYNC_PROGRESS_WAKE_QUEUE_KIND = "async-progress-wake";
 /** Result payloads longer than this spill to an artifact with an inline preview. */
 export const ASYNC_INLINE_RESULT_MAX_CHARS = 12_000;
 export const ASYNC_PREVIEW_MAX_CHARS = 4_000;
+export const ASYNC_PROGRESS_PREVIEW_MAX_BYTES = 3_000;
 
 export interface AsyncResultEntry {
 	jobId: string;
@@ -56,7 +56,6 @@ export interface AsyncProgressEntry {
 	delivery: AsyncJobProgressDelivery;
 	artifactId?: string;
 	sourceTruncated?: boolean;
-	inlinePolicy?: OutputSpillConfig;
 }
 
 export interface AsyncProgressSource {
@@ -71,7 +70,9 @@ type AsyncProgressJobDetails = {
 	type?: "bash" | "task" | "process";
 	label?: string;
 	elapsedMs: number;
-	text: string;
+	text?: string;
+	head?: string;
+	tail?: string;
 	artifactId?: string;
 	truncated?: boolean;
 };
@@ -99,26 +100,23 @@ export function buildAsyncProgressBatchMessage(
 		const latest = jobEntries.at(-1)!;
 		const type = latest.job?.type;
 		const fullText = jobEntries.map(entry => sanitizeText(entry.text)).join("\n");
-		const policy = latest.inlinePolicy ?? resolveOutputSpillConfig(undefined);
-		const exceedsThreshold = Buffer.byteLength(fullText, "utf8") > policy.threshold;
-		const preview = exceedsThreshold
-			? policy.headBytes > 0
-				? truncateMiddle(fullText, {
-						maxBytes: policy.headBytes + policy.tailBytes,
-						maxLines: policy.tailLines * 2,
-						maxHeadBytes: policy.headBytes,
-						maxHeadLines: policy.tailLines,
-					})
-				: truncateTail(fullText, { maxBytes: policy.tailBytes, maxLines: policy.tailLines })
-			: undefined;
-		const truncated = jobEntries.some(entry => entry.sourceTruncated) || preview?.truncated === true;
+		const sourceTruncated = jobEntries.some(entry => entry.sourceTruncated);
+		const fullBytes = Buffer.byteLength(fullText, "utf8");
+		const truncated = sourceTruncated || fullBytes > ASYNC_PROGRESS_PREVIEW_MAX_BYTES;
+		const retainedBytes = Math.min(fullBytes, ASYNC_PROGRESS_PREVIEW_MAX_BYTES);
+		const headBytes = Math.floor(retainedBytes / 2);
+		const tailBytes = retainedBytes - headBytes;
+		const head = truncated ? truncateHeadBytes(fullText, headBytes).text : undefined;
+		const tail = truncated ? truncateTailBytes(fullText, tailBytes).text : undefined;
 		const artifactId = [...jobEntries].reverse().find(entry => entry.artifactId)?.artifactId;
 		return {
 			jobId: latest.jobId,
 			type: latest.source?.type ?? (type === "eval" ? undefined : type),
 			label: latest.source?.label ?? latest.job?.label,
 			elapsedMs: latest.elapsedMs,
-			text: preview?.content ?? fullText,
+			text: truncated ? undefined : fullText,
+			head,
+			tail,
 			artifactId,
 			truncated,
 		};

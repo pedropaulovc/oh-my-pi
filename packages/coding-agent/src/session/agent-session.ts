@@ -197,7 +197,6 @@ import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
 import { releaseComputerSessionsForOwner } from "../tools/computer/supervisor";
-import { resolveOutputSpillConfig } from "../tools/output-meta";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import {
 	buildResolveReminderMessage,
@@ -1983,7 +1982,6 @@ export class AgentSession {
 			delivery: job.progressDelivery,
 			artifactId: info.artifactId,
 			sourceTruncated: info.truncated,
-			inlinePolicy: resolveOutputSpillConfig(this.settings),
 		});
 	}
 
@@ -6219,7 +6217,6 @@ export class AgentSession {
 			delivery,
 			artifactId,
 			sourceTruncated: notification.truncated,
-			inlinePolicy: resolveOutputSpillConfig(this.settings),
 		});
 		this.#signalLaunchMonitorChanged();
 	}

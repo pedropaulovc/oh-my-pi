@@ -289,7 +289,12 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
 			const parts = jobs.map(job => {
 				const entry = (job ?? {}) as Record<string, unknown>;
 				const id = typeof entry.jobId === "string" ? entry.jobId : "job";
-				const text = typeof entry.text === "string" ? entry.text : "";
+				const text =
+					entry.truncated === true
+						? [entry.head, entry.tail].filter((part): part is string => typeof part === "string").join(" … ")
+						: typeof entry.text === "string"
+							? entry.text
+							: "";
 				const artifact =
 					entry.truncated === true && typeof entry.artifactId === "string"
 						? ` [full output: artifact://${entry.artifactId}]`

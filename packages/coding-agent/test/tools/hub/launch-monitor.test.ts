@@ -197,8 +197,8 @@ describe("hub process output monitoring", () => {
 			name: daemon.name,
 			daemonId: daemon.id,
 			seq: 1,
-			text: "x".repeat(4_000),
-			rawText: `${"x".repeat(5_000)}\n`,
+			text: `${"H".repeat(250)}${"T".repeat(250)}`,
+			rawText: `${"H".repeat(300)}${"M".repeat(4_400)}${"T".repeat(300)}\n`,
 			truncated: true,
 		});
 		await harness.getOutputSink()?.({
@@ -207,10 +207,13 @@ describe("hub process output monitoring", () => {
 			daemon: { ...daemon, state: "exited", pid: undefined, exitedAt: 3, exitCode: 0 },
 		});
 
-		expect(await Bun.file(artifact.path).text()).toBe(`${"x".repeat(5_000)}\n`);
+		expect(await Bun.file(artifact.path).text()).toBe(`${"H".repeat(300)}${"M".repeat(4_400)}${"T".repeat(300)}\n`);
 		expect(harness.progress).toHaveLength(1);
 		expect(harness.progress[0]?.artifactId).toBe(artifact.id);
-		expect(harness.progress[0]?.notification).toMatchObject({ truncated: true, text: "x".repeat(4_000) });
+		expect(harness.progress[0]?.notification).toMatchObject({
+			truncated: true,
+			text: `${"H".repeat(250)}${"T".repeat(250)}`,
+		});
 	});
 
 	it("attaches to an existing process and updates its delivery mode in place", async () => {

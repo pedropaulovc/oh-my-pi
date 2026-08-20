@@ -54,7 +54,7 @@ describe("bash progress parameter", () => {
 		expect(tool.description).toContain('Finite: `async: "auto"` (quick inline, slow background)');
 		expect(tool.description).toContain("`async: true` ONLY if the user asks for immediate background");
 		expect(tool.description).toContain("non-empty merged lines");
-		expect(tool.description).toContain("last 4,000 chars");
+		expect(tool.description).toContain("first and last 250 chars");
 		expect(tool.description).toContain("ordered, drop-free batches ≤1/s");
 		expect(tool.description).toContain("Ambient waits for a turn");
 		expect(tool.description).toContain("final partial before completion");
@@ -100,15 +100,15 @@ describe("bash progress parameter", () => {
 		const tool = new BashTool(makeSession(manager));
 
 		await tool.execute("bounded-line", {
-			command: "printf '%05000d' 0",
+			command: "printf 'H%.0s' {1..300}; printf '%04400d' 0; printf 'T%.0s' {1..300}",
 			async: true,
 			progress: "wake",
 		});
 		await manager.waitForAll();
 
 		expect(seen).toHaveLength(1);
-		expect(seen[0]).toHaveLength(4_000);
-		expect(seen[0]).toBe("0".repeat(4_000));
+		expect(seen[0]).toHaveLength(500);
+		expect(seen[0]).toBe(`${"H".repeat(250)}${"T".repeat(250)}`);
 	});
 
 	test("keeps the full raw stream in the same artifact referenced by bounded progress", async () => {
@@ -127,7 +127,7 @@ describe("bash progress parameter", () => {
 		const tool = new BashTool(session);
 
 		await tool.execute("artifact-backed-line", {
-			command: "printf '%05000d' 0",
+			command: "printf 'H%.0s' {1..300}; printf '%04400d' 0; printf 'T%.0s' {1..300}",
 			async: true,
 			progress: "wake",
 		});
@@ -135,12 +135,12 @@ describe("bash progress parameter", () => {
 
 		expect(seen).toEqual([
 			{
-				text: "0".repeat(4_000),
+				text: `${"H".repeat(250)}${"T".repeat(250)}`,
 				info: { artifactId: artifact.id, truncated: true },
-				artifactText: "0".repeat(5_000),
+				artifactText: `${"H".repeat(300)}${"0".repeat(4_400)}${"T".repeat(300)}`,
 			},
 		]);
-		expect(await Bun.file(artifact.path).text()).toBe("0".repeat(5_000));
+		expect(await Bun.file(artifact.path).text()).toBe(`${"H".repeat(300)}${"0".repeat(4_400)}${"T".repeat(300)}`);
 	});
 
 	test("rejects progress for a foreground command", async () => {

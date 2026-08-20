@@ -56,6 +56,7 @@ process.stdout.write("IMMEDIATE\\n");
 process.stdin.once("data", () => {
 	process.stdout.write("par");
 	process.stdout.write("tial\\n\\n");
+	process.stdout.write("H".repeat(300) + "M".repeat(400) + "T".repeat(300) + "\\n");
 	process.stdout.write("final");
 	process.exit(0);
 });
@@ -122,9 +123,14 @@ process.stdin.once("data", () => {
 				(notification): notification is Extract<DaemonMonitorNotification, { event: "daemon-output" }> =>
 					notification.event === "daemon-output",
 			);
-			expect(output.map(notification => notification.text)).toEqual(["IMMEDIATE", "partial\nfinal"]);
-			expect(output.map(notification => notification.rawText ?? "").join("")).toBe("IMMEDIATE\npartial\n\nfinal");
-			expect(output.map(notification => notification.truncated)).toEqual([false, false]);
+			expect(output.map(notification => notification.text)).toEqual([
+				"IMMEDIATE",
+				`partial\n${"H".repeat(250)}${"T".repeat(250)}\nfinal`,
+			]);
+			expect(output.map(notification => notification.rawText ?? "").join("")).toBe(
+				`IMMEDIATE\npartial\n\n${"H".repeat(300)}${"M".repeat(400)}${"T".repeat(300)}\nfinal`,
+			);
+			expect(output.map(notification => notification.truncated)).toEqual([false, true]);
 			expect(output.map(notification => notification.seq)).toEqual([1, 2]);
 			expect(notifications.at(-1)).toMatchObject({
 				event: "daemon-monitor-completed",

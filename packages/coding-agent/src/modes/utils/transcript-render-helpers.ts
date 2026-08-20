@@ -91,6 +91,8 @@ export function buildAsyncProgressBlock(message: CustomOrHookMessage): Transcrip
 				type?: "bash" | "task" | "process";
 				elapsedMs?: number;
 				text?: string;
+				head?: string;
+				tail?: string;
 				artifactId?: string;
 				truncated?: boolean;
 			}>;
@@ -109,7 +111,10 @@ export function buildAsyncProgressBlock(message: CustomOrHookMessage): Transcrip
 			theme,
 		);
 		block.addChild(new Text(header, 1, 0));
-		for (const line of (job.text ?? "").split("\n")) {
+		const preview = job.truncated
+			? [job.head, "[…progress truncated…]", job.tail].filter(part => part !== undefined).join("\n")
+			: (job.text ?? "");
+		for (const line of preview.split("\n")) {
 			if (line.trim().length === 0) continue;
 			const rendered = truncateToWidth(replaceTabs(shortenPath(sanitizeText(line))), TRUNCATE_LENGTHS.LINE);
 			block.addChild(new Text(theme.fg("dim", `  ${rendered}`), 1, 0));

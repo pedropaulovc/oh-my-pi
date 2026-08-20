@@ -5,9 +5,13 @@ export interface ProgressLine {
 
 /** Incrementally reports complete, non-empty output lines with bounded partial state. */
 export class ProgressLines {
-	static readonly MAX_LINE_CHARS = 4_000;
+	static readonly MAX_LINE_CHARS = 500;
+	static readonly #HEAD_CHARS = Math.floor(ProgressLines.MAX_LINE_CHARS / 2);
+	static readonly #TAIL_CHARS = ProgressLines.MAX_LINE_CHARS - ProgressLines.#HEAD_CHARS;
 	readonly #report: (line: ProgressLine) => void;
 	#partial = "";
+	#head = "";
+	#tail = "";
 	#truncated = false;
 
 	constructor(report: (line: ProgressLine) => void) {
@@ -21,6 +25,8 @@ export class ProgressLines {
 			this.#appendPartial(chunk.slice(start, newline));
 			this.#reportLine(this.#partial);
 			this.#partial = "";
+			this.#head = "";
+			this.#tail = "";
 			this.#truncated = false;
 			start = newline + 1;
 			newline = chunk.indexOf("\n", start);
@@ -29,31 +35,46 @@ export class ProgressLines {
 	}
 
 	finish(): void {
-		if (this.#partial === "") return;
+		if (this.#partial === "" && !this.#truncated) return;
 		const line = this.#partial;
 		this.#partial = "";
 		this.#reportLine(line);
+		this.#head = "";
+		this.#tail = "";
 		this.#truncated = false;
 	}
 
 	reset(): void {
 		this.#partial = "";
+		this.#head = "";
+		this.#tail = "";
 		this.#truncated = false;
 	}
 
 	#appendPartial(segment: string): void {
-		if (segment.length >= ProgressLines.MAX_LINE_CHARS) {
-			this.#partial = segment.slice(-ProgressLines.MAX_LINE_CHARS);
-			this.#truncated = true;
+		if (this.#truncated) {
+			this.#tail =
+				segment.length >= ProgressLines.#TAIL_CHARS
+					? segment.slice(-ProgressLines.#TAIL_CHARS)
+					: `${this.#tail.slice(-(ProgressLines.#TAIL_CHARS - segment.length))}${segment}`;
 			return;
 		}
-		const keep = ProgressLines.MAX_LINE_CHARS - segment.length;
-		if (this.#partial.length > keep) this.#truncated = true;
-		this.#partial = `${this.#partial.slice(-keep)}${segment}`;
+		if (this.#partial.length + segment.length <= ProgressLines.MAX_LINE_CHARS) {
+			this.#partial += segment;
+			return;
+		}
+		this.#head = `${this.#partial}${segment.slice(0, ProgressLines.#HEAD_CHARS)}`.slice(0, ProgressLines.#HEAD_CHARS);
+		this.#tail =
+			segment.length >= ProgressLines.#TAIL_CHARS
+				? segment.slice(-ProgressLines.#TAIL_CHARS)
+				: `${this.#partial.slice(-(ProgressLines.#TAIL_CHARS - segment.length))}${segment}`;
+		this.#partial = "";
+		this.#truncated = true;
 	}
 
 	#reportLine(rawLine: string): void {
-		const line = rawLine.replace(/\r$/, "");
+		const preview = this.#truncated ? `${this.#head}${this.#tail}` : rawLine;
+		const line = preview.replace(/\r$/, "");
 		if (line.trim().length === 0) return;
 		this.#report({ text: line, truncated: this.#truncated });
 	}
