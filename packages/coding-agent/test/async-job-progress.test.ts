@@ -55,7 +55,9 @@ describe("AsyncJobManager model progress", () => {
 		report("newest");
 		expect(recorder.seen.map(item => item.text)).toEqual(["first"]);
 
-		vi.advanceTimersByTime(1_000);
+		vi.advanceTimersByTime(199);
+		expect(recorder.seen.map(item => item.text)).toEqual(["first"]);
+		vi.advanceTimersByTime(1);
 		expect(recorder.seen).toEqual([
 			{ jobId: job.jobId, text: "first", seq: 1 },
 			{ jobId: job.jobId, text: "second\nnewest", seq: 2 },
@@ -64,7 +66,6 @@ describe("AsyncJobManager model progress", () => {
 		report("final before completion");
 		job.release();
 		await manager.waitForAll();
-		vi.advanceTimersByTime(1_000);
 		expect(recorder.seen).toEqual([
 			{ jobId: job.jobId, text: "first", seq: 1 },
 			{ jobId: job.jobId, text: "second\nnewest", seq: 2 },

@@ -6,6 +6,9 @@ interface ProgressBatchState<T> {
 	timer?: NodeJS.Timeout;
 }
 
+/** Maximum cadence shared by Bash and Hub progress delivery, matching Claude Code Monitor. */
+export const PROGRESS_BATCH_INTERVAL_MS = 200;
+
 /** Lossless, ordered, per-source progress batching with a fixed maximum delivery cadence. */
 export class ProgressBatcher<T> {
 	readonly #states = new Map<string, ProgressBatchState<T>>();

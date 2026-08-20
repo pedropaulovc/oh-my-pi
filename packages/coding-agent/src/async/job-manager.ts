@@ -1,12 +1,11 @@
 import { logger } from "@oh-my-pi/pi-utils";
-import { ProgressBatcher } from "./progress-batcher";
+import { PROGRESS_BATCH_INTERVAL_MS, ProgressBatcher } from "./progress-batcher";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
 const DELIVERY_RETRY_JITTER_MS = 200;
 const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RUNNING_JOBS = 15;
-const AGENT_PROGRESS_INTERVAL_MS = 1_000;
 /** Abort reason used only when the owning session shuts down the entire manager. */
 export const ASYNC_JOB_MANAGER_SHUTDOWN_REASON = Symbol("AsyncJobManager shutdown");
 
@@ -177,7 +176,7 @@ export class AsyncJobManager {
 	readonly #deliverySinks = new Map<string, AsyncJobDeliverySink>();
 	readonly #progressSinks = new Map<string, AsyncJobProgressSink>();
 	readonly #progressBatcher = new ProgressBatcher<AsyncJobProgressRecord>(
-		AGENT_PROGRESS_INTERVAL_MS,
+		PROGRESS_BATCH_INTERVAL_MS,
 		(jobId, records, seq) => this.#deliverAgentProgress(jobId, records, seq),
 	);
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];

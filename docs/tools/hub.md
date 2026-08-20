@@ -107,7 +107,7 @@ Names are stable and unique within one project directory. A live name must be st
 {"op":"monitor","name":"web","progress":"off"}
 ```
 
-`monitor` attaches to, retunes, or detaches the calling session's subscription for an already-running named process. It begins at the current output cursor and does not replay older logs. Each complete non-empty merged stdout/stderr line becomes an event; an oversized line retains its first and last 250 characters. Delivery is batched at most once per second; if output arrives while the model is busy, all waiting events are delivered together without drops. Each model-facing process preview retains at most 3,000 UTF-8 bytes, split between its head and tail. A final unterminated line is flushed when the process exits. Truncated previews include the stable `artifact://<id>` URI for the complete output.
+`monitor` attaches to, retunes, or detaches the calling session's subscription for an already-running named process. It begins at the current output cursor and does not replay older logs. Each complete non-empty merged stdout/stderr line becomes an event; an oversized line retains its first and last 250 characters. Delivery is batched at most once every 200 ms; if output arrives while the model is busy, all waiting events are delivered together without drops. Each model-facing process preview retains at most 3,000 UTF-8 bytes, split between its head and tail. A final unterminated line is flushed when the process exits. Truncated previews include the stable `artifact://<id>` URI for the complete output.
 
 Each subscription stores the output it receives in one stable artifact. When the inline batch or one source line is truncated, the model and TUI show `artifact://<id>` for that capture. Inline preview limits use `tools.artifactSpillThreshold`, `tools.artifactHeadBytes`, `tools.artifactTailBytes`, and `tools.artifactTailLines`. The artifact closes before the process completion notification. A late attachment starts at the current cursor, and the reconnect limit below still applies.
 
@@ -143,7 +143,7 @@ The first process op starts a detached broker over a private socket under `~/.om
 - Poll window: `async.pollWaitDuration` — `5s`/`10s`/`30s`/`1m`/`5m`/`smart` (default); smart ladder `[5s..5m]` climbing per back-to-back wait, resetting after 60 s without waiting.
 - Job retention 5 min; manager max-running fallback 15; `async.maxJobs` clamped 1..100.
 - Launch names 1-48 chars; `ready.port` 1..65535; `logs`/`wait`/`stop` timeouts capped at one hour.
-- Live progress emits at most once per second. All bounded complete non-empty events accumulated during the interval are retained in the batch.
+- Live progress emits at most once every 200 ms. All bounded complete non-empty events accumulated during the interval are retained in the batch.
 
 ## Errors
 - Most validation/availability failures are text results with `isError: true`: messaging unavailable, missing `to`/`message`, self-send (`Cannot send a message to yourself.`), `await` with `to:"all"`, `to`+`name` on one send, missing `ids` on `cancel`, and launch disabled. The async-disabled `jobs`/`cancel` response is an exception: it returns `Async execution is disabled; no background jobs are available.` with an empty job list and no `isError` flag.

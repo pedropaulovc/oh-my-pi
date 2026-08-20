@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test, vi } from "bun:test";
-import { ProgressBatcher } from "../src/async/progress-batcher";
+import { PROGRESS_BATCH_INTERVAL_MS, ProgressBatcher } from "../src/async/progress-batcher";
 
 describe("ProgressBatcher", () => {
 	afterEach(() => {
@@ -11,7 +11,7 @@ describe("ProgressBatcher", () => {
 		vi.useFakeTimers();
 		const firstDelivery = Promise.withResolvers<void>();
 		const seen: string[] = [];
-		const batcher = new ProgressBatcher<string>(1_000, (_id, values) => {
+		const batcher = new ProgressBatcher<string>(PROGRESS_BATCH_INTERVAL_MS, (_id, values) => {
 			const text = values.join("\n");
 			seen.push(text);
 			if (text === "first") return firstDelivery.promise;
@@ -19,7 +19,7 @@ describe("ProgressBatcher", () => {
 
 		batcher.push("source", "first");
 		batcher.push("source", "second");
-		vi.advanceTimersByTime(1_000);
+		vi.advanceTimersByTime(PROGRESS_BATCH_INTERVAL_MS);
 		firstDelivery.reject(new Error("transient sink failure"));
 		await batcher.flush("source");
 
@@ -31,7 +31,7 @@ describe("ProgressBatcher", () => {
 		setSystemTime(100);
 		const sequences: number[] = [];
 		let rejectDelivery = true;
-		const batcher = new ProgressBatcher<string>(1_000, (_id, _values, seq) => {
+		const batcher = new ProgressBatcher<string>(PROGRESS_BATCH_INTERVAL_MS, (_id, _values, seq) => {
 			sequences.push(seq);
 			if (!rejectDelivery) return;
 			rejectDelivery = false;
