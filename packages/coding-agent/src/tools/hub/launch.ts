@@ -169,7 +169,10 @@ async function registerOutputSink(
 				artifactSink?.push(notification.rawText);
 				await artifactSink?.flushArtifact();
 			}
-			if (notification.text) {
+			if (
+				notification.batchKind !== "artifact-only" &&
+				(notification.text.length > 0 || notification.suppressedEvents > 0)
+			) {
 				session.queueLaunchProgress?.(
 					notification,
 					registration.delivery,

@@ -1,39 +1,60 @@
+export const PROGRESS_BATCH_INTERVAL_MS = 200;
+export const PROGRESS_RATE_LIMIT_BURST = 10;
+export const PROGRESS_RATE_LIMIT_REFILL_MS = 2_000;
+export const PROGRESS_CHATTY_REMINDER_INTERVAL = 5;
+const PROGRESS_RATE_LIMIT_EPSILON = 1e-9;
+
+export type ProgressBatchKind = "progress" | "artifact-only" | "suppression-summary";
+export type ProgressReminder = "chatty-monitor";
+
+export interface ProgressBatch<T> {
+	kind: ProgressBatchKind;
+	values: readonly T[];
+	seq: number;
+	suppressedEvents: number;
+	reminder?: ProgressReminder;
+}
+
 interface ProgressBatchState<T> {
-	lastEmitAt: number;
 	pending: T[];
 	seq: number;
+	tokens: number;
+	lastRefillAt: number;
+	suppressedEvents: number;
+	suppressionReports: number;
 	deliveryTail?: Promise<void>;
 	timer?: NodeJS.Timeout;
 }
 
-/** Maximum cadence shared by Bash and Hub progress delivery, matching Claude Code Monitor. */
-export const PROGRESS_BATCH_INTERVAL_MS = 200;
-
-/** Lossless, ordered, per-source progress batching with a fixed maximum delivery cadence. */
+/**
+ * Ordered per-source progress delivery matching Claude Code Monitor: complete
+ * events collect in 200 ms windows, then a ten-event token bucket meters model
+ * notifications and regains one rate-limit permit every two seconds.
+ */
 export class ProgressBatcher<T> {
 	readonly #states = new Map<string, ProgressBatchState<T>>();
-	readonly #intervalMs: number;
-	readonly #deliver: (id: string, values: readonly T[], seq: number) => void | Promise<void>;
+	readonly #deliver: (id: string, batch: ProgressBatch<T>) => void | Promise<void>;
 
-	constructor(intervalMs: number, deliver: (id: string, values: readonly T[], seq: number) => void | Promise<void>) {
-		this.#intervalMs = intervalMs;
+	constructor(deliver: (id: string, batch: ProgressBatch<T>) => void | Promise<void>) {
 		this.#deliver = deliver;
 	}
 
 	push(id: string, value: T): void {
 		let state = this.#states.get(id);
 		if (!state) {
-			state = { lastEmitAt: 0, pending: [], seq: 0 };
+			state = {
+				pending: [],
+				seq: 0,
+				tokens: PROGRESS_RATE_LIMIT_BURST,
+				lastRefillAt: Date.now(),
+				suppressedEvents: 0,
+				suppressionReports: 0,
+			};
 			this.#states.set(id, state);
 		}
 		state.pending.push(value);
-		const waitMs = state.lastEmitAt + this.#intervalMs - Date.now();
-		if (waitMs <= 0) {
-			void this.flush(id);
-			return;
-		}
 		if (state.timer) return;
-		state.timer = setTimeout(() => void this.flush(id), waitMs);
+		state.timer = setTimeout(() => void this.flush(id), PROGRESS_BATCH_INTERVAL_MS);
 		state.timer.unref();
 	}
 
@@ -47,10 +68,81 @@ export class ProgressBatcher<T> {
 		if (state.pending.length === 0) return state.deliveryTail ?? Promise.resolve();
 		const values = state.pending;
 		state.pending = [];
-		state.lastEmitAt = Date.now();
 		state.seq += 1;
-		const seq = state.seq;
-		const deliver = () => this.#deliver(id, values, seq);
+		this.#refill(state);
+		if (state.tokens < 1 - PROGRESS_RATE_LIMIT_EPSILON) {
+			state.suppressedEvents += 1;
+			return this.#enqueueDelivery(id, state, {
+				kind: "artifact-only",
+				values,
+				seq: state.seq,
+				suppressedEvents: 0,
+			});
+		}
+
+		state.tokens = Math.max(0, state.tokens - 1);
+		const suppressedEvents = state.suppressedEvents;
+		state.suppressedEvents = 0;
+		return this.#enqueueDelivery(id, state, {
+			kind: "progress",
+			values,
+			seq: state.seq,
+			suppressedEvents,
+			...this.#suppressionReminder(state, suppressedEvents),
+		});
+	}
+
+	async finish(id: string): Promise<void> {
+		const state = this.#states.get(id);
+		if (!state) return;
+		try {
+			await this.flush(id);
+			if (state.suppressedEvents === 0) return;
+			state.seq += 1;
+			const suppressedEvents = state.suppressedEvents;
+			state.suppressedEvents = 0;
+			await this.#enqueueDelivery(id, state, {
+				kind: "suppression-summary",
+				values: [],
+				seq: state.seq,
+				suppressedEvents,
+				...this.#suppressionReminder(state, suppressedEvents),
+			});
+		} finally {
+			this.clear(id);
+		}
+	}
+
+	clear(id: string): void {
+		const state = this.#states.get(id);
+		if (!state) return;
+		if (state.timer) clearTimeout(state.timer);
+		this.#states.delete(id);
+	}
+
+	dispose(): void {
+		for (const state of this.#states.values()) {
+			if (state.timer) clearTimeout(state.timer);
+		}
+		this.#states.clear();
+	}
+
+	#refill(state: ProgressBatchState<T>): void {
+		const now = Date.now();
+		const elapsedMs = Math.max(0, now - state.lastRefillAt);
+		state.lastRefillAt = now;
+		state.tokens = Math.min(PROGRESS_RATE_LIMIT_BURST, state.tokens + elapsedMs / PROGRESS_RATE_LIMIT_REFILL_MS);
+	}
+
+	#suppressionReminder(state: ProgressBatchState<T>, suppressedEvents: number): { reminder?: ProgressReminder } {
+		if (suppressedEvents === 0) return {};
+		state.suppressionReports += 1;
+		if (state.suppressionReports % PROGRESS_CHATTY_REMINDER_INTERVAL !== 0) return {};
+		return { reminder: "chatty-monitor" };
+	}
+
+	#enqueueDelivery(id: string, state: ProgressBatchState<T>, batch: ProgressBatch<T>): Promise<void> {
+		const deliver = () => this.#deliver(id, batch);
 		let tail: Promise<void>;
 		if (state.deliveryTail) {
 			tail = state.deliveryTail.then(deliver, deliver);
@@ -71,27 +163,5 @@ export class ProgressBatcher<T> {
 			},
 		);
 		return tail;
-	}
-
-	async finish(id: string): Promise<void> {
-		try {
-			await this.flush(id);
-		} finally {
-			this.clear(id);
-		}
-	}
-
-	clear(id: string): void {
-		const state = this.#states.get(id);
-		if (!state) return;
-		if (state.timer) clearTimeout(state.timer);
-		this.#states.delete(id);
-	}
-
-	dispose(): void {
-		for (const state of this.#states.values()) {
-			if (state.timer) clearTimeout(state.timer);
-		}
-		this.#states.clear();
 	}
 }

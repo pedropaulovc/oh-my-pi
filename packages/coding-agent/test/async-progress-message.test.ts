@@ -41,7 +41,7 @@ beforeAll(async () => {
 });
 
 describe("async progress messages", () => {
-	test("preserves every queued event while batching updates by job", () => {
+	test("preserves every permitted event while batching updates by job", () => {
 		const longEvent = "x".repeat(500);
 		const message = buildAsyncProgressBatchMessage([
 			entry("bg_1", "first", 1),
@@ -62,6 +62,62 @@ describe("async progress messages", () => {
 		expect(content(message)).not.toContain("background jobs emitted output");
 		expect(content(message)).not.toContain("Resume your work");
 		expect(content(message)).toEndWith("</system-notice>");
+	});
+
+	test("renders rate-limited gaps with the recoverable artifact", () => {
+		const message = buildAsyncProgressBatchMessage([
+			{
+				...entry("bg_chatty", "next permitted event", 21),
+				artifactId: "chatty-output",
+				suppressedEvents: 9,
+			},
+		]);
+		if (!message) throw new Error("Expected progress message");
+
+		expect(content(message)).toContain(
+			'<suppressed events="9" reason="rate-limit" full-output="artifact://chatty-output" />',
+		);
+		expect(content(message)).toContain("<output>\nnext permitted event\n</output>");
+		expect(content(message)).not.toContain("<system-reminder>");
+		const rendered = Bun.stripANSI(buildAsyncProgressBlock(message).render(100).join("\n"));
+		expect(rendered).toContain("9 progress events suppressed (rate limit)");
+		expect(rendered).toContain("Read artifact://chatty-output for full output");
+	});
+
+	test("repeats the system prompt's chatty Bash guidance on every fifth suppression report", () => {
+		const message = buildAsyncProgressBatchMessage([
+			{
+				...entry("bg_chatty", "", 62),
+				artifactId: "chatty-output",
+				suppressedEvents: 9,
+				reminder: "chatty-monitor",
+			},
+		]);
+
+		expect(content(message)).toContain('<suppressed events="9" reason="rate-limit"');
+		expect(content(message)).not.toContain("<output>");
+		expect(content(message)).toContain("<system-reminder>");
+		expect(content(message)).toContain("Chatty progress → lower source verbosity");
+		expect(content(message)).toContain("Bash: progress cannot be retuned");
+		expect(content(message)).not.toContain("Hub: retune");
+		expect(content(message)).toEndWith("</system-reminder>");
+	});
+
+	test("repeats the matching Hub guidance for a chatty process monitor", () => {
+		const message = buildAsyncProgressBatchMessage([
+			{
+				...entry("monitor-web", "still compiling", 62),
+				job: undefined,
+				source: { id: "daemon-web", type: "process", label: "web", startedAt: 0 },
+				artifactId: "monitor-output",
+				suppressedEvents: 4,
+				reminder: "chatty-monitor",
+			},
+		]);
+
+		expect(content(message)).toContain("<system-reminder>");
+		expect(content(message)).toContain("Hub: retune the monitor to `ambient` or `off`");
+		expect(content(message)).not.toContain("Bash: progress cannot be retuned");
 	});
 
 	test("asks the agent to resume only when progress wakes a follow-up turn", () => {

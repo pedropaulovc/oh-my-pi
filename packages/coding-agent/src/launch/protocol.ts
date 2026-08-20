@@ -1,6 +1,8 @@
 /**
  * Cross-process daemon broker protocol shared by the tool, client, and broker.
  */
+import type { ProgressBatchKind, ProgressReminder } from "../async/progress-batcher";
+
 /** Hidden CLI selector used to re-enter the daemon broker worker. */
 export const DAEMON_BROKER_WORKER_ARG = "__omp_worker_daemon_broker";
 
@@ -18,7 +20,7 @@ export const DAEMON_RUNTIME_DIR_ENV = "OMP_DAEMON_RUNTIME_DIR";
 export const DAEMON_IDLE_GRACE_ENV = "OMP_DAEMON_IDLE_GRACE_MS";
 
 /** Broker support for live output previews plus their recoverable raw capture. */
-export const DAEMON_OUTPUT_MONITOR_CAPABILITY = "output-monitor-v2";
+export const DAEMON_OUTPUT_MONITOR_CAPABILITY = "output-monitor-v3";
 
 /** Stable lifecycle states exposed by the launch tool. */
 export type DaemonState = "starting" | "running" | "ready" | "restarting" | "stopping" | "exited" | "failed";
@@ -163,6 +165,9 @@ export interface DaemonOutputNotification {
 	daemonId: string;
 	seq: number;
 	text: string;
+	batchKind: ProgressBatchKind;
+	suppressedEvents: number;
+	reminder?: ProgressReminder;
 	/** Complete raw output represented by this cadence batch; omitted by legacy brokers. */
 	rawText?: string;
 	/** True when at least one model-facing line preview was clipped. */
@@ -212,9 +217,28 @@ function booleanValue(value: unknown, label: string): boolean {
 	return value;
 }
 
+function progressBatchKind(value: unknown): ProgressBatchKind {
+	const kind = stringValue(value, "output.batchKind");
+	if (kind === "progress" || kind === "artifact-only" || kind === "suppression-summary") return kind;
+	throw new Error(`Unknown progress batch kind: ${kind}`);
+}
+
+function progressReminder(value: unknown): ProgressReminder | undefined {
+	if (value === undefined) return undefined;
+	const reminder = stringValue(value, "output.reminder");
+	if (reminder === "chatty-monitor") return reminder;
+	throw new Error(`Unknown progress reminder: ${reminder}`);
+}
+
 function numberValue(value: unknown, label: string): number {
 	if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label} must be a finite number`);
 	return value;
+}
+
+function nonNegativeInteger(value: unknown, label: string): number {
+	const parsed = numberValue(value, label);
+	if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${label} must be a non-negative integer`);
+	return parsed;
 }
 
 function optionalNumber(value: unknown, label: string): number | undefined {
@@ -395,6 +419,9 @@ export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 			daemonId: stringValue(source.daemonId, "output.daemonId"),
 			seq: numberValue(source.seq, "output.seq"),
 			text: rawString(source.text, "output.text"),
+			batchKind: progressBatchKind(source.batchKind),
+			suppressedEvents: nonNegativeInteger(source.suppressedEvents, "output.suppressedEvents"),
+			reminder: progressReminder(source.reminder),
 			rawText: optionalRawString(source.rawText, "output.rawText"),
 			truncated: source.truncated === undefined ? undefined : booleanValue(source.truncated, "output.truncated"),
 		};

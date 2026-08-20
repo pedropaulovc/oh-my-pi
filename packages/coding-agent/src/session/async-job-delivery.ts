@@ -10,6 +10,8 @@
  */
 import { formatDuration, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobProgressDelivery, AsyncJobType } from "../async";
+import type { ProgressReminder } from "../async/progress-batcher";
+import chattyProgressGuidanceTemplate from "../prompts/system/chatty-progress-guidance.md" with { type: "text" };
 import asyncProgressTemplate from "../prompts/tools/async-progress.md" with { type: "text" };
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
@@ -56,6 +58,8 @@ export interface AsyncProgressEntry {
 	delivery: AsyncJobProgressDelivery;
 	artifactId?: string;
 	sourceTruncated?: boolean;
+	suppressedEvents?: number;
+	reminder?: ProgressReminder;
 }
 
 export interface AsyncProgressSource {
@@ -75,13 +79,15 @@ type AsyncProgressJobDetails = {
 	tail?: string;
 	artifactId?: string;
 	truncated?: boolean;
+	suppressedEvents?: number;
+	reminder?: ProgressReminder;
 };
 
 export type AsyncProgressDetails = {
 	jobs: AsyncProgressJobDetails[];
 };
 
-/** Build one progress batch, preserving every queued event and grouping events by job. */
+/** Build one progress message, preserving every rate-limit-permitted event and grouping entries by job. */
 export function buildAsyncProgressBatchMessage(
 	entries: AsyncProgressEntry[],
 ): CustomMessage<AsyncProgressDetails> | null {
@@ -99,28 +105,47 @@ export function buildAsyncProgressBatchMessage(
 	const jobs = Array.from(entriesByJob.values()).map(jobEntries => {
 		const latest = jobEntries.at(-1)!;
 		const type = latest.job?.type;
-		const fullText = jobEntries.map(entry => sanitizeText(entry.text)).join("\n");
+		const fullText = jobEntries
+			.map(entry => sanitizeText(entry.text))
+			.filter(Boolean)
+			.join("\n");
+		const hasOutput = fullText.length > 0;
 		const sourceTruncated = jobEntries.some(entry => entry.sourceTruncated);
 		const fullBytes = Buffer.byteLength(fullText, "utf8");
-		const truncated = sourceTruncated || fullBytes > ASYNC_PROGRESS_PREVIEW_MAX_BYTES;
+		const truncated = hasOutput && (sourceTruncated || fullBytes > ASYNC_PROGRESS_PREVIEW_MAX_BYTES);
 		const retainedBytes = Math.min(fullBytes, ASYNC_PROGRESS_PREVIEW_MAX_BYTES);
 		const headBytes = Math.floor(retainedBytes / 2);
 		const tailBytes = retainedBytes - headBytes;
 		const head = truncated ? truncateHeadBytes(fullText, headBytes).text : undefined;
 		const tail = truncated ? truncateTailBytes(fullText, tailBytes).text : undefined;
 		const artifactId = [...jobEntries].reverse().find(entry => entry.artifactId)?.artifactId;
+		const suppressedEvents = jobEntries.reduce((total, entry) => total + (entry.suppressedEvents ?? 0), 0);
+		const reminder = jobEntries.find(entry => entry.reminder !== undefined)?.reminder;
 		return {
 			jobId: latest.jobId,
 			type: latest.source?.type ?? (type === "eval" ? undefined : type),
 			label: latest.source?.label ?? latest.job?.label,
 			elapsedMs: latest.elapsedMs,
-			text: truncated ? undefined : fullText,
+			text: hasOutput && !truncated ? fullText : undefined,
+			hasOutput,
 			head,
 			tail,
 			artifactId,
 			truncated,
+			suppressedEvents: suppressedEvents || undefined,
+			reminder,
 		};
 	});
+	const chattyJobs = jobs.filter(job => job.reminder === "chatty-monitor");
+	const chattyGuidance =
+		chattyJobs.length === 0
+			? undefined
+			: prompt
+					.render(chattyProgressGuidanceTemplate, {
+						bash: chattyJobs.some(job => job.type === "bash"),
+						hub: chattyJobs.some(job => job.type === "process"),
+					})
+					.trim();
 	return {
 		role: "custom",
 		customType: ASYNC_PROGRESS_MESSAGE_TYPE,
@@ -128,6 +153,7 @@ export function buildAsyncProgressBatchMessage(
 			wake: entries.some(entry => entry.delivery === "wake"),
 			multiple: jobs.length > 1,
 			jobs: jobs.map(job => ({ ...job, elapsed: formatDuration(job.elapsedMs) })),
+			chattyGuidance,
 		}),
 		display: true,
 		attribution: "agent",

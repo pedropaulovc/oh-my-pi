@@ -95,6 +95,7 @@ export function buildAsyncProgressBlock(message: CustomOrHookMessage): Transcrip
 				tail?: string;
 				artifactId?: string;
 				truncated?: boolean;
+				suppressedEvents?: number;
 			}>;
 		}>
 	).details;
@@ -111,6 +112,11 @@ export function buildAsyncProgressBlock(message: CustomOrHookMessage): Transcrip
 			theme,
 		);
 		block.addChild(new Text(header, 1, 0));
+		if (typeof job.suppressedEvents === "number" && job.suppressedEvents > 0) {
+			block.addChild(
+				new Text(theme.fg("dim", `  … ${job.suppressedEvents} progress events suppressed (rate limit)`), 1, 0),
+			);
+		}
 		const preview = job.truncated
 			? [job.head, "[…progress truncated…]", job.tail].filter(part => part !== undefined).join("\n")
 			: (job.text ?? "");
@@ -119,7 +125,7 @@ export function buildAsyncProgressBlock(message: CustomOrHookMessage): Transcrip
 			const rendered = truncateToWidth(replaceTabs(shortenPath(sanitizeText(line))), TRUNCATE_LENGTHS.LINE);
 			block.addChild(new Text(theme.fg("dim", `  ${rendered}`), 1, 0));
 		}
-		if (job.truncated && job.artifactId) {
+		if ((job.truncated || (job.suppressedEvents ?? 0) > 0) && job.artifactId) {
 			block.addChild(new Text(`  ${formatStyledArtifactReference(job.artifactId, theme)}`, 1, 0));
 		}
 	}

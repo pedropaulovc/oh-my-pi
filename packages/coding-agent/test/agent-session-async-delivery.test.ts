@@ -180,6 +180,8 @@ describe("AgentSession owner-routed async delivery", () => {
 				daemonId: "daemon-1",
 				seq: 1,
 				text: "PUSHED WHILE SETTLING",
+				batchKind: "progress",
+				suppressedEvents: 0,
 			},
 			"wake",
 			Date.now(),
@@ -250,6 +252,8 @@ describe("AgentSession owner-routed async delivery", () => {
 				daemonId: "old-ambient-daemon",
 				seq: 1,
 				text: "QUEUED OLD AMBIENT EVENT",
+				batchKind: "progress",
+				suppressedEvents: 0,
 			},
 			"ambient",
 			Date.now(),
@@ -263,6 +267,8 @@ describe("AgentSession owner-routed async delivery", () => {
 					daemonId: "old-daemon",
 					seq: 1,
 					text: "OLD SESSION PROCESS EVENT",
+					batchKind: "progress",
+					suppressedEvents: 0,
 				},
 				"wake",
 				Date.now(),
@@ -278,6 +284,8 @@ describe("AgentSession owner-routed async delivery", () => {
 				daemonId: "new-daemon",
 				seq: 1,
 				text: "FRESH SESSION PROCESS EVENT",
+				batchKind: "progress",
+				suppressedEvents: 0,
 			},
 			"ambient",
 			Date.now(),
@@ -611,6 +619,8 @@ describe("AgentSession owner-routed async delivery", () => {
 			daemonId: "daemon-1",
 			seq: 1,
 			text: marker,
+			batchKind: "progress",
+			suppressedEvents: 0,
 		};
 		session.queueLaunchProgress(notification, "wake", Date.now());
 
@@ -677,6 +687,8 @@ describe("AgentSession owner-routed async delivery", () => {
 			daemonId: "daemon-1",
 			seq,
 			text,
+			batchKind: "progress",
+			suppressedEvents: 0,
 		});
 
 		session.setLaunchMonitorActive("monitor-1", "wake", true);

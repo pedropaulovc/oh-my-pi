@@ -116,6 +116,9 @@ describe("launch monitor notifications", () => {
 				daemonId: "daemon-1",
 				seq: 2,
 				text: "second\nthird",
+				batchKind: "progress",
+				suppressedEvents: 9,
+				reminder: "chatty-monitor",
 				rawText: "second\nthird\n",
 				truncated: true,
 			}),
@@ -126,6 +129,9 @@ describe("launch monitor notifications", () => {
 			daemonId: "daemon-1",
 			seq: 2,
 			text: "second\nthird",
+			batchKind: "progress",
+			suppressedEvents: 9,
+			reminder: "chatty-monitor",
 			rawText: "second\nthird\n",
 			truncated: true,
 		});
@@ -140,8 +146,16 @@ describe("launch monitor notifications", () => {
 				daemonId: "daemon-1",
 				seq: 3,
 				text: "",
+				batchKind: "suppression-summary",
+				suppressedEvents: 1,
 			}),
-		).toMatchObject({ event: "daemon-output", seq: 3, text: "" });
+		).toMatchObject({
+			event: "daemon-output",
+			seq: 3,
+			text: "",
+			batchKind: "suppression-summary",
+			suppressedEvents: 1,
+		});
 	});
 
 	it("decodes terminal state separately from output", () => {
@@ -177,6 +191,8 @@ describe("launch monitor notifications", () => {
 				daemonId: "daemon-1",
 				seq: 2,
 				text: "progress",
+				batchKind: "progress",
+				suppressedEvents: 0,
 				rawText: 42,
 			}),
 		).toThrow("output.rawText must be a string");

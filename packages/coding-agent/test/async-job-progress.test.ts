@@ -24,13 +24,19 @@ function heldJob(manager: AsyncJobManager, ownerId = "Main", progressDelivery: A
 
 function recordingSink(): {
 	sink: AsyncJobProgressSink;
-	seen: Array<{ jobId: string; text: string; seq: number }>;
+	seen: Array<{ jobId: string; text: string; seq: number; suppressedEvents?: number; reminder?: string }>;
 } {
-	const seen: Array<{ jobId: string; text: string; seq: number }> = [];
+	const seen: Array<{ jobId: string; text: string; seq: number; suppressedEvents?: number; reminder?: string }> = [];
 	return {
 		sink: {
-			deliver: (jobId, text, _job: AsyncJob, seq) => {
-				seen.push({ jobId, text, seq });
+			deliver: (jobId, text, _job: AsyncJob, seq, info) => {
+				seen.push({
+					jobId,
+					text,
+					seq,
+					suppressedEvents: info.suppressedEvents,
+					reminder: info.reminder,
+				});
 			},
 		},
 		seen,
@@ -42,7 +48,7 @@ describe("AsyncJobManager model progress", () => {
 		vi.useRealTimers();
 	});
 
-	test("batches every update on a fixed trailing edge without dropping events", async () => {
+	test("collects updates for 200 ms and flushes final progress before completion", async () => {
 		vi.useFakeTimers();
 		const manager = new AsyncJobManager({});
 		const recorder = recordingSink();
@@ -53,27 +59,44 @@ describe("AsyncJobManager model progress", () => {
 		report("first");
 		report("second");
 		report("newest");
-		expect(recorder.seen.map(item => item.text)).toEqual(["first"]);
+		expect(recorder.seen).toEqual([]);
 
 		vi.advanceTimersByTime(199);
-		expect(recorder.seen.map(item => item.text)).toEqual(["first"]);
+		expect(recorder.seen).toEqual([]);
 		vi.advanceTimersByTime(1);
 		expect(recorder.seen).toEqual([
-			{ jobId: job.jobId, text: "first", seq: 1 },
-			{ jobId: job.jobId, text: "second\nnewest", seq: 2 },
+			{
+				jobId: job.jobId,
+				text: "first\nsecond\nnewest",
+				seq: 1,
+				suppressedEvents: undefined,
+				reminder: undefined,
+			},
 		]);
 
 		report("final before completion");
 		job.release();
 		await manager.waitForAll();
 		expect(recorder.seen).toEqual([
-			{ jobId: job.jobId, text: "first", seq: 1 },
-			{ jobId: job.jobId, text: "second\nnewest", seq: 2 },
-			{ jobId: job.jobId, text: "final before completion", seq: 3 },
+			{
+				jobId: job.jobId,
+				text: "first\nsecond\nnewest",
+				seq: 1,
+				suppressedEvents: undefined,
+				reminder: undefined,
+			},
+			{
+				jobId: job.jobId,
+				text: "final before completion",
+				seq: 2,
+				suppressedEvents: undefined,
+				reminder: undefined,
+			},
 		]);
 	});
 
 	test("routes ambient events to the owning queue while idle and respects wait/ack suppression", async () => {
+		vi.useFakeTimers();
 		const manager = new AsyncJobManager({});
 		const mine = recordingSink();
 		const other = recordingSink();
@@ -83,6 +106,7 @@ describe("AsyncJobManager model progress", () => {
 		const report = await job.report;
 
 		report("idle");
+		vi.advanceTimersByTime(200);
 		expect(mine.seen.map(item => item.text)).toEqual(["idle"]);
 		expect(other.seen).toEqual([]);
 
@@ -99,6 +123,7 @@ describe("AsyncJobManager model progress", () => {
 	});
 
 	test("delivers wake progress to an idle owner", async () => {
+		vi.useFakeTimers();
 		const manager = new AsyncJobManager({});
 		const recorder = recordingSink();
 		manager.registerProgressSink("Main", recorder.sink);
@@ -106,7 +131,16 @@ describe("AsyncJobManager model progress", () => {
 		const report = await job.report;
 
 		report("push while idle");
-		expect(recorder.seen).toEqual([{ jobId: job.jobId, text: "push while idle", seq: 1 }]);
+		vi.advanceTimersByTime(200);
+		expect(recorder.seen).toEqual([
+			{
+				jobId: job.jobId,
+				text: "push while idle",
+				seq: 1,
+				suppressedEvents: undefined,
+				reminder: undefined,
+			},
+		]);
 
 		job.release();
 		await manager.waitForAll();

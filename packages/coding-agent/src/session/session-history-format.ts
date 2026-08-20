@@ -296,10 +296,16 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
 							? entry.text
 							: "";
 				const artifact =
-					entry.truncated === true && typeof entry.artifactId === "string"
+					(entry.truncated === true ||
+						(typeof entry.suppressedEvents === "number" && entry.suppressedEvents > 0)) &&
+					typeof entry.artifactId === "string"
 						? ` [full output: artifact://${entry.artifactId}]`
 						: "";
-				return text ? `${id}: ${oneLine(text)}${artifact}` : `${id}${artifact}`;
+				const suppressed =
+					typeof entry.suppressedEvents === "number" && entry.suppressedEvents > 0
+						? ` [${entry.suppressedEvents} progress events suppressed]`
+						: "";
+				return text ? `${id}: ${oneLine(text)}${suppressed}${artifact}` : `${id}${suppressed}${artifact}`;
 			});
 			return `[async-progress] ${parts.join("; ")}`;
 		}

@@ -1982,6 +1982,8 @@ export class AgentSession {
 			delivery: job.progressDelivery,
 			artifactId: info.artifactId,
 			sourceTruncated: info.truncated,
+			suppressedEvents: info.suppressedEvents,
+			reminder: info.reminder,
 		});
 	}
 
@@ -6217,6 +6219,8 @@ export class AgentSession {
 			delivery,
 			artifactId,
 			sourceTruncated: notification.truncated,
+			suppressedEvents: notification.suppressedEvents || undefined,
+			reminder: notification.reminder,
 		});
 		this.#signalLaunchMonitorChanged();
 	}

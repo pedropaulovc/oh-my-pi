@@ -18,6 +18,7 @@ import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
 import asyncProgressTemplate from "./prompts/system/async-progress.md" with { type: "text" };
+import chattyProgressGuidanceTemplate from "./prompts/system/chatty-progress-guidance.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
@@ -861,7 +862,13 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	};
 	const asyncProgressPrompt =
 		asyncProgressCapabilities.bash || asyncProgressCapabilities.hub
-			? prompt.render(asyncProgressTemplate, { ...asyncProgressCapabilities, toolRefs }).trim()
+			? prompt
+					.render(asyncProgressTemplate, {
+						...asyncProgressCapabilities,
+						toolRefs,
+						chattyGuidance: prompt.render(chattyProgressGuidanceTemplate, asyncProgressCapabilities).trim(),
+					})
+					.trim()
 			: "";
 
 	const environment = getEnvironmentInfo(cpuModel, gpu);

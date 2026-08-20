@@ -107,12 +107,14 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 				'Finite commands → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline). NEVER use `async: true` unless the user explicitly requests immediate background.',
 			);
 			expect(systemPrompt).toContain(
-				"Noisy output → lower source verbosity (quiet or warning-only) or filter to actionable lines. If safe to retry, stop/cancel and start again with less output.",
+				"Progress uses 200 ms batches and a 10-event burst, then regains one rate-limit permit every 2 seconds (not an LLM token).",
 			);
+			expect(systemPrompt).toContain("Every fifth progress update with suppressed content repeats this guidance.");
 			expect(systemPrompt).toContain(
-				"Hub can instead retune its monitor to `ambient` or `off` without stopping the process.",
+				"Chatty progress → lower source verbosity (quiet or warning-only) or filter to actionable lines. If safe to retry, stop/cancel and relaunch with less output.",
 			);
-			expect(systemPrompt).toContain("Bash cannot retune progress; if retry is unsafe, let it finish.");
+			expect(systemPrompt).toContain("Hub: retune the monitor to `ambient` or `off` without stopping the process.");
+			expect(systemPrompt).toContain("Bash: progress cannot be retuned; if retry is unsafe, let it finish.");
 			expect(systemPrompt).toContain(
 				'Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).',
 			);
@@ -131,10 +133,10 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			const systemPrompt = session.systemPrompt.join("\n\n");
 			expect(systemPrompt).toContain("<async-progress>");
 			expect(systemPrompt).not.toContain("Finite commands");
-			expect(systemPrompt).not.toContain("Bash cannot retune progress");
+			expect(systemPrompt).not.toContain("Bash: progress cannot be retuned");
 			expect(systemPrompt).toContain("Actionable process output");
-			expect(systemPrompt).toContain("Noisy output → lower source verbosity");
-			expect(systemPrompt).toContain("Hub can instead retune its monitor");
+			expect(systemPrompt).toContain("Chatty progress → lower source verbosity");
+			expect(systemPrompt).toContain("Hub: retune the monitor");
 		} finally {
 			await session.dispose();
 		}

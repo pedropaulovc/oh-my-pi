@@ -47,19 +47,20 @@ function collectProgress(manager: AsyncJobManager): string[] {
 }
 
 describe("bash progress parameter", () => {
-	test("describes bounded drop-free progress delivery", () => {
+	test("describes bounded rate-limited progress delivery", () => {
 		const manager = new AsyncJobManager({});
 		const tool = new BashTool(makeSession(manager));
 
 		expect(tool.description).toContain('Finite: `async: "auto"` (quick inline, slow background)');
 		expect(tool.description).toContain("`async: true` ONLY if the user asks for immediate background");
 		expect(tool.description).toContain("non-empty merged lines");
-		expect(tool.description).toContain("first and last 250 chars");
-		expect(tool.description).toContain("ordered, drop-free batches ≤1/s");
-		expect(tool.description).toContain("Ambient waits for a turn");
+		expect(tool.description).toContain("first/last 250 chars");
+		expect(tool.description).toContain("10-event burst");
+		expect(tool.description).toContain("1 rate-limit permit/2s");
+		expect(tool.description).toContain("ambient waits");
 		expect(tool.description).toContain("final partial before completion");
-		expect(tool.description).toContain("NEVER block to receive progress or keep the turn alive");
-		expect(tool.description).toContain("start async and end it");
+		expect(tool.description).toContain("NEVER block for progress");
+		expect(tool.description).toContain("start async and end the turn");
 	});
 
 	test("defaults off", async () => {

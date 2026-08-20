@@ -5,7 +5,7 @@
 ### Fixed
 
 - Fixed daemon broker idle shutdown closing newly accepted clients before their authentication request could be processed under load.
-- Async Bash and Hub progress now uses a shared 200 ms batching cadence, keeps one stable full-output artifact per monitored command or process, limits oversized lines to a 500-character head/tail sample and model-facing previews to 3,000 UTF-8 bytes, and links structured `<head>`/`<tail>` previews to `artifact://<id>`.
+- Async Bash and Hub progress now matches Claude Code Monitor's 200 ms trailing batches and burst rate limiting: ten event permits up front, one permit refilled every two seconds, suppression counts in model context, and a chatty-monitor reminder every fifth suppression report. Suppressed raw output remains in one stable artifact; oversized lines use a 500-character head/tail sample and model-facing previews stay within 3,000 UTF-8 bytes.
 
 ## [17.4.0] - 2026-08-20
 

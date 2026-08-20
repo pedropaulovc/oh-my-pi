@@ -1,5 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
-import { PROGRESS_BATCH_INTERVAL_MS, ProgressBatcher } from "./progress-batcher";
+import { type ProgressBatch, ProgressBatcher, type ProgressReminder } from "./progress-batcher";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -75,6 +75,8 @@ export type AsyncJobProgressDelivery = "ambient" | "wake";
 export interface AsyncJobProgressInfo {
 	artifactId?: string;
 	truncated?: boolean;
+	suppressedEvents?: number;
+	reminder?: ProgressReminder;
 }
 
 interface AsyncJobProgressRecord extends AsyncJobProgressInfo {
@@ -175,9 +177,8 @@ export class AsyncJobManager {
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
 	readonly #deliverySinks = new Map<string, AsyncJobDeliverySink>();
 	readonly #progressSinks = new Map<string, AsyncJobProgressSink>();
-	readonly #progressBatcher = new ProgressBatcher<AsyncJobProgressRecord>(
-		PROGRESS_BATCH_INTERVAL_MS,
-		(jobId, records, seq) => this.#deliverAgentProgress(jobId, records, seq),
+	readonly #progressBatcher = new ProgressBatcher<AsyncJobProgressRecord>((jobId, batch) =>
+		this.#deliverAgentProgress(jobId, batch),
 	);
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
@@ -549,19 +550,23 @@ export class AsyncJobManager {
 		this.#progressBatcher.push(job.id, { text, artifactId: info.artifactId, truncated: info.truncated });
 	}
 
-	async #deliverAgentProgress(jobId: string, records: readonly AsyncJobProgressRecord[], seq: number): Promise<void> {
+	async #deliverAgentProgress(jobId: string, batch: ProgressBatch<AsyncJobProgressRecord>): Promise<void> {
 		const job = this.#jobs.get(jobId);
 		if (job?.status !== "running" || this.isDeliverySuppressed(jobId)) {
 			return;
 		}
+		if (batch.kind === "artifact-only") return;
 		const sink = job.ownerId === undefined ? undefined : this.#progressSinks.get(job.ownerId);
 		if (!sink) return;
 		const info: AsyncJobProgressInfo = {
-			artifactId: records.findLast(record => record.artifactId !== undefined)?.artifactId ?? job.progressArtifactId,
-			truncated: records.some(record => record.truncated === true),
+			artifactId:
+				batch.values.findLast(record => record.artifactId !== undefined)?.artifactId ?? job.progressArtifactId,
+			truncated: batch.values.some(record => record.truncated === true),
+			suppressedEvents: batch.suppressedEvents || undefined,
+			reminder: batch.reminder,
 		};
 		try {
-			await sink.deliver(jobId, records.map(record => record.text).join("\n"), job, seq, info);
+			await sink.deliver(jobId, batch.values.map(record => record.text).join("\n"), job, batch.seq, info);
 		} catch (error) {
 			logger.warn("Async job progress delivery failed", {
 				jobId,
@@ -571,7 +576,7 @@ export class AsyncJobManager {
 	}
 
 	#flushAgentProgress(jobId: string): Promise<void> {
-		return this.#progressBatcher.flush(jobId);
+		return this.#progressBatcher.finish(jobId);
 	}
 
 	#clearAgentProgress(jobId: string): void {

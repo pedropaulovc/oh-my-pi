@@ -27,15 +27,15 @@
 | `cwd` | `string` | No | Working directory, resolved against `session.cwd` via `resolveToCwd`. Must exist and be a directory. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
 | `async` | `boolean \| "auto"` | No | `true` starts a background job immediately. `"auto"` starts inline, waits for `bash.asyncAuto.inlineGraceMs` (default one second), then promotes the same process if it is still running. Present only when `async.enabled` is true. Neither mode changes the command deadline, including `timeout: 0`. |
-| `progress` | `"ambient" \| "wake"` | No | With `async: true` or `async: "auto"`, deliver complete non-empty output-line events to the model. In auto mode, delivery activates only after promotion: earlier output appears in the foreground/background-start result instead. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Updates are emitted at most once every 200 ms, with every event in the interval retained in the batch. Oversized lines retain their first and last 250 characters. A model-facing preview retains at most 3,000 UTF-8 bytes per job, split between its head and tail, and links the complete capture as `artifact://<id>`. |
+| `progress` | `"ambient" \| "wake"` | No | With `async: true` or `async: "auto"`, deliver complete non-empty output-line events to the model. In auto mode, delivery activates only after promotion: earlier output appears in the foreground/background-start result instead. `wake` pushes a follow-up turn while idle; `ambient` delivers only during an active turn. Lines collect into trailing 200 ms events. A token bucket permits a 10-event burst and refills one event permit every two seconds; this is a rate-limiter permit, not an LLM token. Suppressed inline events remain in the full artifact. Oversized lines retain their first and last 250 characters. A model-facing preview retains at most 3,000 UTF-8 bytes per job, split between its head and tail, and links the complete capture as `artifact://<id>`. |
 
 ## Agent-facing guidance
 
-When async execution is enabled, the Bash tool description recommends `async: "auto"` for finite commands: quick work still returns inline, while slow work crosses the turn boundary without restarting the process. `async: true` remains the immediate-background mode. `progress: "wake"` is waking, events produced while the model is busy batch without drops, ambient progress never wakes, oversized lines and batches retain bounded head/tail previews, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
+When async execution is enabled, the Bash tool description recommends `async: "auto"` for finite commands: quick work still returns inline, while slow work crosses the turn boundary without restarting the process. `async: true` remains the immediate-background mode. `progress: "wake"` is waking, permitted events produced while the model is busy arrive together in order, ambient progress never wakes, oversized lines and batches retain bounded head/tail previews, and completion is a separate notification. Persistent services and watchers are routed to `hub` instead.
 
 A command that finishes within `bash.asyncAuto.inlineGraceMs` returns one ordinary Bash result. It does not emit separate progress or completion notifications. If the command outlives the grace, the same process is promoted without a restart. Settings-driven auto-backgrounding of an unmarked call can still deliver completion, but it does not enable progress; progress requires explicit `async: "auto"` or `async: true`.
 
-`wake` is a harness push, not a reason to hold the current turn open. Agents must not call `hub wait`, follow logs, or block to receive progress or keep the turn alive; they should use async progress and end the turn instead. If output arrives while the model is busy, the harness keeps every event and places the batch in the next follow-up turn. A one-job wake message rendered for the model has this form:
+`wake` is a harness push, not a reason to hold the current turn open. Agents must not call `hub wait`, follow logs, or block to receive progress or keep the turn alive; they should use async progress and end the turn instead. If output arrives while the model is busy, the harness buffers every rate-limit-permitted event and places them together in the next follow-up turn. A one-job wake message rendered for the model has this form:
 
 ```xml
 <system-notice>
@@ -54,28 +54,30 @@ When either async Bash or Hub process monitoring is available, the system prompt
 <async-progress>
 Finite commands → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline). NEVER use `async: true` unless the user explicitly requests immediate background.
 Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).
-Noisy output → lower source verbosity (quiet or warning-only) or filter to actionable lines. If safe to retry, stop/cancel and start again with less output.
-Truncated progress links its complete capture as `artifact://<id>`.
-Hub can instead retune its monitor to `ambient` or `off` without stopping the process.
-Bash cannot retune progress; if retry is unsafe, let it finish.
+Progress uses 200 ms batches and a 10-event burst, then regains one rate-limit permit every 2 seconds (not an LLM token). Suppressed inline events remain in the full artifact.
+Chatty progress → lower source verbosity (quiet or warning-only) or filter to actionable lines. If safe to retry, stop/cancel and relaunch with less output.
+Hub: retune the monitor to `ambient` or `off` without stopping the process.
+Bash: progress cannot be retuned; if retry is unsafe, let it finish.
+Every fifth progress update with suppressed content repeats this guidance.
+Truncated progress shows bounded `<head>`/`<tail>` previews and links its complete capture as `artifact://<id>`.
 NEVER call `hub wait`, follow logs, or block to receive progress or keep the turn alive; use async progress and end the turn instead.
 </async-progress>
 ```
 
-Each delivered progress batch is a harness-injected `async-progress` message in the model's conversation.
+Each delivered progress batch is a harness-injected `async-progress` message in the model's conversation. When rate limiting hides inline events, the next permitted event includes `<suppressed events="N" reason="rate-limit" full-output="artifact://<id>" />`. A terminal suppression summary is emitted before completion when no later event receives a permit. Every fifth suppression-bearing progress message appends a `<system-reminder>` containing the same chatty-progress instructions from the system prompt.
 
-The XML attributes appear only when the inline batch or one source line was truncated. Bash uses the same artifact as its final command output, so the URI stays stable for the job. The preview uses `tools.artifactSpillThreshold`, `tools.artifactHeadBytes`, `tools.artifactTailBytes`, and `tools.artifactTailLines`.
+The truncation attributes appear only when the inline batch or one source line was truncated. Bash uses the same artifact as its final command output, so the URI stays stable for the job.
 
 ### Choosing a progress mode
 
-Both modes retain every bounded output event while the subscription is active. The difference is when the model runs.
+Both modes use the same batching and rate limiter. Their difference is when the model runs; the artifact retains the complete raw output in either mode.
 
 | Mode | When the agent receives it | Cost and tradeoff | Use it for |
 | --- | --- | --- | --- |
 | `wake` | Starts a follow-up turn when the agent is idle | May add model requests, thinking tokens, and latency, but the agent can act immediately | Readiness, failures, requests for input, or a newly available artifact |
 | `ambient` | Waits for the next turn caused by completion, a user message, or another event | Several batches can share one model request; reaction to intermediate output may be delayed | Test, build, install, download, benchmark, or low-priority diagnostic progress |
 
-Ambient does not discard or replace output. It avoids spending an inference turn on updates that would produce no useful action, such as another passing test file or download percentage. When completion starts the next turn, queued ambient progress is delivered before the completion result.
+Ambient does not change batching, rate limiting, or artifact capture. It avoids spending an inference turn on updates that would produce no useful action, such as another passing test file or download percentage. When completion starts the next turn, queued ambient progress is delivered before the completion result.
 
 For noisy output, first look for a quieter source setting, such as quiet mode or a warning/error log level. Otherwise, filter the stream to lines that may change the next action. If the command is safe to retry, cancel it and relaunch with the quieter configuration. Bash progress cannot be changed after launch, so let it finish when retrying would repeat side effects or discard expensive work.
 
@@ -119,7 +121,8 @@ This comparison uses the observed Claude Code 2.1.233 Monitor contract. Each sur
 | Attach or retune | No; progress belongs to the command | `hub` `op:"monitor"` by stable process name | No attach/retune operation observed |
 | Detach without stopping work | No separate subscription | `progress:"off"` | Persistent monitor is stopped through task control |
 | Harness push while idle | Starts a follow-up turn | Starts a follow-up turn | Starts a follow-up turn |
-| Events received while busy | Every bounded event retained; waiting events delivered together in the next batch | Same shared batching contract | Events are buffered while busy and delivered together when the agent can run |
+| Events received while busy | Permitted events buffered and delivered together; suppressed events remain in the artifact | Same shared batching contract | Permitted events buffered and delivered together; suppressed events remain in the output file |
+| Burst/rate limit | 10 events, then one event permit every 2s | Same shared meter | Observed: about 10 events, then one event permit every 2s |
 | Command event boundary | Complete non-empty merged stdout/stderr line | Complete non-empty merged stdout/stderr line | Stdout line |
 | WebSocket event boundary | Not supported | Not supported | Text frame |
 | Termination | Separate async-job completion/failure | Separate process completion | Separate monitor termination |

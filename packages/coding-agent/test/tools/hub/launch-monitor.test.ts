@@ -163,6 +163,8 @@ describe("hub process output monitoring", () => {
 			daemonId: daemon.id,
 			seq: 1,
 			text: "ready",
+			batchKind: "progress",
+			suppressedEvents: 0,
 		});
 
 		expect(harness.progress).toEqual([
@@ -174,6 +176,8 @@ describe("hub process output monitoring", () => {
 					daemonId: daemon.id,
 					seq: 1,
 					text: "ready",
+					batchKind: "progress",
+					suppressedEvents: 0,
 				},
 				delivery: "wake",
 				artifactId: undefined,
@@ -197,7 +201,20 @@ describe("hub process output monitoring", () => {
 			name: daemon.name,
 			daemonId: daemon.id,
 			seq: 1,
+			text: "",
+			batchKind: "artifact-only",
+			suppressedEvents: 0,
+			rawText: "SUPPRESSED RAW OUTPUT\n",
+		});
+		await harness.getOutputSink()?.({
+			event: "daemon-output",
+			monitorId: subscription.id,
+			name: daemon.name,
+			daemonId: daemon.id,
+			seq: 2,
 			text: `${"H".repeat(250)}${"T".repeat(250)}`,
+			batchKind: "progress",
+			suppressedEvents: 1,
 			rawText: `${"H".repeat(300)}${"M".repeat(4_400)}${"T".repeat(300)}\n`,
 			truncated: true,
 		});
@@ -207,11 +224,14 @@ describe("hub process output monitoring", () => {
 			daemon: { ...daemon, state: "exited", pid: undefined, exitedAt: 3, exitCode: 0 },
 		});
 
-		expect(await Bun.file(artifact.path).text()).toBe(`${"H".repeat(300)}${"M".repeat(4_400)}${"T".repeat(300)}\n`);
+		expect(await Bun.file(artifact.path).text()).toBe(
+			`SUPPRESSED RAW OUTPUT\n${"H".repeat(300)}${"M".repeat(4_400)}${"T".repeat(300)}\n`,
+		);
 		expect(harness.progress).toHaveLength(1);
 		expect(harness.progress[0]?.artifactId).toBe(artifact.id);
 		expect(harness.progress[0]?.notification).toMatchObject({
 			truncated: true,
+			suppressedEvents: 1,
 			text: `${"H".repeat(250)}${"T".repeat(250)}`,
 		});
 	});
@@ -231,6 +251,8 @@ describe("hub process output monitoring", () => {
 			daemonId: daemon.id,
 			seq: 1,
 			text: "after mode update",
+			batchKind: "progress",
+			suppressedEvents: 0,
 		});
 
 		expect(harness.requests.map(operation => operation.op)).toEqual(["ping", "describe", "ping", "describe"]);

@@ -27,10 +27,10 @@ Project-scoped long-running processes shared by every omp instance in the same d
   - Names are unique per project directory. A completed name MAY be started again; a live name MUST be stopped or restarted.
   - `restart` policy defaults `no`; `on-failure` and `always` use bounded backoff.
   - `persist: true` opts out of last-omp teardown; `detached: true` survives broker shutdown and all omp exits (implies persist, disables PTY input). Omit both unless their survival guarantees are required.
-  - For actionable output, set `progress: "wake"`. Every complete non-empty merged output line becomes an event (first and last 250 characters when oversized); a final partial line is flushed before completion. Pushes are batched at most once per second, and events emitted while busy arrive together in order. Model-facing previews are capped at 3,000 bytes per process. `progress: "ambient"` waits for an active turn and never wakes.
-  - Truncated progress links the monitor's full captured output as `artifact://<id>`.
+  - For actionable output, set `progress: "wake"`. Every complete non-empty merged output line becomes an event (first and last 250 characters when oversized); a final partial line is flushed before completion. Events use 200 ms batches and a 10-event burst, then regain one rate-limit permit every 2 seconds. Permitted events emitted while busy arrive together in order. `progress: "ambient"` waits for an active turn and never wakes.
+  - Suppressed inline events remain in the monitor's full `artifact://<id>` capture; model previews are capped at 3,000 bytes/process.
 - `progress` on `start` stays attached. Use **`monitor`** only to attach later, retune, or detach (`progress: "off"`). Monitoring starts with future output; it does not replay logs.
-- If progress is noisy, lower source verbosity or filter to actionable lines on a safe relaunch. To keep it running, switch its monitor to `ambient` or `off`.
+- If progress is noisy, lower source verbosity or filter to actionable lines on a safe relaunch. To keep it running, switch its monitor to `ambient` or `off`. Every fifth suppression report repeats this guidance.
 - Monitoring and process lifetime are independent. `persist`/`detached` govern survival; monitoring never keeps a process alive. Detached processes cannot be live-monitored.
 - Progress and completion are separate. NEVER call `wait`, follow logs, or block to receive progress or keep the turn alive; use async progress and end the turn instead.
 - **`ps`**, **`logs`**, **`wait`** (with `name`), **`send`** (with `name`), **`stop`**, **`restart`**, **`describe`**, and **`monitor`** address the stable `name`.
