@@ -80,10 +80,18 @@ describe("daemon broker restart settling", () => {
 		const name = "crash-loop";
 		const monitorNotifications: DaemonMonitorNotification[] = [];
 		const monitorCompleted = Promise.withResolvers<void>();
-		const unregisterMonitor = client.onOutput?.({ id: "crash-monitor", name, owner: "owner" }, notification => {
-			monitorNotifications.push(notification);
-			if (notification.event === "daemon-monitor-completed") monitorCompleted.resolve();
-		});
+		const unregisterMonitor = client.onOutput?.(
+			{
+				id: "crash-monitor",
+				name,
+				owner: "owner",
+				artifactPath: path.join(tempDir.path(), "restart-progress.log"),
+			},
+			notification => {
+				monitorNotifications.push(notification);
+				if (notification.event === "daemon-monitor-completed") monitorCompleted.resolve();
+			},
+		);
 		if (!unregisterMonitor) throw new Error("Expected output monitoring support");
 		try {
 			await client.request({ op: "ping" });

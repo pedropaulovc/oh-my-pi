@@ -15,7 +15,7 @@ import chattyProgressGuidanceTemplate from "../prompts/system/chatty-progress-gu
 import asyncProgressTemplate from "../prompts/tools/async-progress.md" with { type: "text" };
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
-import { truncateHeadBytes, truncateTailBytes } from "./streaming-output";
+import { buildProgressPreview } from "./progress-preview";
 
 /**
  * `customType` of the injected async-result follow-up message. The task
@@ -30,8 +30,6 @@ export const ASYNC_PROGRESS_WAKE_QUEUE_KIND = "async-progress-wake";
 /** Result payloads longer than this spill to an artifact with an inline preview. */
 export const ASYNC_INLINE_RESULT_MAX_CHARS = 12_000;
 export const ASYNC_PREVIEW_MAX_CHARS = 4_000;
-export const ASYNC_PROGRESS_PREVIEW_MAX_BYTES = 3_000;
-
 export interface AsyncResultEntry {
 	jobId: string;
 	result: string;
@@ -62,16 +60,18 @@ export interface AsyncProgressEntry {
 	reminder?: ProgressReminder;
 }
 
+export type AsyncProgressSourceType = "bash" | "task" | "process";
+
 export interface AsyncProgressSource {
 	id: string;
-	type: "bash" | "task" | "process";
+	type: AsyncProgressSourceType;
 	label: string;
 	startedAt: number;
 }
 
 type AsyncProgressJobDetails = {
 	jobId: string;
-	type?: "bash" | "task" | "process";
+	type?: AsyncProgressSourceType;
 	label?: string;
 	elapsedMs: number;
 	text?: string;
@@ -111,13 +111,8 @@ export function buildAsyncProgressBatchMessage(
 			.join("\n");
 		const hasOutput = fullText.length > 0;
 		const sourceTruncated = jobEntries.some(entry => entry.sourceTruncated);
-		const fullBytes = Buffer.byteLength(fullText, "utf8");
-		const truncated = hasOutput && (sourceTruncated || fullBytes > ASYNC_PROGRESS_PREVIEW_MAX_BYTES);
-		const retainedBytes = Math.min(fullBytes, ASYNC_PROGRESS_PREVIEW_MAX_BYTES);
-		const headBytes = Math.floor(retainedBytes / 2);
-		const tailBytes = retainedBytes - headBytes;
-		const head = truncated ? truncateHeadBytes(fullText, headBytes).text : undefined;
-		const tail = truncated ? truncateTailBytes(fullText, tailBytes).text : undefined;
+		const preview = buildProgressPreview(fullText, sourceTruncated);
+		const truncated = hasOutput && preview.truncated;
 		const artifactId = [...jobEntries].reverse().find(entry => entry.artifactId)?.artifactId;
 		const suppressedEvents = jobEntries.reduce((total, entry) => total + (entry.suppressedEvents ?? 0), 0);
 		const reminder = jobEntries.find(entry => entry.reminder !== undefined)?.reminder;
@@ -126,10 +121,10 @@ export function buildAsyncProgressBatchMessage(
 			type: latest.source?.type ?? (type === "eval" ? undefined : type),
 			label: latest.source?.label ?? latest.job?.label,
 			elapsedMs: latest.elapsedMs,
-			text: hasOutput && !truncated ? fullText : undefined,
+			text: hasOutput ? preview.text : undefined,
 			hasOutput,
-			head,
-			tail,
+			head: preview.head,
+			tail: preview.tail,
 			artifactId,
 			truncated,
 			suppressedEvents: suppressedEvents || undefined,

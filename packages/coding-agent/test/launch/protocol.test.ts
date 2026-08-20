@@ -90,12 +90,16 @@ describe("launch logs compatibility", () => {
 		const request = parseDaemonWireRequest({
 			id: "request-1",
 			token: "token-1",
-			outputSubscriptions: [{ id: "monitor-1", name: "web", owner: "session-owner" }],
+			outputSubscriptions: [
+				{ id: "monitor-1", name: "web", owner: "session-owner", artifactPath: "/tmp/monitor.log" },
+			],
 			outputSubscriptionId: "output-subscription-1",
 			operation: { op: "ping" },
 		});
 
-		expect(request.outputSubscriptions).toEqual([{ id: "monitor-1", name: "web", owner: "session-owner" }]);
+		expect(request.outputSubscriptions).toEqual([
+			{ id: "monitor-1", name: "web", owner: "session-owner", artifactPath: "/tmp/monitor.log" },
+		]);
 		expect(request.outputSubscriptionId).toBe("output-subscription-1");
 	});
 

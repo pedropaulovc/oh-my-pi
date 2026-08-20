@@ -8,6 +8,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AsyncJobType } from "../../async";
+import type { AsyncProgressSourceType } from "../../session/async-job-delivery";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
@@ -88,7 +89,7 @@ export function buildAsyncProgressBlock(message: CustomOrHookMessage): Transcrip
 		message as CustomMessage<{
 			jobs?: Array<{
 				jobId?: string;
-				type?: "bash" | "task" | "process";
+				type?: AsyncProgressSourceType;
 				elapsedMs?: number;
 				text?: string;
 				head?: string;

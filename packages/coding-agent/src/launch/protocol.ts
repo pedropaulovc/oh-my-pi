@@ -20,7 +20,7 @@ export const DAEMON_RUNTIME_DIR_ENV = "OMP_DAEMON_RUNTIME_DIR";
 export const DAEMON_IDLE_GRACE_ENV = "OMP_DAEMON_IDLE_GRACE_MS";
 
 /** Broker support for live output previews plus their recoverable raw capture. */
-export const DAEMON_OUTPUT_MONITOR_CAPABILITY = "output-monitor-v3";
+export const DAEMON_OUTPUT_MONITOR_CAPABILITY = "output-monitor-v4";
 
 /** Stable lifecycle states exposed by the launch tool. */
 export type DaemonState = "starting" | "running" | "ready" | "restarting" | "stopping" | "exited" | "failed";
@@ -144,6 +144,8 @@ export interface DaemonOutputSubscription {
 	id: string;
 	name: string;
 	owner: string;
+	/** Session artifact written directly by the broker while the subscription is active. */
+	artifactPath: string;
 }
 
 /** Response envelope kept raw until matched with its pending operation. */
@@ -168,7 +170,7 @@ export interface DaemonOutputNotification {
 	batchKind: ProgressBatchKind;
 	suppressedEvents: number;
 	reminder?: ProgressReminder;
-	/** Complete raw output represented by this cadence batch; omitted by legacy brokers. */
+	/** Legacy in-band raw output; v4 brokers write the subscription artifact directly. */
 	rawText?: string;
 	/** True when at least one model-facing line preview was clipped. */
 	truncated?: boolean;
@@ -268,6 +270,7 @@ function outputSubscriptions(value: unknown): DaemonOutputSubscription[] {
 			id: stringValue(source.id, `request.outputSubscriptions[${index}].id`),
 			name: stringValue(source.name, `request.outputSubscriptions[${index}].name`),
 			owner: stringValue(source.owner, `request.outputSubscriptions[${index}].owner`),
+			artifactPath: stringValue(source.artifactPath, `request.outputSubscriptions[${index}].artifactPath`),
 		};
 	});
 }

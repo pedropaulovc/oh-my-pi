@@ -109,7 +109,7 @@ Names are stable and unique within one project directory. A live name must be st
 
 `monitor` attaches to, retunes, or detaches the calling session's subscription for an already-running named process. It begins at the current output cursor and does not replay older logs. Each complete non-empty merged stdout/stderr line becomes an event; an oversized line retains its first and last 250 characters. Lines collect into trailing 200 ms events. A token bucket permits a 10-event burst and refills one event permit every two seconds; this is a rate-limiter permit, not an LLM token. Permitted events produced while the model is busy arrive together in order. Suppressed inline events remain in the full artifact. Each model-facing process preview retains at most 3,000 UTF-8 bytes, split between its head and tail. A final unterminated line is flushed when the process exits.
 
-Each subscription stores the output it receives in one stable artifact. When the inline batch or one source line is truncated, or rate limiting suppresses events, the model and TUI show `artifact://<id>` for that capture. The artifact closes before the process completion notification. A late attachment starts at the current cursor, and the reconnect limit below still applies.
+The broker writes each subscription's raw output directly to one stable artifact before it emits progress. When the inline batch or one source line is truncated, or rate limiting suppresses events, the model and TUI show `artifact://<id>` for that capture. The artifact closes before the process completion notification. A late attachment starts at the current cursor, and the reconnect limit below still applies.
 
 Wake progress starts a follow-up model turn when the agent is idle. Ambient progress is delivered only at an already-active step boundary and never wakes an idle agent. Process termination is a separate completion notification, ordered after any final progress batch.
 
@@ -121,7 +121,7 @@ Agents must not call `wait`, follow logs, or block to receive progress or keep t
 
 Monitoring does not alter the daemon's lifecycle. `persist` controls whether the process survives the last omp client exiting; `detached` controls whether it survives broker shutdown. Detaching a monitor does not stop the process, and stopping the process does not require detaching first. Session disposal removes its subscriptions without stopping otherwise-surviving processes. Fully detached daemons cannot use live monitoring because no broker connection remains to deliver events.
 
-A live broker keeps up to 1 MiB of a disconnected client's newest output batches for a 30-second reconnect window, then replays them in order before terminal state. Terminal state is retained even when older output exceeds the cap. This handoff covers local socket replacement; it is not a durable journal across broker-process failure.
+A live broker keeps writing the artifact for 30 seconds after its client disconnects. During that window it retains every bounded progress notification and replays them in order before terminal state. The subscription expires after 30 seconds without a reconnect. This handoff covers local socket replacement; it is not a durable journal across broker-process failure.
 
 The authenticated behavioral eval described in [Bash tool](bash.md#live-model-behavioral-eval) includes a Hub scenario. It checks that a live model chooses persistent `start` with wake progress, receives a pushed marker, and acknowledges it without polling.
 

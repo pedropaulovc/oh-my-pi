@@ -1,5 +1,5 @@
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { formatBytes } from "../tools/render-utils";
 import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
 
@@ -1293,7 +1293,13 @@ export class OutputSink {
 		// Flush any chunk still held back by the throttle so the live preview
 		// ends with the complete stream.
 		this.#flushPendingChunk();
-		await this.#chunkDeliveryTail;
+		try {
+			await this.#chunkDeliveryTail;
+		} catch (error) {
+			logger.warn("Output preview delivery failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 		const totalLines = this.#sawData ? this.#totalLines + 1 : 0;
 
 		await this.#finalizeFile();

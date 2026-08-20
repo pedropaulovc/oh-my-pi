@@ -48,6 +48,7 @@ describe("daemon broker live output monitoring", () => {
 		const runtimeDir = path.join(tempDir.path(), "runtime");
 		await fs.mkdir(projectDir);
 		const scriptPath = path.join(projectDir, "service.ts");
+		const monitorArtifactPath = path.join(tempDir.path(), "watched-progress.log");
 		await Bun.write(
 			scriptPath,
 			`process.stdin.setEncoding("utf8");
@@ -73,7 +74,7 @@ process.stdin.once("data", () => {
 		const releaseFirst = Promise.withResolvers<void>();
 		const entered: string[] = [];
 		const unregister = client.onOutput?.(
-			{ id: "monitor-1", name: "watched", owner: "owner-1" },
+			{ id: "monitor-1", name: "watched", owner: "owner-1", artifactPath: monitorArtifactPath },
 			async notification => {
 				entered.push(
 					notification.event === "daemon-output"
@@ -127,7 +128,8 @@ process.stdin.once("data", () => {
 				"IMMEDIATE",
 				`partial\n${"H".repeat(250)}${"T".repeat(250)}\nfinal`,
 			]);
-			expect(output.map(notification => notification.rawText ?? "").join("")).toBe(
+			expect(output.every(notification => notification.rawText === undefined)).toBe(true);
+			expect(await Bun.file(monitorArtifactPath).text()).toBe(
 				`IMMEDIATE\npartial\n\n${"H".repeat(300)}${"M".repeat(400)}${"T".repeat(300)}\nfinal`,
 			);
 			expect(output.map(notification => notification.truncated)).toEqual([false, true]);
@@ -196,10 +198,18 @@ process.stdin.once("data", () => {
 				cursor: 0,
 				timeoutMs: 5_000,
 			});
-			unregister = client.onOutput?.({ id: "attach-monitor", name: "attach", owner: "owner" }, notification => {
-				notifications.push(notification);
-				if (notification.event === "daemon-monitor-completed") completed.resolve();
-			});
+			unregister = client.onOutput?.(
+				{
+					id: "attach-monitor",
+					name: "attach",
+					owner: "owner",
+					artifactPath: path.join(tempDir.path(), "attach-progress.log"),
+				},
+				notification => {
+					notifications.push(notification);
+					if (notification.event === "daemon-monitor-completed") completed.resolve();
+				},
+			);
 			if (!unregister) throw new Error("Expected output monitoring support");
 			await client.request({ op: "ping" });
 			await client.request({ op: "send", name: "attach", data: "finish\n" });
@@ -210,6 +220,72 @@ process.stdin.once("data", () => {
 		} finally {
 			unregister?.();
 			await client.request({ op: "stop", name: "attach", timeoutMs: 2_000 }).catch(() => undefined);
+			await client.request({ op: "shutdown" }).catch(() => undefined);
+			client.close();
+			await broker;
+			setProcessName(previousTitle);
+		}
+	}, 20_000);
+
+	it("bounds socket previews while preserving the complete broker-written artifact", async () => {
+		using tempDir = TempDir.createSync("@omp-launch-monitor-preview-");
+		const projectDir = path.join(tempDir.path(), "project");
+		const runtimeDir = path.join(tempDir.path(), "runtime");
+		const artifactPath = path.join(tempDir.path(), "complete-progress.log");
+		await fs.mkdir(projectDir);
+		const scriptPath = path.join(projectDir, "service.ts");
+		await Bun.write(
+			scriptPath,
+			`for (let index = 0; index < 20; index++) process.stdout.write(\`LINE\${String(index).padStart(2, "0")}:\${"x".repeat(400)}\\n\`);\n`,
+		);
+		const expected = Array.from(
+			{ length: 20 },
+			(_, index) => `LINE${String(index).padStart(2, "0")}:${"x".repeat(400)}\n`,
+		).join("");
+		const client = await createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 5_000 });
+		const previousTitle = process.title;
+		const broker = startBroker(projectDir, runtimeDir);
+		const notifications: DaemonMonitorNotification[] = [];
+		const completed = Promise.withResolvers<void>();
+		const unregister = client.onOutput?.(
+			{ id: "bounded-monitor", name: "bounded", owner: "owner", artifactPath },
+			notification => {
+				notifications.push(notification);
+				if (notification.event === "daemon-monitor-completed") completed.resolve();
+			},
+		);
+		if (!unregister) throw new Error("Expected output monitoring support");
+		try {
+			await client.request({ op: "ping" });
+			await client.request({
+				op: "start",
+				spec: {
+					name: "bounded",
+					application: process.execPath,
+					args: [scriptPath],
+					env: {},
+					cwd: projectDir,
+					pty: false,
+					restart: "no",
+					persist: false,
+					detached: false,
+				},
+			});
+			await completed.promise;
+
+			const output = notifications.filter(
+				(notification): notification is Extract<DaemonMonitorNotification, { event: "daemon-output" }> =>
+					notification.event === "daemon-output",
+			);
+			expect(output).toHaveLength(1);
+			expect(Buffer.byteLength(output[0]?.text ?? "", "utf8")).toBeLessThanOrEqual(3_000);
+			expect(output[0]).toMatchObject({ truncated: true, rawText: undefined });
+			expect(output[0]?.text).toStartWith("LINE00:");
+			expect(output[0]?.text).toEndWith(`LINE19:${"x".repeat(400)}`);
+			expect(await Bun.file(artifactPath).text()).toBe(expected);
+		} finally {
+			unregister();
+			await client.request({ op: "stop", name: "bounded", timeoutMs: 2_000 }).catch(() => undefined);
 			await client.request({ op: "shutdown" }).catch(() => undefined);
 			client.close();
 			await broker;
@@ -235,10 +311,18 @@ process.stdout.write("GENERATION_STARTED\\n");
 		const broker = startBroker(projectDir, runtimeDir);
 		const notifications: DaemonMonitorNotification[] = [];
 		const completed = Promise.withResolvers<void>();
-		const unregister = client.onOutput?.({ id: "restart-monitor", name: "restart", owner: "owner" }, notification => {
-			notifications.push(notification);
-			if (notification.event === "daemon-monitor-completed") completed.resolve();
-		});
+		const unregister = client.onOutput?.(
+			{
+				id: "restart-monitor",
+				name: "restart",
+				owner: "owner",
+				artifactPath: path.join(tempDir.path(), "restart-progress.log"),
+			},
+			notification => {
+				notifications.push(notification);
+				if (notification.event === "daemon-monitor-completed") completed.resolve();
+			},
+		);
 		if (!unregister) throw new Error("Expected output monitoring support");
 		try {
 			await client.request({ op: "ping" });

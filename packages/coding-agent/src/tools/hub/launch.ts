@@ -124,7 +124,8 @@ async function registerOutputSink(
 
 	const id = crypto.randomUUID();
 	const artifact = await session.allocateOutputArtifact?.("hub-progress");
-	const artifactId = artifact?.id && artifact.path ? artifact.id : undefined;
+	if (!artifact?.id || !artifact.path) return undefined;
+	const artifactId = artifact.id;
 	const spill = resolveOutputSpillConfig(session.settings);
 	const artifactSink = artifactId
 		? new OutputSink({
@@ -191,7 +192,7 @@ async function registerOutputSink(
 			daemon: notification.daemon,
 		});
 	};
-	unregisterOutput = client.onOutput({ id, name, owner }, sink);
+	unregisterOutput = client.onOutput({ id, name, owner, artifactPath: artifact.path }, sink);
 	monitors.set(name, registration);
 	session.setLaunchMonitorActive?.(id, delivery, true);
 	unregisterDispose = session.registerDisposeCallback?.(() => void registration.cleanup());

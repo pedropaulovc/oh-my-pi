@@ -2,10 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added bounded ambient or wake progress events for asynchronous Bash jobs and Hub processes. Bash `async: "auto"` keeps quick commands inline for the configurable `bash.asyncAuto.inlineGraceMs` grace period and activates notifications only when a slow command is promoted to background; agents can also attach to an existing Hub process without polling ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
+
+### Changed
+
+- Async Bash and Hub progress now matches Claude Code Monitor's 200 ms trailing batches and burst rate limiting: ten event permits up front, one permit refilled every two seconds, suppression counts in model context, and a chatty-monitor reminder every fifth suppression report. Suppressed raw output remains in one stable artifact; oversized lines use a 500-character head/tail sample and model-facing previews stay within 3,000 UTF-8 bytes.
+
 ### Fixed
 
 - Fixed daemon broker idle shutdown closing newly accepted clients before their authentication request could be processed under load.
-- Async Bash and Hub progress now matches Claude Code Monitor's 200 ms trailing batches and burst rate limiting: ten event permits up front, one permit refilled every two seconds, suppression counts in model context, and a chatty-monitor reminder every fifth suppression report. Suppressed raw output remains in one stable artifact; oversized lines use a 500-character head/tail sample and model-facing previews stay within 3,000 UTF-8 bytes.
 
 ## [17.4.0] - 2026-08-20
 
@@ -50,8 +57,6 @@
 ### Added
 
 - Added `providers.cacheRetention` setting (`/settings` → Providers → Protocol) to control prompt-cache retention per request: `auto` keeps the provider default (Anthropic: 5m entries with idle keep-alive refreshes), `short` forces 5m, `long` restores 1h TTLs where supported and disables the keep-alive refresh loop, `none` disables prompt caching.
-- Added drop-free batching of bounded ambient or wake progress events for asynchronous Bash jobs and Hub processes. Bash `async: "auto"` keeps quick commands inline for the configurable `bash.asyncAuto.inlineGraceMs` grace period and activates notifications only when a slow command is promoted to background; agents can also attach to an existing Hub process without polling ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
-
 ### Changed
 
 - The `read` tool now materializes a local text file once per invocation instead of once per consumer. A ranged read of a file within the snapshot cap previously cost four opens and three UTF-8 decodes — an 8KiB binary sniff, a streaming scan for the rendered window, a whole-file read for bracket context, and another whole-file read to hash the snapshot — with two of those readers separately normalizing line endings; whole-file reads under the structural summarizer paid a fifth read. Byte counts and truncation boundaries are now measured on the buffered bytes, so they stay exact for content that is not valid UTF-8. Files above the snapshot cap keep streaming, since nothing on that path wants the whole file. Raw reads, which skip the tree-sitter parse that documented the old cost, no longer pay for it.

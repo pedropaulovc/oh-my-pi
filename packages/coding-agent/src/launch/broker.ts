@@ -7,7 +7,14 @@ import { isEexist, isEnoent, logger, postmortem, procmgr, sanitizeText, setProce
 import { type ProgressBatch, ProgressBatcher } from "../async/progress-batcher";
 import { type ProgressLine, ProgressLines } from "../async/progress-lines";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
-import { truncateHead, truncateHeadBytes, truncateTail, truncateTailBytes } from "../session/streaming-output";
+import { buildProgressPreview } from "../session/progress-preview";
+import {
+	OutputSink,
+	truncateHead,
+	truncateHeadBytes,
+	truncateTail,
+	truncateTailBytes,
+} from "../session/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBrokerEndpoint, writeDaemonScopeMeta } from "./paths";
 import { hasLiveDaemonProjectPresence, pruneDeadDaemonRuntimeDirs } from "./presence";
@@ -70,7 +77,6 @@ const SIGNAL_NUMBER: Record<DaemonSignal, number> = {
 };
 
 const OUTPUT_RECONNECT_GRACE_MS = 30_000;
-const MAX_PENDING_MONITOR_BYTES = 1024 * 1024;
 
 interface ManagedProcess {
 	pid: number;
@@ -113,7 +119,7 @@ interface OutputRegistration extends DaemonOutputSubscription {
 	socket?: net.Socket;
 	subscriptionId: string;
 	pending: DaemonMonitorNotification[];
-	pendingBytes: number;
+	artifactSink: OutputSink;
 	offlineTimer?: NodeJS.Timeout;
 }
 
@@ -454,9 +460,14 @@ class DaemonBroker {
 			await record.persistQueue;
 		}
 		this.#ownerSockets.clear();
-		for (const registration of this.#outputRegistrations.values()) clearTimeout(registration.offlineTimer);
+		const outputDisposals: Promise<void>[] = [];
+		for (const registration of this.#outputRegistrations.values()) {
+			clearTimeout(registration.offlineTimer);
+			outputDisposals.push(registration.artifactSink.dispose());
+		}
 		this.#outputRegistrations.clear();
 		this.#progressBatcher.dispose();
+		await Promise.all(outputDisposals);
 		for (const socket of this.#sockets) socket.destroy();
 		this.#sockets.clear();
 		if (this.#server) {
@@ -514,6 +525,7 @@ class DaemonBroker {
 					if (registration.socket || this.#outputRegistrations.get(monitorId) !== registration) return;
 					this.#outputRegistrations.delete(monitorId);
 					this.#progressBatcher.clear(monitorId);
+					void registration.artifactSink.dispose();
 				}, OUTPUT_RECONNECT_GRACE_MS);
 				registration.offlineTimer.unref();
 			}
@@ -907,7 +919,8 @@ class DaemonBroker {
 			const lines = record.progressPreviewLines.splice(0);
 			for (const registration of this.#outputRegistrations.values()) {
 				if (registration.name !== record.snapshot.name) continue;
-				this.#progressBatcher.push(registration.id, { rawText: output, lines });
+				registration.artifactSink.push(output);
+				this.#progressBatcher.push(registration.id, { rawText: "", lines });
 			}
 		} else {
 			record.progressPreviewLines.length = 0;
@@ -935,7 +948,9 @@ class DaemonBroker {
 	}
 
 	async #finishOutputProgress(name: string): Promise<void> {
-		await Promise.all(this.#outputMonitorIds(name).map(id => this.#progressBatcher.finish(id)));
+		const registrations = [...this.#outputRegistrations.values()].filter(registration => registration.name === name);
+		await Promise.all(registrations.map(registration => this.#progressBatcher.finish(registration.id)));
+		await Promise.all(registrations.map(registration => registration.artifactSink.dispose()));
 	}
 
 	#syncOutputSubscriptions(
@@ -950,6 +965,7 @@ class DaemonBroker {
 			clearTimeout(registration.offlineTimer);
 			this.#outputRegistrations.delete(monitorId);
 			this.#progressBatcher.clear(monitorId);
+			void registration.artifactSink.dispose();
 		}
 		for (const subscription of subscriptions) {
 			const existing = this.#outputRegistrations.get(subscription.id);
@@ -963,7 +979,6 @@ class DaemonBroker {
 					notification => notification.event === "daemon-monitor-completed",
 				);
 				const pending = existing.pending.splice(0);
-				existing.pendingBytes = 0;
 				for (const notification of pending) this.#sendMonitorNotification(existing, notification);
 				const record = this.#records.get(subscription.name);
 				if (record && terminalState(record.snapshot.state) && !replayedTerminal) {
@@ -971,13 +986,19 @@ class DaemonBroker {
 				}
 				continue;
 			}
-			if (existing) clearTimeout(existing.offlineTimer);
+			if (existing) {
+				clearTimeout(existing.offlineTimer);
+				void existing.artifactSink.dispose();
+			}
 			this.#outputRegistrations.set(subscription.id, {
 				...subscription,
 				socket,
 				subscriptionId,
 				pending: [],
-				pendingBytes: 0,
+				artifactSink: new OutputSink({
+					artifactPath: subscription.artifactPath,
+					artifactWriteMode: "mirror",
+				}),
 			});
 			const record = this.#records.get(subscription.name);
 			if (record && terminalState(record.snapshot.state)) this.#notifyMonitorCompletion(record, subscription.id);
@@ -987,33 +1008,35 @@ class DaemonBroker {
 	#sendMonitorNotification(registration: OutputRegistration, notification: DaemonMonitorNotification): void {
 		if (!registration.socket || registration.socket.destroyed) {
 			registration.pending.push(notification);
-			if (notification.event === "daemon-output") {
-				registration.pendingBytes += Buffer.byteLength(notification.text, "utf8");
-				registration.pendingBytes += Buffer.byteLength(notification.rawText ?? "", "utf8");
-			}
-			while (registration.pendingBytes > MAX_PENDING_MONITOR_BYTES) {
-				const index = registration.pending.findIndex(item => item.event === "daemon-output");
-				if (index < 0) break;
-				const [removed] = registration.pending.splice(index, 1);
-				if (removed?.event === "daemon-output") {
-					registration.pendingBytes -= Buffer.byteLength(removed.text, "utf8");
-					registration.pendingBytes -= Buffer.byteLength(removed.rawText ?? "", "utf8");
-				}
-			}
 			return;
 		}
-		registration.socket.write(`${JSON.stringify(notification)}\n`);
+		try {
+			registration.socket.write(`${JSON.stringify(notification)}\n`);
+		} catch (error) {
+			registration.pending.push(notification);
+			registration.socket.destroy();
+			logger.warn("Failed to write daemon monitor notification", {
+				monitorId: registration.id,
+				name: registration.name,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
-	#notifyOutput(monitorId: string, batch: ProgressBatch<MonitorProgressChunk>): void {
+	async #notifyOutput(monitorId: string, batch: ProgressBatch<MonitorProgressChunk>): Promise<void> {
 		const registration = this.#outputRegistrations.get(monitorId);
 		if (!registration) return;
 		const daemon = this.#records.get(registration.name)?.snapshot;
 		if (!daemon) return;
 		const lines = batch.values.flatMap(chunk => chunk.lines);
-		const text = batch.kind === "progress" ? lines.map(line => line.text).join("\n") : "";
+		const fullText = batch.kind === "progress" ? lines.map(line => line.text).join("\n") : "";
+		const preview = buildProgressPreview(
+			fullText,
+			lines.some(line => line.truncated),
+		);
+		const text = preview.text ?? `${preview.head ?? ""}${preview.tail ?? ""}`;
 		const rawText = batch.values.map(chunk => chunk.rawText).join("");
-		const truncated = lines.some(line => line.truncated);
+		await registration.artifactSink.flushArtifact();
 		const notification: DaemonOutputNotification = {
 			event: "daemon-output",
 			monitorId: registration.id,
@@ -1024,8 +1047,8 @@ class DaemonBroker {
 			batchKind: batch.kind,
 			suppressedEvents: batch.suppressedEvents,
 			reminder: batch.reminder,
-			rawText,
-			truncated: batch.kind === "progress" ? truncated : undefined,
+			rawText: rawText || undefined,
+			truncated: batch.kind === "progress" ? preview.truncated : undefined,
 		};
 		this.#sendMonitorNotification(registration, notification);
 	}

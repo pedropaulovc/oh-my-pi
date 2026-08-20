@@ -62,6 +62,12 @@ interface MonitorHarness {
 }
 
 function createHarness(artifact?: { id: string; path: string }): MonitorHarness {
+	const allocatedArtifact =
+		artifact ??
+		({
+			id: `hub-progress-${crypto.randomUUID()}`,
+			path: path.join(process.cwd(), `.hub-progress-${crypto.randomUUID()}.log`),
+		} satisfies { id: string; path: string });
 	const requests: DaemonOperation[] = [];
 	const progress: MonitorHarness["progress"] = [];
 	const completions: DaemonCompletionNotification[] = [];
@@ -99,7 +105,7 @@ function createHarness(artifact?: { id: string; path: string }): MonitorHarness 
 	const session = {
 		cwd: process.cwd(),
 		settings: { get: () => undefined },
-		allocateOutputArtifact: async () => artifact ?? {},
+		allocateOutputArtifact: async () => allocatedArtifact,
 		getSessionId: () => OWNER,
 		isDisposed: () => false,
 		queueLaunchProgress: (
@@ -180,7 +186,7 @@ describe("hub process output monitoring", () => {
 					suppressedEvents: 0,
 				},
 				delivery: "wake",
-				artifactId: undefined,
+				artifactId: expect.stringContaining("hub-progress-"),
 			},
 		]);
 		expect(harness.active).toEqual([{ monitorId: subscription.id, delivery: "wake", active: true }]);

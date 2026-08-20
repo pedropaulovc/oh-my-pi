@@ -52,15 +52,11 @@ describe("bash progress parameter", () => {
 		const tool = new BashTool(makeSession(manager));
 
 		expect(tool.description).toContain('Finite: `async: "auto"` (quick inline, slow background)');
-		expect(tool.description).toContain("`async: true` ONLY if the user asks for immediate background");
-		expect(tool.description).toContain("non-empty merged lines");
-		expect(tool.description).toContain("first/last 250 chars");
+		expect(tool.description).toContain("Progress:");
 		expect(tool.description).toContain("10-event burst");
 		expect(tool.description).toContain("1 rate-limit permit/2s");
+		expect(tool.description).toContain("Wake starts a turn");
 		expect(tool.description).toContain("ambient waits");
-		expect(tool.description).toContain("final partial before completion");
-		expect(tool.description).toContain("NEVER block for progress");
-		expect(tool.description).toContain("start async and end the turn");
 	});
 
 	test("defaults off", async () => {
