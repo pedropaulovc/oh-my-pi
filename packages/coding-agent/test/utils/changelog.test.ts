@@ -328,6 +328,7 @@ describe.skipIf(!hasPtyHarness)("interactive startup changelog PTY smoke", () =>
 							PI_CODING_AGENT_DIR: agentDir,
 							PI_PACKAGE_DIR: packageDir,
 							PI_NO_TITLE: "1",
+							OMP_SKIP_SETUP: "1",
 							NO_COLOR: "1",
 							TERM: "xterm-256color",
 						},

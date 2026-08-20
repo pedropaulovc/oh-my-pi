@@ -82,9 +82,10 @@ export function buildAsyncProgressBatchMessage(
 
 	const jobs = Array.from(entriesByJob.values()).map(jobEntries => {
 		const latest = jobEntries.at(-1)!;
+		const type = latest.job?.type;
 		return {
 			jobId: latest.jobId,
-			type: latest.job?.type,
+			type: type === "eval" ? undefined : type,
 			label: latest.job?.label,
 			elapsedMs: latest.elapsedMs,
 			text: jobEntries.map(entry => sanitizeText(entry.text)).join("\n"),
