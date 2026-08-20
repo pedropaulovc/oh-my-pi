@@ -107,6 +107,13 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 				'Finite commands → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline). NEVER use `async: true` unless the user explicitly requests immediate background.',
 			);
 			expect(systemPrompt).toContain(
+				"Noisy output → lower source verbosity (quiet or warning-only) or filter to actionable lines. If safe to retry, stop/cancel and start again with less output.",
+			);
+			expect(systemPrompt).toContain(
+				"Hub can instead retune its monitor to `ambient` or `off` without stopping the process.",
+			);
+			expect(systemPrompt).toContain("Bash cannot retune progress; if retry is unsafe, let it finish.");
+			expect(systemPrompt).toContain(
 				'Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).',
 			);
 			expect(systemPrompt).toContain(
@@ -123,8 +130,11 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 		try {
 			const systemPrompt = session.systemPrompt.join("\n\n");
 			expect(systemPrompt).toContain("<async-progress>");
-			expect(systemPrompt).not.toContain("Quick commands stay foreground");
+			expect(systemPrompt).not.toContain("Finite commands");
+			expect(systemPrompt).not.toContain("Bash cannot retune progress");
 			expect(systemPrompt).toContain("Actionable process output");
+			expect(systemPrompt).toContain("Noisy output → lower source verbosity");
+			expect(systemPrompt).toContain("Hub can instead retune its monitor");
 		} finally {
 			await session.dispose();
 		}

@@ -54,6 +54,9 @@ When either async Bash or Hub process monitoring is available, the system prompt
 <async-progress>
 Finite commands → `bash` with `async: "auto"`, `progress: "wake"` (quick stays inline). NEVER use `async: true` unless the user explicitly requests immediate background.
 Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).
+Noisy output → lower source verbosity (quiet or warning-only) or filter to actionable lines. If safe to retry, stop/cancel and start again with less output.
+Hub can instead retune its monitor to `ambient` or `off` without stopping the process.
+Bash cannot retune progress; if retry is unsafe, let it finish.
 NEVER call `hub wait`, follow logs, or block to receive progress or keep the turn alive; use async progress and end the turn instead.
 </async-progress>
 ```
@@ -70,6 +73,10 @@ Both modes retain every bounded output event while the subscription is active. T
 | `ambient` | Waits for the next turn caused by completion, a user message, or another event | Several batches can share one model request; reaction to intermediate output may be delayed | Test, build, install, download, benchmark, or low-priority diagnostic progress |
 
 Ambient does not discard or replace output. It avoids spending an inference turn on updates that would produce no useful action, such as another passing test file or download percentage. When completion starts the next turn, queued ambient progress is delivered before the completion result.
+
+For noisy output, first look for a quieter source setting, such as quiet mode or a warning/error log level. Otherwise, filter the stream to lines that may change the next action. If the command is safe to retry, cancel it and relaunch with the quieter configuration. Bash progress cannot be changed after launch, so let it finish when retrying would repeat side effects or discard expensive work.
+
+Hub has another option: use `monitor` to switch the current process to `ambient` or `off`. This changes only the notification subscription and does not stop the process. If quieter output is still needed, stop and start it again with new arguments or environment; `restart` alone reuses the old launch specification.
 
 Use ambient for a long test suite when only the final status changes the plan:
 
