@@ -104,10 +104,11 @@ describe("async progress messages", () => {
 		expect(content(message)).toContain(
 			'<output>\n<suppressed reason="rate-limit" events="9" full-output="artifact://chatty-output" />\n</output>',
 		);
-		expect(content(message)).toContain("Chatty progress → use quiet/warning-only source output");
-		expect(content(message)).toContain("filter actionable lines with `awk`/`sed`");
-		expect(content(message)).toContain("Bash: progress cannot be retuned");
-		expect(content(message)).not.toContain("Hub: retune");
+		expect(content(message)).toContain(
+			"Chatty progress → If safe, stop/cancel and relaunch with quiet/warning-only flags or an `awk`/`sed` filter.",
+		);
+		expect(content(message)).toContain("Unsafe to restart the Bash command? Let it finish.");
+		expect(content(message)).not.toContain("Hub process must keep running?");
 		expect(content(message)).toEndWith("</system-reminder>");
 	});
 
@@ -124,8 +125,8 @@ describe("async progress messages", () => {
 		]);
 
 		expect(content(message)).toContain("<system-reminder>");
-		expect(content(message)).toContain("Hub: retune the monitor to `ambient` or `off`");
-		expect(content(message)).not.toContain("Bash: progress cannot be retuned");
+		expect(content(message)).toContain("Hub process must keep running? Set its monitor to `ambient` or `off`.");
+		expect(content(message)).not.toContain("Unsafe to restart the Bash command?");
 	});
 
 	test("does not emit an empty chatty reminder for unsupported progress sources", () => {

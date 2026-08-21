@@ -1,3 +1,3 @@
-Chatty progress → use quiet/warning-only source output or filter actionable lines with `awk`/`sed`. If safe, stop/cancel and relaunch with the filter.
-{{#if hub}}Hub: retune the monitor to `ambient` or `off` without stopping the process.{{/if}}
-{{#if bash}}Bash: progress cannot be retuned; if retry is unsafe, let it finish.{{/if}}
+Chatty progress → If safe, stop/cancel and relaunch with quiet/warning-only flags or an `awk`/`sed` filter.
+{{#if hub}}Hub process must keep running? Set its monitor to `ambient` or `off`.{{/if}}
+{{#if bash}}Unsafe to restart the Bash command? Let it finish.{{/if}}

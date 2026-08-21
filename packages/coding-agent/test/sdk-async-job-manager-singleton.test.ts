@@ -111,10 +111,10 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			expect(systemPrompt).not.toContain("10-event burst");
 			expect(systemPrompt).not.toContain("Every fifth progress update");
 			expect(systemPrompt).toContain(
-				"Chatty progress → use quiet/warning-only source output or filter actionable lines with `awk`/`sed`. If safe, stop/cancel and relaunch with the filter.",
+				"Chatty progress → If safe, stop/cancel and relaunch with quiet/warning-only flags or an `awk`/`sed` filter.",
 			);
-			expect(systemPrompt).toContain("Hub: retune the monitor to `ambient` or `off` without stopping the process.");
-			expect(systemPrompt).toContain("Bash: progress cannot be retuned; if retry is unsafe, let it finish.");
+			expect(systemPrompt).toContain("Hub process must keep running? Set its monitor to `ambient` or `off`.");
+			expect(systemPrompt).toContain("Unsafe to restart the Bash command? Let it finish.");
 			expect(systemPrompt).toContain(
 				'Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).',
 			);
@@ -133,10 +133,10 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			const systemPrompt = session.systemPrompt.join("\n\n");
 			expect(systemPrompt).toContain("<async-progress>");
 			expect(systemPrompt).not.toContain("Finite commands");
-			expect(systemPrompt).not.toContain("Bash: progress cannot be retuned");
+			expect(systemPrompt).not.toContain("Unsafe to restart the Bash command?");
 			expect(systemPrompt).toContain("Actionable process output");
-			expect(systemPrompt).toContain("Chatty progress → use quiet/warning-only source output");
-			expect(systemPrompt).toContain("Hub: retune the monitor");
+			expect(systemPrompt).toContain("Chatty progress → If safe, stop/cancel and relaunch");
+			expect(systemPrompt).toContain("Hub process must keep running?");
 		} finally {
 			await session.dispose();
 		}
