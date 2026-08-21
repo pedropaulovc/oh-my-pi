@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added bounded ambient or wake progress for asynchronous Bash jobs and supervised Hub processes. Bash `async: "auto"` keeps quick commands inline, agents can attach to existing processes without polling, rate-limited previews retain complete artifacts and expand with Ctrl+O, and completion notices surface failure and exit status ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
+
 ### Fixed
 
-- Failed background Bash completion notices now render in red, and completion notifications include the command's exit value for both the TUI and agent.
+- Fixed daemon broker idle shutdown closing newly accepted clients before their authentication request could be processed under load.
 
 ## [17.4.2] - 2026-08-21
 
@@ -52,7 +56,6 @@
 - Added repeat read warning hints when identical file content is read multiple times.
 - Explicit DAP adapters can now attach without a PID or port when `attachDefaults` provide the target arguments.
 - Added `isProjectTrusted()` compatibility shim to `ExtensionContext` for extensions targeting upstream per-directory trust gates.
-- Added bounded ambient or wake progress events for asynchronous Bash jobs and Hub processes. Bash `async: "auto"` keeps quick commands inline for the configurable `bash.asyncAuto.inlineGraceMs` grace period and activates notifications only when a slow command is promoted to background; agents can also attach to an existing Hub process without polling ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
 
 ### Changed
 
@@ -69,12 +72,10 @@
 - Supervised process completion notices now render as compact single-line entries.
 - The todo HUD header now displays a consolidated progress bar showing task completion across all stages.
 - `/settings` rows can now carry a risk note: a warning glyph on the row plus a warning-colored line above the description. `External Thinking` (`externalThinking`, `--external-thinking`) is the first user — providers have flagged the request shape it produces as abuse, up to account-level enforcement, so both the settings entry and `--help` now say so.
-- Async Bash and Hub progress now matches Claude Code Monitor's 200 ms trailing batches and burst rate limiting: ten event permits up front, one permit refilled every two seconds, suppression counts in model context, and a chatty-monitor reminder every fifth suppression report. Suppressed raw output remains in one stable artifact; oversized lines use a 500-character head/tail sample and model-facing previews stay within 3,000 UTF-8 bytes. TUI progress blocks show the latest 10 lines by default and reveal the complete retained preview with Ctrl+O.
 
 ### Fixed
 
 - Fixed SDK sessions with a custom agent directory inheriting process-global model overrides instead of loading that directory's own `models.yml`.
-- Fixed daemon broker idle shutdown closing newly accepted clients before their authentication request could be processed under load.
 - Fixed regional HTTP 401 data-residency errors during Codex chat, web search, and image generation requests by passing token residency metadata on requests.
 - Fixed macOS SSH ControlMaster socket creation failures caused by `sun_path` length limits when using named profiles.
 - Fixed an issue where Nix-packaged builds failed to load on-demand native addons (`onnxruntime-node`/`sherpa-onnx`) due to missing shared C++ runtime library paths.

@@ -104,11 +104,13 @@ describe("async progress messages", () => {
 		expect(content(message)).toContain(
 			'<output>\n<suppressed reason="rate-limit" events="9" full-output="artifact://chatty-output" />\n</output>',
 		);
+		expect(content(message)).toContain("Repeated non-actionable progress → NEVER narrate or echo each event.");
 		expect(content(message)).toContain(
-			"Chatty progress → If safe, stop/cancel and relaunch with quiet/warning-only flags or an `awk`/`sed` filter.",
+			"Transient burst? Ignore it and await completion. Sustained/chatty? Reduce source verbosity.",
 		);
-		expect(content(message)).toContain("Unsafe to restart? Let it finish.");
-		expect(content(message)).not.toContain("Alternatively, set its monitor");
+		expect(content(message)).toContain("Safe restart? Stop/cancel; relaunch with native quiet/warning-only flags.");
+		expect(content(message)).toContain("Unsafe restart? Let it finish silently.");
+		expect(content(message)).not.toContain("Retune its monitor");
 		expect(content(message)).toEndWith("</system-reminder>");
 	});
 
@@ -125,8 +127,9 @@ describe("async progress messages", () => {
 		]);
 
 		expect(content(message)).toContain("<system-reminder>");
-		expect(content(message)).toContain("Unsafe to restart? Let it finish.");
-		expect(content(message)).toContain("Alternatively, set its monitor to `ambient` or `off`.");
+		expect(content(message)).toContain("Sustained/chatty? Reduce source verbosity.");
+		expect(content(message)).toContain("Unsafe restart? Let it finish silently.");
+		expect(content(message)).toContain("Retune its monitor to `ambient` or `off`.");
 	});
 
 	test("does not emit an empty chatty reminder for unsupported progress sources", () => {

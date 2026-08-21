@@ -110,11 +110,13 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			expect(systemPrompt).not.toContain("200 ms batches");
 			expect(systemPrompt).not.toContain("10-event burst");
 			expect(systemPrompt).not.toContain("Every fifth progress update");
+			expect(systemPrompt).toContain("Repeated non-actionable progress → NEVER narrate or echo each event.");
 			expect(systemPrompt).toContain(
-				"Chatty progress → If safe, stop/cancel and relaunch with quiet/warning-only flags or an `awk`/`sed` filter.",
+				"Transient burst? Ignore it and await completion. Sustained/chatty? Reduce source verbosity.",
 			);
-			expect(systemPrompt).toContain("Alternatively, set its monitor to `ambient` or `off`.");
-			expect(systemPrompt).toContain("Unsafe to restart? Let it finish.");
+			expect(systemPrompt).toContain("Safe restart? Stop/cancel; relaunch with native quiet/warning-only flags.");
+			expect(systemPrompt).toContain("Retune its monitor to `ambient` or `off`.");
+			expect(systemPrompt).toContain("Unsafe restart? Let it finish silently.");
 			expect(systemPrompt).toContain(
 				'Actionable process output → `hub`, `progress: "wake"` (`op: "start"` new; `op: "monitor"` existing).',
 			);
@@ -134,10 +136,11 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			expect(systemPrompt).toContain("<async-progress>");
 			expect(systemPrompt).not.toContain("finite commands");
 			expect(systemPrompt).not.toContain('`bash` with `async: "auto"`');
-			expect(systemPrompt).toContain("Unsafe to restart? Let it finish.");
+			expect(systemPrompt).toContain("Unsafe restart? Let it finish silently.");
 			expect(systemPrompt).toContain("Actionable process output");
-			expect(systemPrompt).toContain("Chatty progress → If safe, stop/cancel and relaunch");
-			expect(systemPrompt).toContain("Alternatively, set its monitor");
+			expect(systemPrompt).toContain("Transient burst? Ignore it and await completion.");
+			expect(systemPrompt).toContain("Repeated non-actionable progress → NEVER narrate or echo each event.");
+			expect(systemPrompt).toContain("Retune its monitor");
 		} finally {
 			await session.dispose();
 		}
