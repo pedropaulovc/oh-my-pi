@@ -65,7 +65,7 @@
 - Supervised process completion notices now render as compact single-line entries.
 - The todo HUD header now displays a consolidated progress bar showing task completion across all stages.
 - `/settings` rows can now carry a risk note: a warning glyph on the row plus a warning-colored line above the description. `External Thinking` (`externalThinking`, `--external-thinking`) is the first user — providers have flagged the request shape it produces as abuse, up to account-level enforcement, so both the settings entry and `--help` now say so.
-- Async Bash and Hub progress now matches Claude Code Monitor's 200 ms trailing batches and burst rate limiting: ten event permits up front, one permit refilled every two seconds, suppression counts in model context, and a chatty-monitor reminder every fifth suppression report. Suppressed raw output remains in one stable artifact; oversized lines use a 500-character head/tail sample and model-facing previews stay within 3,000 UTF-8 bytes.
+- Async Bash and Hub progress now matches Claude Code Monitor's 200 ms trailing batches and burst rate limiting: ten event permits up front, one permit refilled every two seconds, suppression counts in model context, and a chatty-monitor reminder every fifth suppression report. Suppressed raw output remains in one stable artifact; oversized lines use a 500-character head/tail sample and model-facing previews stay within 3,000 UTF-8 bytes. TUI progress blocks show the latest 10 lines by default and reveal the complete retained preview with Ctrl+O.
 
 ### Fixed
 

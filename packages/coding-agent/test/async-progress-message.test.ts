@@ -180,7 +180,9 @@ describe("async progress messages", () => {
 		);
 		expect(content(message)).toContain("TAIL\n</tail>\n</output>");
 		expect(content(message)).not.toContain("<output>\nHEAD");
-		const rendered = Bun.stripANSI(buildAsyncProgressBlock(message).render(100).join("\n"));
+		const component = buildAsyncProgressBlock(message);
+		component.setExpanded(true);
+		const rendered = Bun.stripANSI(component.render(100).join("\n"));
 		expect(rendered).toContain("HEAD");
 		expect(rendered).toContain("TAIL");
 		expect(rendered).toContain("Read artifact://async-output-4 for full output");
@@ -227,6 +229,32 @@ describe("async progress messages", () => {
 		expect(rendered).not.toContain("\r");
 		expect(rendered).not.toContain(os.homedir());
 		expect(rendered).not.toContain("completed");
+	});
+
+	test("collapses terminal progress to ten lines and expands the retained preview", () => {
+		const output = [
+			"first hidden",
+			"second hidden",
+			...Array.from({ length: 10 }, (_, index) => `visible ${index + 1}`),
+		];
+		const message = buildAsyncProgressBatchMessage([entry("bg_expand", output.join("\n"))]);
+		if (!message) throw new Error("Expected progress message");
+		const component = buildAsyncProgressBlock(message);
+
+		const collapsed = Bun.stripANSI(component.render(100).join("\n"));
+		expect(collapsed).not.toContain("first hidden");
+		expect(collapsed).not.toContain("second hidden");
+		expect(collapsed).toContain("visible 1");
+		expect(collapsed).toContain("visible 10");
+		expect(collapsed).toContain("… 2 more lines");
+		expect(collapsed).toContain("Ctrl+O");
+
+		component.setExpanded(true);
+		const expanded = Bun.stripANSI(component.render(100).join("\n"));
+		expect(expanded).toContain("first hidden");
+		expect(expanded).toContain("second hidden");
+		expect(expanded).not.toContain("more lines");
+		expect(expanded).not.toContain("Ctrl+O");
 	});
 
 	test("names the work instead of rendering an implementation badge", () => {
