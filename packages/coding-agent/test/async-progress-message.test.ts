@@ -64,22 +64,29 @@ describe("async progress messages", () => {
 		expect(content(message)).toEndWith("</system-notice>");
 	});
 
-	test("renders rate-limited gaps with the recoverable artifact", () => {
+	test("retains the outer output around rate-limited progress events", () => {
 		const message = buildAsyncProgressBatchMessage([
 			{
-				...entry("bg_chatty", "next permitted event", 21),
+				...entry("bg_chatty", "line 1\nline 2\nline 98\nline 99", 21),
 				artifactId: "chatty-output",
 				suppressedEvents: 9,
 			},
 		]);
 		if (!message) throw new Error("Expected progress message");
 
-		expect(content(message)).toContain(
-			'<suppressed events="9" reason="rate-limit" full-output="artifact://chatty-output" />',
+		const xml = content(message);
+		const output = "<output>";
+		const suppressed = '<suppressed reason="rate-limit" events="9" full-output="artifact://chatty-output" />';
+		expect(xml).toContain(
+			`${output}\n<head>\nline 1\nline 2\n</head>\n${suppressed}\n<tail>\nline 98\nline 99\n</tail>`,
 		);
-		expect(content(message)).toContain("<output>\nnext permitted event\n</output>");
-		expect(content(message)).not.toContain("<system-reminder>");
+		expect(xml.indexOf(output)).toBeLessThan(xml.indexOf(suppressed));
+		expect(xml.indexOf(suppressed)).toBeLessThan(xml.indexOf("</output>"));
+		expect(xml).not.toContain(`${suppressed}\n<output`);
+		expect(xml).not.toContain("<system-reminder>");
 		const rendered = Bun.stripANSI(buildAsyncProgressBlock(message).render(100).join("\n"));
+		expect(rendered).toContain("line 1");
+		expect(rendered).toContain("line 99");
 		expect(rendered).toContain("9 progress events suppressed (rate limit)");
 		expect(rendered).toContain("Read artifact://chatty-output for full output");
 	});
@@ -94,9 +101,9 @@ describe("async progress messages", () => {
 			},
 		]);
 
-		expect(content(message)).toContain('<suppressed events="9" reason="rate-limit"');
-		expect(content(message)).not.toContain("<output>");
-		expect(content(message)).toContain("<system-reminder>");
+		expect(content(message)).toContain(
+			'<output>\n<suppressed reason="rate-limit" events="9" full-output="artifact://chatty-output" />\n</output>',
+		);
 		expect(content(message)).toContain("Chatty progress → use quiet/warning-only source output");
 		expect(content(message)).toContain("filter actionable lines with `awk`/`sed`");
 		expect(content(message)).toContain("Bash: progress cannot be retuned");
@@ -131,7 +138,7 @@ describe("async progress messages", () => {
 			},
 		]);
 
-		expect(content(message)).toContain('<suppressed events="4" reason="rate-limit"');
+		expect(content(message)).toContain('<suppressed reason="rate-limit" events="4"');
 		expect(content(message)).not.toContain("<system-reminder>");
 	});
 
@@ -166,10 +173,12 @@ describe("async progress messages", () => {
 		expect(preview?.head).not.toContain("TAIL");
 		expect(preview?.tail).not.toContain("HEAD");
 		expect(Buffer.byteLength(`${preview?.head ?? ""}${preview?.tail ?? ""}`, "utf8")).toBeLessThanOrEqual(3_000);
-		expect(content(message)).toContain('<output truncated="true" full-output="artifact://async-output-4">');
-		expect(content(message)).toContain("<head>\nHEAD");
-		expect(content(message)).toContain("TAIL\n</tail>");
-		expect(content(message)).not.toContain('<output truncated="true" full-output="artifact://async-output-4">\nHEAD');
+		expect(content(message)).toContain("<output>\n<head>\nHEAD");
+		expect(content(message)).toContain(
+			'<suppressed reason="preview-limit" full-output="artifact://async-output-4" />',
+		);
+		expect(content(message)).toContain("TAIL\n</tail>\n</output>");
+		expect(content(message)).not.toContain("<output>\nHEAD");
 		const rendered = Bun.stripANSI(buildAsyncProgressBlock(message).render(100).join("\n"));
 		expect(rendered).toContain("HEAD");
 		expect(rendered).toContain("TAIL");
@@ -194,6 +203,9 @@ describe("async progress messages", () => {
 		});
 		expect(content(message)).toContain(`<head>\n${"H".repeat(250)}\n</head>`);
 		expect(content(message)).toContain(`<tail>\n${"T".repeat(250)}\n</tail>`);
+		expect(content(message)).toContain(
+			'<suppressed reason="preview-limit" full-output="artifact://async-output-5" />',
+		);
 	});
 
 	test("renders the custom message as sanitized progress rather than a completion", () => {

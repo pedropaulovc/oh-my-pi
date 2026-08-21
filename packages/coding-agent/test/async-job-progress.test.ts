@@ -23,27 +23,32 @@ function heldJob(manager: AsyncJobManager, ownerId = "Main", progressDelivery: A
 	return { jobId, report: started.promise, release: gate.resolve };
 }
 
+interface RecordedProgress {
+	jobId: string;
+	text: string;
+	seq: number;
+	truncated?: boolean;
+	suppressedEvents?: number;
+	reminder?: ProgressReminder;
+}
+
 function recordingSink(): {
 	sink: AsyncJobProgressSink;
-	seen: Array<{ jobId: string; text: string; seq: number; suppressedEvents?: number; reminder?: ProgressReminder }>;
+	seen: RecordedProgress[];
 } {
-	const seen: Array<{
-		jobId: string;
-		text: string;
-		seq: number;
-		suppressedEvents?: number;
-		reminder?: ProgressReminder;
-	}> = [];
+	const seen: RecordedProgress[] = [];
 	return {
 		sink: {
 			deliver: (jobId, text, _job: AsyncJob, seq, info) => {
-				seen.push({
+				const record: RecordedProgress = {
 					jobId,
 					text,
 					seq,
 					suppressedEvents: info.suppressedEvents,
 					reminder: info.reminder,
-				});
+				};
+				if (info.truncated === true) record.truncated = true;
+				seen.push(record);
 			},
 		},
 		seen,
@@ -100,6 +105,32 @@ describe("AsyncJobManager model progress", () => {
 				reminder: undefined,
 			},
 		]);
+	});
+
+	test("retains the outer progress around a rate-limited middle", async () => {
+		vi.useFakeTimers();
+		const manager = new AsyncJobManager({});
+		const recorder = recordingSink();
+		manager.registerProgressSink("Main", recorder.sink);
+		const job = heldJob(manager);
+		const report = await job.report;
+
+		for (let event = 1; event <= 21; event++) {
+			report(`event-${event}`);
+			vi.advanceTimersByTime(200);
+		}
+
+		expect(recorder.seen.at(-1)).toEqual({
+			jobId: job.jobId,
+			text: "event-12\nevent-20\nevent-21",
+			seq: 21,
+			truncated: true,
+			suppressedEvents: 9,
+			reminder: undefined,
+		});
+
+		job.release();
+		await manager.waitForAll();
 	});
 
 	test("routes ambient events to the owning queue while idle and respects wait/ack suppression", async () => {

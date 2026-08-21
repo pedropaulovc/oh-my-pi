@@ -1030,7 +1030,7 @@ class DaemonBroker {
 		if (!registration) return;
 		const daemon = this.#records.get(registration.name)?.snapshot;
 		if (!daemon) return;
-		const preview = batch.kind === "progress" ? batch.values[0]?.preview : undefined;
+		const preview = batch.kind === "artifact-only" ? undefined : batch.values[0]?.preview;
 		const text = preview?.text ?? `${preview?.head ?? ""}${preview?.tail ?? ""}`;
 		await registration.artifactSink.flushArtifact();
 		const notification: DaemonOutputNotification = {
@@ -1043,7 +1043,8 @@ class DaemonBroker {
 			batchKind: batch.kind,
 			suppressedEvents: batch.suppressedEvents,
 			reminder: batch.reminder,
-			truncated: batch.kind === "progress" ? preview?.truncated : undefined,
+			truncated:
+				batch.kind === "artifact-only" ? undefined : preview?.truncated === true || batch.suppressedEvents > 0,
 		};
 		this.#sendMonitorNotification(registration, notification);
 	}

@@ -1,15 +1,22 @@
 <system-notice>
 {{#each jobs}}<job-progress id="{{jobId}}"{{#if type}} type="{{type}}"{{/if}} elapsed="{{elapsed}}">
-{{#if suppressedEvents}}<suppressed events="{{suppressedEvents}}" reason="rate-limit"{{#if artifactId}} full-output="artifact://{{artifactId}}"{{/if}} />
-{{/if}}{{#if hasOutput}}<output{{#if truncated}} truncated="true"{{#if artifactId}} full-output="artifact://{{artifactId}}"{{/if}}{{/if}}>
-{{#if truncated}}<head>
+{{#if truncated}}<output>
+<head>
 {{head}}
 </head>
-<tail>
+{{#if suppressedEvents}}<suppressed reason="rate-limit" events="{{suppressedEvents}}"{{#if artifactId}} full-output="artifact://{{artifactId}}"{{/if}} />
+{{else}}<suppressed reason="preview-limit"{{#if artifactId}} full-output="artifact://{{artifactId}}"{{/if}} />
+{{/if}}<tail>
 {{tail}}
-</tail>{{else}}{{text}}{{/if}}
+</tail>
 </output>
-{{/if}}
+{{else}}{{#if hasOutput}}<output>
+{{text}}
+</output>
+{{else}}{{#if suppressedEvents}}<output>
+<suppressed reason="rate-limit" events="{{suppressedEvents}}"{{#if artifactId}} full-output="artifact://{{artifactId}}"{{/if}} />
+</output>
+{{/if}}{{/if}}{{/if}}
 </job-progress>{{#unless @last}}
 {{/unless}}{{/each}}{{#if wake}}
 Resume your work using {{#if multiple}}these updates{{else}}this update{{/if}}.

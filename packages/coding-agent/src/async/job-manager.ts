@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { buildProgressPreview, mergeProgressPreviews } from "../session/progress-preview";
 import { type ProgressBatch, ProgressBatcher, type ProgressReminder } from "./progress-batcher";
 
 const DELIVERY_RETRY_BASE_MS = 500;
@@ -81,6 +82,22 @@ export interface AsyncJobProgressInfo {
 
 interface AsyncJobProgressRecord extends AsyncJobProgressInfo {
 	text: string;
+}
+
+function mergeAsyncJobProgressRecords(
+	left: AsyncJobProgressRecord,
+	right: AsyncJobProgressRecord,
+): AsyncJobProgressRecord {
+	const preview = mergeProgressPreviews(
+		buildProgressPreview(left.text, left.truncated),
+		buildProgressPreview(right.text, right.truncated),
+	);
+	return {
+		text:
+			preview.text ?? [preview.head, preview.tail].filter((part): part is string => part !== undefined).join("\n"),
+		artifactId: right.artifactId ?? left.artifactId,
+		truncated: preview.truncated,
+	};
 }
 
 /** Delivery callback for a settled job's result text. */
@@ -177,8 +194,9 @@ export class AsyncJobManager {
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
 	readonly #deliverySinks = new Map<string, AsyncJobDeliverySink>();
 	readonly #progressSinks = new Map<string, AsyncJobProgressSink>();
-	readonly #progressBatcher = new ProgressBatcher<AsyncJobProgressRecord>((jobId, batch) =>
-		this.#deliverAgentProgress(jobId, batch),
+	readonly #progressBatcher = new ProgressBatcher<AsyncJobProgressRecord>(
+		(jobId, batch) => this.#deliverAgentProgress(jobId, batch),
+		{ merge: mergeAsyncJobProgressRecords },
 	);
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
@@ -561,7 +579,7 @@ export class AsyncJobManager {
 		const info: AsyncJobProgressInfo = {
 			artifactId:
 				batch.values.findLast(record => record.artifactId !== undefined)?.artifactId ?? job.progressArtifactId,
-			truncated: batch.values.some(record => record.truncated === true),
+			truncated: batch.suppressedEvents > 0 || batch.values.some(record => record.truncated === true),
 			suppressedEvents: batch.suppressedEvents || undefined,
 			reminder: batch.reminder,
 		};

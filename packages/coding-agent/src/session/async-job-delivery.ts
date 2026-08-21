@@ -111,11 +111,11 @@ export function buildAsyncProgressBatchMessage(
 			.filter(Boolean)
 			.join("\n");
 		const hasOutput = fullText.length > 0;
-		const sourceTruncated = jobEntries.some(entry => entry.sourceTruncated);
+		const suppressedEvents = jobEntries.reduce((total, entry) => total + (entry.suppressedEvents ?? 0), 0);
+		const sourceTruncated = suppressedEvents > 0 || jobEntries.some(entry => entry.sourceTruncated);
 		const preview = buildProgressPreview(fullText, sourceTruncated);
 		const truncated = hasOutput && preview.truncated;
 		const artifactId = [...jobEntries].reverse().find(entry => entry.artifactId)?.artifactId;
-		const suppressedEvents = jobEntries.reduce((total, entry) => total + (entry.suppressedEvents ?? 0), 0);
 		const reminder = jobEntries.find(entry => entry.reminder !== undefined)?.reminder;
 		return {
 			jobId: latest.jobId,

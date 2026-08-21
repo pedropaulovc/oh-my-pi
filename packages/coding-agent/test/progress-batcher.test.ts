@@ -65,7 +65,7 @@ describe("ProgressBatcher", () => {
 		expect(seen.slice(11, 20).map(batch => batch.kind)).toEqual(Array(9).fill("artifact-only"));
 		expect(seen[20]).toEqual({
 			kind: "progress",
-			values: ["event-21"],
+			values: ["event-12", "event-20", "event-21"],
 			seq: 21,
 			suppressedEvents: 9,
 		});
@@ -112,7 +112,7 @@ describe("ProgressBatcher", () => {
 		await batcher.flush("source");
 		expect(seen.at(-1)).toEqual({
 			kind: "progress",
-			values: ["after-quiet-period"],
+			values: ["event-11", "after-quiet-period"],
 			seq: 12,
 			suppressedEvents: 1,
 		});
@@ -162,7 +162,7 @@ describe("ProgressBatcher", () => {
 			},
 			{
 				kind: "suppression-summary",
-				values: [],
+				values: ["final-suppressed"],
 				seq: 13,
 				suppressedEvents: 1,
 			},
@@ -193,7 +193,7 @@ describe("ProgressBatcher", () => {
 			},
 			{
 				kind: "suppression-summary",
-				values: [],
+				values: ["event-11", "final-suppressed"],
 				seq: 13,
 				suppressedEvents: 2,
 			},

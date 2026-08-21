@@ -26,15 +26,17 @@ interface ProgressBatchState<T> {
 	tokens: number;
 	lastRefillAt: number;
 	suppressedEvents: number;
+	suppressedValues: T[];
 	suppressionReports: number;
 	deliveryTail?: Promise<void>;
 	timer?: NodeJS.Timeout;
 }
 
 /**
- * Ordered per-source progress delivery matching Claude Code Monitor: complete
- * events collect in 200 ms windows, then a ten-event token bucket meters model
- * notifications and regains one rate-limit permit every two seconds.
+ * Ordered per-source delivery: complete events collect in 200 ms windows, then
+ * a ten-event token bucket meters model notifications and regains one permit
+ * every two seconds. Rate-limited windows retain only their outer values for
+ * the next permitted or terminal batch.
  */
 export class ProgressBatcher<T> {
 	readonly #states = new Map<string, ProgressBatchState<T>>();
@@ -58,6 +60,7 @@ export class ProgressBatcher<T> {
 				tokens: PROGRESS_RATE_LIMIT_BURST,
 				lastRefillAt: Date.now(),
 				suppressedEvents: 0,
+				suppressedValues: [],
 				suppressionReports: 0,
 			};
 			this.#states.set(id, state);
@@ -83,6 +86,7 @@ export class ProgressBatcher<T> {
 		state.seq += 1;
 		this.#refill(state);
 		if (state.tokens < 1 - PROGRESS_RATE_LIMIT_EPSILON) {
+			this.#retainSuppressedValues(state, values);
 			state.suppressedEvents += 1;
 			return this.#enqueueDelivery(id, state, {
 				kind: "artifact-only",
@@ -97,7 +101,7 @@ export class ProgressBatcher<T> {
 		state.suppressedEvents = 0;
 		return this.#enqueueDelivery(id, state, {
 			kind: "progress",
-			values,
+			values: this.#takeSuppressedValues(state, values),
 			seq: state.seq,
 			suppressedEvents,
 			...this.#suppressionReminder(state, suppressedEvents),
@@ -121,7 +125,7 @@ export class ProgressBatcher<T> {
 				state.suppressedEvents = 0;
 				await this.#enqueueDelivery(id, state, {
 					kind: "suppression-summary",
-					values: [],
+					values: this.#takeSuppressedValues(state, []),
 					seq: state.seq,
 					suppressedEvents,
 					...this.#suppressionReminder(state, suppressedEvents),
@@ -148,6 +152,29 @@ export class ProgressBatcher<T> {
 			if (state.timer) clearTimeout(state.timer);
 		}
 		this.#states.clear();
+	}
+
+	#retainSuppressedValues(state: ProgressBatchState<T>, values: readonly T[]): void {
+		const first = values[0];
+		if (first === undefined) return;
+		const last = values.at(-1)!;
+		if (state.suppressedValues.length === 0) {
+			state.suppressedValues.push(first);
+			if (values.length > 1) state.suppressedValues.push(last);
+			return;
+		}
+		if (state.suppressedValues.length === 1) {
+			state.suppressedValues.push(last);
+			return;
+		}
+		state.suppressedValues[1] = last;
+	}
+
+	#takeSuppressedValues(state: ProgressBatchState<T>, current: readonly T[]): T[] {
+		const values = [...state.suppressedValues, ...current];
+		state.suppressedValues.length = 0;
+		if (!this.#merge || values.length < 2) return values;
+		return [values.slice(1).reduce(this.#merge, values[0]!)];
 	}
 
 	#refill(state: ProgressBatchState<T>): void {
