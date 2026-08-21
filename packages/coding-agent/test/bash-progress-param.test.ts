@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
-import { AsyncJobManager, type AsyncJobProgressInfo } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { type AsyncJob, AsyncJobManager, type AsyncJobProgressInfo } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -213,4 +213,24 @@ describe("bash progress parameter", () => {
 		expect(events.join("\n").match(/progress:before-promotion/g)).toBeNull();
 		await manager.dispose();
 	}, 10_000);
+
+	test("retains successful and failed exit values for completion delivery", async () => {
+		const manager = new AsyncJobManager({});
+		const completedJobs: AsyncJob[] = [];
+		manager.registerDeliverySink("Main", (_jobId, _text, completedJob) => {
+			if (completedJob) completedJobs.push(completedJob);
+		});
+		const tool = new BashTool(makeSession(manager));
+
+		await tool.execute("exit-zero", { command: "exit 0", async: true });
+		await manager.waitForAll();
+		await manager.drainDeliveries({ timeoutMs: 10 });
+		await tool.execute("exit-seven", { command: "exit 7", async: true });
+		await manager.waitForAll();
+		await manager.drainDeliveries({ timeoutMs: 10 });
+
+		expect(completedJobs.map(job => job.status)).toEqual(["completed", "failed"]);
+		expect(completedJobs.map(job => job.latestDetails?.exitCode)).toEqual([0, 7]);
+		await manager.dispose();
+	});
 });

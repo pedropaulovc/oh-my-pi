@@ -160,11 +160,14 @@ export function buildAsyncProgressBatchMessage(
 	};
 }
 
-type AsyncResultJobDetails = {
+export type AsyncResultJobDetails = {
 	jobId: string;
 	type?: AsyncJobType;
 	label?: string;
 	durationMs?: number;
+	status?: AsyncJob["status"];
+	exitCode?: number;
+	timedOut?: boolean;
 };
 
 export type AsyncResultDetails = {
@@ -173,19 +176,34 @@ export type AsyncResultDetails = {
 
 export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): CustomMessage<AsyncResultDetails> | null {
 	if (entries.length === 0) return null;
-	const jobs = entries.map(entry => ({
-		jobId: entry.jobId,
-		result: entry.result,
-		type: entry.job?.type,
-		label: entry.job?.label,
-		durationMs: entry.durationMs,
-	}));
+	const jobs = entries.map(entry => {
+		const rawExitCode = entry.job?.latestDetails?.exitCode;
+		const exitCode = typeof rawExitCode === "number" ? rawExitCode : undefined;
+		const timedOut = entry.job?.latestDetails?.timedOut === true;
+		const status = entry.job?.status;
+		return {
+			jobId: entry.jobId,
+			result: entry.result,
+			type: entry.job?.type,
+			label: entry.job?.label,
+			durationMs: entry.durationMs,
+			status,
+			timedOut,
+			bash: entry.job?.type === "bash",
+			exitCode,
+			failed: status === "failed" || timedOut || (exitCode !== undefined && exitCode !== 0),
+			hasExitCode: exitCode !== undefined,
+		};
+	});
 	const details: AsyncResultDetails = {
 		jobs: jobs.map(job => ({
 			jobId: job.jobId,
 			type: job.type,
 			label: job.label,
 			durationMs: job.durationMs,
+			status: job.status,
+			exitCode: job.exitCode,
+			timedOut: job.timedOut,
 		})),
 	};
 	return {

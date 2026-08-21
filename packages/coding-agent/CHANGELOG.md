@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Failed background Bash completion notices now render in red, and completion notifications include the command's exit value for both the TUI and agent.
+
 ## [17.4.2] - 2026-08-21
 
 ### Added

@@ -257,20 +257,62 @@ describe("async progress messages", () => {
 		expect(expanded).not.toContain("Ctrl+O");
 	});
 
-	test("names the work instead of rendering an implementation badge", () => {
+	test("renders successful Bash completion with its exit value", () => {
 		const runningJob = job("bg_8");
+		const completedJob: AsyncJob = {
+			...runningJob,
+			status: "completed",
+			latestDetails: { exitCode: 0 },
+		};
 		const progressMessage = buildAsyncProgressBatchMessage([{ ...entry("bg_8", "working"), job: runningJob }]);
 		const completionMessage = buildAsyncResultBatchMessage([
-			{ jobId: "bg_8", result: "done", job: runningJob, durationMs: 5_000, epoch: 0 },
+			{ jobId: "bg_8", result: "done", job: completedJob, durationMs: 5_000, epoch: 0 },
 		]);
 		if (!progressMessage || !completionMessage) throw new Error("Expected progress and completion messages");
 
 		const progress = Bun.stripANSI(buildAsyncProgressBlock(progressMessage).render(80).join("\n"));
 		const completion = Bun.stripANSI(buildAsyncResultBlock(completionMessage).render(80).join("\n"));
 
+		expect(completionMessage.details?.jobs[0]).toMatchObject({
+			jobId: "bg_8",
+			status: "completed",
+			exitCode: 0,
+		});
+		expect(content(completionMessage)).toContain("Background job bg_8 (bg_8) completed with exit code 0.");
 		expect(progress).toContain("Background command progress bg_8");
-		expect(completion).toContain("Background command completed bg_8");
+		expect(completion).toContain("Background command completed bg_8 (exit 0)");
 		expect(progress).not.toContain("[bash]");
 		expect(completion).not.toContain("[bash]");
+	});
+
+	test("renders failed Bash completion in red with its exit value", () => {
+		const failedJob: AsyncJob = {
+			...job("bg_failed"),
+			status: "failed",
+			latestDetails: { exitCode: 7 },
+		};
+		const completionMessage = buildAsyncResultBatchMessage([
+			{
+				jobId: "bg_failed",
+				result: "Command exited with code 7",
+				job: failedJob,
+				durationMs: 5_000,
+				epoch: 0,
+			},
+		]);
+		if (!completionMessage) throw new Error("Expected completion message");
+
+		const raw = buildAsyncResultBlock(completionMessage).render(80).join("\n");
+		const rendered = Bun.stripANSI(raw);
+
+		expect(completionMessage.details?.jobs[0]).toMatchObject({
+			jobId: "bg_failed",
+			status: "failed",
+			exitCode: 7,
+		});
+		expect(content(completionMessage)).toContain("Background job bg_failed (bg_failed) failed with exit code 7.");
+		expect(rendered).toContain("Background command failed bg_failed (exit 7)");
+		expect(raw).toContain(theme.fg("error", `${theme.status.error} Background command failed`));
+		expect(raw).not.toContain(theme.fg("success", `${theme.status.done} Background command completed`));
 	});
 });

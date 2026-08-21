@@ -9,7 +9,7 @@ import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AsyncJobType } from "../../async";
 import type { DaemonSnapshot } from "../../launch/protocol";
-import type { AsyncProgressDetails } from "../../session/async-job-delivery";
+import type { AsyncProgressDetails, AsyncResultDetails } from "../../session/async-job-delivery";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
@@ -51,20 +51,11 @@ function backgroundWorkNoun(type: BackgroundWorkType | undefined): "command" | "
 }
 
 /**
- * Render an `async-result` custom message (a completed background bash/task job,
- * or a batch of them) as a transcript block of one "Background job completed"
- * row per job.
+ * Render an `async-result` custom message as one terminal background-work row
+ * per job, with failure state and Bash exit code when available.
  */
 export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivityContainer {
-	const details = (
-		message as CustomMessage<{
-			jobId?: string;
-			type?: AsyncJobType;
-			label?: string;
-			durationMs?: number;
-			jobs?: Array<{ jobId?: string; type?: AsyncJobType; label?: string; durationMs?: number }>;
-		}>
-	).details;
+	const details = (message as CustomMessage<AsyncResultDetails & Partial<AsyncResultDetails["jobs"][number]>>).details;
 	const jobs =
 		details?.jobs && details.jobs.length > 0
 			? details.jobs
@@ -74,15 +65,24 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 						type: details?.type,
 						label: details?.label,
 						durationMs: details?.durationMs,
+						status: details?.status,
+						exitCode: details?.exitCode,
+						timedOut: details?.timedOut,
 					},
 				];
 	const block = new TranscriptBlock();
 	for (const job of jobs) {
 		const jobId = job.jobId ?? "unknown";
 		const duration = typeof job.durationMs === "number" ? formatDuration(job.durationMs) : undefined;
+		const failed =
+			job.status === "failed" || job.timedOut === true || (job.exitCode !== undefined && job.exitCode !== 0);
 		const line = [
-			theme.fg("success", `${theme.status.done} Background ${backgroundWorkNoun(job.type)} completed`),
+			failed
+				? theme.fg("error", `${theme.status.error} Background ${backgroundWorkNoun(job.type)} failed`)
+				: theme.fg("success", `${theme.status.done} Background ${backgroundWorkNoun(job.type)} completed`),
 			theme.fg("accent", jobId),
+			job.exitCode !== undefined ? theme.fg("dim", `(exit ${job.exitCode})`) : undefined,
+			job.timedOut === true && job.exitCode === undefined ? theme.fg("dim", "(timed out)") : undefined,
 			duration ? theme.fg("dim", `(${duration})`) : undefined,
 		]
 			.filter(Boolean)

@@ -855,6 +855,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 							)
 						: undefined;
 				const wallTimeStart = performance.now();
+				let exitCode: number | undefined;
+				let timedOut = false;
 				try {
 					let result: BashResult;
 					try {
@@ -878,12 +880,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					} finally {
 						progressLines?.finish();
 					}
+					exitCode = result.exitCode;
 					const wallTimeMs = performance.now() - wallTimeStart;
 					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
 						requestedTimeoutSec: options.requestedTimeoutSec,
 						notices: options.notices ?? [],
 						wallTimeMs,
 					});
+					timedOut = finalResult.details?.timedOut === true;
 					const finalText = this.#extractTextResult(finalResult);
 					latestText = finalText;
 					// Hand the detailed result to the foreground auto-background
@@ -896,13 +900,21 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						// delivers the error text, matching prior throw-based behavior.
 						throw new ToolError(finalText);
 					}
-					await reportProgress(finalText, { async: { state: "completed", jobId, type: "bash" } });
+					await reportProgress(finalText, {
+						...(exitCode === undefined ? {} : { exitCode }),
+						async: { state: "completed", jobId, type: "bash" },
+						...(timedOut ? { timedOut: true } : {}),
+					});
 					return finalText;
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					latestText = message;
 					completion.resolve({ kind: "failed", error });
-					await reportProgress(message, { async: { state: "failed", jobId, type: "bash" } });
+					await reportProgress(message, {
+						...(exitCode === undefined ? {} : { exitCode }),
+						...(timedOut ? { timedOut: true } : {}),
+						async: { state: "failed", jobId, type: "bash" },
+					});
 					throw error;
 				}
 			},
