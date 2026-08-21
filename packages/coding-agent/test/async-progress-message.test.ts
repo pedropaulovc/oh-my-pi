@@ -107,8 +107,8 @@ describe("async progress messages", () => {
 		expect(content(message)).toContain(
 			"Chatty progress → If safe, stop/cancel and relaunch with quiet/warning-only flags or an `awk`/`sed` filter.",
 		);
-		expect(content(message)).toContain("Unsafe to restart the Bash command? Let it finish.");
-		expect(content(message)).not.toContain("Hub process must keep running?");
+		expect(content(message)).toContain("Unsafe to restart? Let it finish.");
+		expect(content(message)).not.toContain("Alternatively, set its monitor");
 		expect(content(message)).toEndWith("</system-reminder>");
 	});
 
@@ -125,8 +125,8 @@ describe("async progress messages", () => {
 		]);
 
 		expect(content(message)).toContain("<system-reminder>");
-		expect(content(message)).toContain("Hub process must keep running? Set its monitor to `ambient` or `off`.");
-		expect(content(message)).not.toContain("Unsafe to restart the Bash command?");
+		expect(content(message)).toContain("Unsafe to restart? Let it finish.");
+		expect(content(message)).toContain("Alternatively, set its monitor to `ambient` or `off`.");
 	});
 
 	test("does not emit an empty chatty reminder for unsupported progress sources", () => {
