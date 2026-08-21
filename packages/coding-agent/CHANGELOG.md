@@ -48,6 +48,7 @@
 - Added repeat read warning hints when identical file content is read multiple times.
 - Explicit DAP adapters can now attach without a PID or port when `attachDefaults` provide the target arguments.
 - Added `isProjectTrusted()` compatibility shim to `ExtensionContext` for extensions targeting upstream per-directory trust gates.
+- Added bounded ambient or wake progress events for asynchronous Bash jobs and Hub processes. Bash `async: "auto"` keeps quick commands inline for the configurable `bash.asyncAuto.inlineGraceMs` grace period and activates notifications only when a slow command is promoted to background; agents can also attach to an existing Hub process without polling ([#2762](https://github.com/can1357/oh-my-pi/issues/2762)).
 
 ### Changed
 
@@ -64,6 +65,7 @@
 - Supervised process completion notices now render as compact single-line entries.
 - The todo HUD header now displays a consolidated progress bar showing task completion across all stages.
 - `/settings` rows can now carry a risk note: a warning glyph on the row plus a warning-colored line above the description. `External Thinking` (`externalThinking`, `--external-thinking`) is the first user — providers have flagged the request shape it produces as abuse, up to account-level enforcement, so both the settings entry and `--help` now say so.
+- Async Bash and Hub progress now matches Claude Code Monitor's 200 ms trailing batches and burst rate limiting: ten event permits up front, one permit refilled every two seconds, suppression counts in model context, and a chatty-monitor reminder every fifth suppression report. Suppressed raw output remains in one stable artifact; oversized lines use a 500-character head/tail sample and model-facing previews stay within 3,000 UTF-8 bytes.
 
 ### Fixed
 
