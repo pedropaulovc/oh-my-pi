@@ -144,7 +144,7 @@ jobs:
          - name: Verify Rust license compliance (cargo-deny 0.20.2)
            run: |
               cargo install --locked --version 0.20.2 cargo-deny
-              cargo deny --locked --offline check licenses sources
+              cargo deny --locked check licenses sources
          - name: Type check workspace
            run: bun run ci:check:full
          - name: Build collab web
