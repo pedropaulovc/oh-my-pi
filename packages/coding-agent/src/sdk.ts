@@ -1763,6 +1763,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			queueLaunchCompletion: notification =>
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
+			queueLaunchProgress: (notification, delivery, startedAt, artifactId) =>
+				session?.queueLaunchProgress(notification, delivery, startedAt, artifactId),
+			setLaunchMonitorActive: (monitorId, delivery, active) =>
+				session?.setLaunchMonitorActive(monitorId, delivery, active),
 			registerDisposeCallback: callback => {
 				disposeCallbacks.add(callback);
 				return () => disposeCallbacks.delete(callback);
@@ -3372,6 +3376,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			queueLaunchCompletion: notification =>
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
+			queueLaunchProgress: (notification, delivery, startedAt, artifactId) =>
+				session?.queueLaunchProgress(notification, delivery, startedAt, artifactId),
+			setLaunchMonitorActive: (monitorId, delivery, active) =>
+				session?.setLaunchMonitorActive(monitorId, delivery, active),
 			getAgentId: () => "advisor",
 			// The primary's availability signals are wrong for advisors: their tool
 			// slate is filtered separately at runtime (default read/grep/glob, no
