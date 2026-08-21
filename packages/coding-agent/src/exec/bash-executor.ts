@@ -29,6 +29,7 @@ export interface BashExecutorOptions {
 	/** Artifact path/id for full output storage */
 	artifactPath?: string;
 	artifactId?: string;
+	artifactWriteMode?: "spill" | "mirror";
 	/**
 	 * Invoked when the native minimizer rewrote the command's output, giving
 	 * the caller a chance to persist the lossless original capture (typically
@@ -379,14 +380,14 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		onChunk: options?.onChunk,
 		artifactPath: options?.artifactPath,
 		artifactId: options?.artifactId,
+		artifactWriteMode: options?.artifactWriteMode,
 		headBytes: resolveOutputSinkHeadBytes(settings),
 		maxColumns: resolveOutputMaxColumns(settings),
 		chunkThrottleMs: options?.onChunk ? (options.chunkThrottleMs ?? 50) : 0,
 	});
 
-	// sink.push() is synchronous — buffer management, counters, and onChunk
-	// all run inline. File writes (artifact path) are handled asynchronously
-	// inside the sink. No promise chain needed.
+	// sink.push() updates buffers synchronously. Normal onChunk callbacks also run
+	// inline; mirror mode delays them until the artifact bytes are readable.
 	let acceptingChunks = true;
 	const enqueueChunk = (chunk: string) => {
 		if (acceptingChunks) sink.push(chunk);
