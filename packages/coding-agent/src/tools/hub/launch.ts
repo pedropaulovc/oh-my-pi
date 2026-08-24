@@ -327,6 +327,7 @@ async function registerOutputSink(
 	if (
 		!captureLaunchProgressEpoch ||
 		!session.queueLaunchProgress ||
+		!session.discardLaunchProgress ||
 		!session.queueLaunchCompletion ||
 		!client.onOutput
 	) {
@@ -767,7 +768,9 @@ async function registerOutputSink(
 async function detachOutputSink(session: ToolSession, client: DaemonBrokerClient, name: string): Promise<boolean> {
 	const registration = outputRegistrations.get(session)?.get(client)?.get(name);
 	if (!registration) return false;
-	await registration.cleanup();
+	const cleanup = registration.cleanup();
+	session.discardLaunchProgress?.(registration.id, registration.epoch);
+	await cleanup;
 	return true;
 }
 
