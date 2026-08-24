@@ -1633,6 +1633,7 @@ export class AgentSession {
 			skipIdleFlush: true,
 			isStale: entry =>
 				entry.epoch !== (entry.source?.type === "process" ? this.#launchProgressEpoch : this.#asyncDeliveryEpoch) ||
+				entry.job?.status === "cancelled" ||
 				(entry.job !== undefined && this.#asyncJobManager?.isDeliverySuppressed(entry.jobId) === true),
 			// Ambient entries accumulate for as long as the owner stays idle; fold
 			// them into one bounded window per job so the queue cannot grow (and
@@ -1651,6 +1652,7 @@ export class AgentSession {
 				isStale: entry =>
 					entry.epoch !==
 						(entry.source?.type === "process" ? this.#launchProgressEpoch : this.#asyncDeliveryEpoch) ||
+					entry.job?.status === "cancelled" ||
 					(entry.job !== undefined && this.#asyncJobManager?.isDeliverySuppressed(entry.jobId) === true),
 				idleTurnBudget: this.#wakeTurnBudget,
 				coalesceKey: asyncProgressCoalesceKey,
