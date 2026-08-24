@@ -889,7 +889,7 @@ function homePatternFor(homeDir: string, windowsStyle: boolean): RegExp {
 					.join("[\\\\/]")
 			: RegExp.escape(homeDir);
 		pattern = new RegExp(
-			`[a-zA-Z][a-zA-Z0-9+.-]*://[^\\s"'<>]+|(^|[\\s"'\\x60([{=,:])(${escapedHome})(?=$|[\\\\/\\s"'\\x60)\\]},;:])`,
+			`(?!file://)[a-zA-Z][a-zA-Z0-9+.-]*://[^\\s"'<>]+|(^|file://|[\\s"'\\x60([{=,:])(${escapedHome})(?=$|[\\\\/\\s"'\\x60)\\]},;:])`,
 			windowsStyle ? "gi" : "g",
 		);
 		if (homePatternCache.size >= 16) homePatternCache.clear();
@@ -925,8 +925,11 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string, preserveSep
 	const homePattern = homePatternFor(resolvedHome, windowsStyle);
 	const textWithShortenedHome = text.replace(
 		homePattern,
-		(match, boundary: string | undefined, candidate: string | undefined) =>
-			candidate === undefined ? match : `${boundary}~`,
+		(match, boundary: string | undefined, candidate: string | undefined) => {
+			if (candidate === undefined || boundary === undefined) return match;
+			// A `file://` boundary keeps the URI's third slash: `file://~` would read as a host.
+			return boundary.endsWith("//") ? `${boundary}/~` : `${boundary}~`;
+		},
 	);
 	if (preserveSeparators) return textWithShortenedHome;
 	return textWithShortenedHome
