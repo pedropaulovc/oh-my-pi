@@ -775,7 +775,11 @@ function registerCompletionSink(
 	session: ToolSession,
 	client: DaemonBrokerClient,
 	owner: string,
-	binding?: { name: string; epoch: number; operation: "monitor" | "restart" | "start" },
+	binding?: {
+		name: string;
+		epoch: number;
+		operation: "monitor" | "restart" | "start";
+	},
 ): CompletionLease | undefined {
 	if (!session.queueLaunchCompletion) return undefined;
 	let clients = completionRegistrations.get(session);
@@ -979,6 +983,7 @@ const KEY_INPUT: Record<string, string> = {
 	LEFT: "\u001b[D",
 };
 
+
 /** Monitoring needs a live broker connection to the process; detached daemons have none, so name the alternatives. */
 const DETACHED_MONITOR_ERROR =
 	"Detached processes cannot be live-monitored; start it without detached: true, or read its output with logs (follow: true)";
@@ -1055,7 +1060,11 @@ function sendData(params: LaunchParams): string | undefined {
 function operationFor(params: LaunchParams, session: ToolSession): DaemonOperation {
 	switch (params.op) {
 		case "start":
-			return { op: "start", spec: commandSpec(params, session), owner: session.getSessionId?.() ?? undefined };
+			return {
+				op: "start",
+				spec: commandSpec(params, session),
+				owner: session.getSessionId?.() ?? undefined,
+			};
 		case "list":
 			return { op: "list" };
 		case "logs":
@@ -1086,7 +1095,11 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 				signal: params.signal,
 			};
 		case "stop":
-			return { op: "stop", name: requiredName(params), timeoutMs: timeoutMs(params.timeout, 5) };
+			return {
+				op: "stop",
+				name: requiredName(params),
+				timeoutMs: timeoutMs(params.timeout, 5),
+			};
 		case "restart":
 			return { op: "restart", name: requiredName(params) };
 		case "describe":
@@ -1247,7 +1260,12 @@ async function toolDetails(
 				terminalRows: await renderLaunchLogTerminalRows(result, params).catch(() => undefined),
 			};
 		case "wait":
-			return { op: "wait", daemon: result.daemon, timedOut: result.timedOut, matched: result.matched };
+			return {
+				op: "wait",
+				daemon: result.daemon,
+				timedOut: result.timedOut,
+				matched: result.matched,
+			};
 		case "send":
 			return { op: "send", daemon: result.daemon };
 		case "stop":
@@ -1332,7 +1350,11 @@ export async function executeLaunch(
 		const localStop = stopRegistration
 			? (() => {
 					const { promise: response, resolve: settle } = Promise.withResolvers<LocalStopResponse>();
-					const lifecycle = { state: "response-pending", response, settle } satisfies LocalStopLifecycle;
+					const lifecycle = {
+						state: "response-pending",
+						response,
+						settle,
+					} satisfies LocalStopLifecycle;
 					stopRegistration.localStop = lifecycle;
 					return lifecycle;
 				})()
