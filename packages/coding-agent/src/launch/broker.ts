@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { isEexist, isEnoent, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
+import { TerminalQueryResponder } from "@oh-my-pi/pi-utils/vterm";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { truncateHead, truncateHeadBytes, truncateTail, truncateTailBytes } from "../session/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
@@ -32,6 +33,7 @@ import { resolveDaemonSpawnOptions } from "./spawn-options";
 import { renderTerminalOutput } from "./terminal-output";
 
 const DEFAULT_IDLE_GRACE_MS = 3_000;
+const CLIENT_AUTH_TIMEOUT_MS = 10_000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LOG_BYTES = 25 * 1024 * 1024;
 const LOG_READ_BYTES = 2 * 1024 * 1024;
@@ -353,6 +355,7 @@ class DaemonBroker {
 	readonly #token: string;
 	readonly #idleGraceMs: number;
 	readonly #restartBackoffBaseMs: number;
+	readonly #clientAuthTimeoutMs: number;
 	readonly #records = new Map<string, ManagedDaemon>();
 	/**
 	 * Names reserved by an in-flight `start` before its record lands in
@@ -363,7 +366,6 @@ class DaemonBroker {
 	 * profile lock) or keeps running untracked.
 	 */
 	readonly #startingNames = new Set<string>();
-	readonly #clients = new Set<net.Socket>();
 	readonly #ownerSockets = new Map<string, { socket: net.Socket; subscriptionId: string | undefined }>();
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
@@ -379,6 +381,7 @@ class DaemonBroker {
 		token: string,
 		idleGraceMs: number,
 		restartBackoffBaseMs: number,
+		clientAuthTimeoutMs: number,
 	) {
 		this.#projectDir = projectDir;
 		this.#runtimeDir = runtimeDir;
@@ -386,9 +389,10 @@ class DaemonBroker {
 		this.#token = token;
 		this.#idleGraceMs = idleGraceMs;
 		this.#restartBackoffBaseMs = restartBackoffBaseMs;
+		this.#clientAuthTimeoutMs = clientAuthTimeoutMs;
 	}
 
-	async run(): Promise<void> {
+	async run(onListening?: () => void | Promise<void>): Promise<void> {
 		await this.#recoverRecords();
 		if (process.platform !== "win32") await fs.rm(this.#endpoint, { force: true });
 		const server = net.createServer(socket => this.#accept(socket));
@@ -399,6 +403,12 @@ class DaemonBroker {
 		server.listen(this.#endpoint);
 		await listening;
 		if (process.platform !== "win32") await fs.chmod(this.#endpoint, 0o600);
+		try {
+			await onListening?.();
+		} catch (error) {
+			await this.shutdown();
+			throw error;
+		}
 		this.#scheduleIdleShutdown();
 		await this.#finished.promise;
 	}
@@ -418,7 +428,6 @@ class DaemonBroker {
 		this.#ownerSockets.clear();
 		for (const socket of this.#sockets) socket.destroy();
 		this.#sockets.clear();
-		this.#clients.clear();
 		if (this.#server) {
 			const { promise, resolve } = Promise.withResolvers<void>();
 			this.#server.close(() => resolve());
@@ -430,8 +439,12 @@ class DaemonBroker {
 
 	#accept(socket: net.Socket): void {
 		this.#sockets.add(socket);
+		clearTimeout(this.#idleTimer);
+		this.#idleTimer = undefined;
 		let authenticated = false;
 		let buffer = "";
+		const authenticationTimer = setTimeout(() => socket.destroy(), this.#clientAuthTimeoutMs);
+		authenticationTimer.unref();
 		socket.setEncoding("utf8");
 		socket.on("data", chunk => {
 			buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -448,9 +461,7 @@ class DaemonBroker {
 				void this.#handleLine(socket, line, () => {
 					if (authenticated) return;
 					authenticated = true;
-					this.#clients.add(socket);
-					clearTimeout(this.#idleTimer);
-					this.#idleTimer = undefined;
+					clearTimeout(authenticationTimer);
 				});
 			}
 		});
@@ -458,10 +469,10 @@ class DaemonBroker {
 			// Socket closure performs client accounting.
 		});
 		socket.on("close", () => {
+			clearTimeout(authenticationTimer);
 			this.#sockets.delete(socket);
-			if (!authenticated) return;
-			this.#clients.delete(socket);
 			this.#scheduleIdleShutdown();
+			if (!authenticated) return;
 			for (const [owner, registration] of this.#ownerSockets) {
 				if (registration.socket === socket) this.#ownerSockets.delete(owner);
 			}
@@ -725,10 +736,23 @@ class DaemonBroker {
 			cols: DAEMON_PTY_COLUMNS,
 			rows: DAEMON_PTY_ROWS,
 		};
+		// Nothing plays terminal for a supervised PTY, so a program probing for
+		// cursor position or device attributes would block on the reply. Answer
+		// the queries from the output stream and write the replies to its stdin.
+		const responder = new TerminalQueryResponder();
 		const onChunk = (error: Error | null, chunk: string): void => {
 			if (generation !== record.generation) return;
 			if (error) record.log?.append(`PTY output error: ${error.message}\n`);
-			if (chunk) this.#onOutput(record, generation, chunk);
+			if (!chunk) return;
+			const reply = responder.feed(chunk);
+			if (reply) {
+				try {
+					session.write(reply);
+				} catch {
+					// The PTY may exit between emitting its final output and receiving the reply.
+				}
+			}
+			this.#onOutput(record, generation, chunk);
 		};
 		const started = Promise.withResolvers<number | undefined>();
 		const onStart = (error: Error | null, pid: number): void => {
@@ -1057,6 +1081,10 @@ class DaemonBroker {
 
 	async #wait(operation: Extract<DaemonOperation, { op: "wait" }>): Promise<DaemonRpcResult> {
 		const record = this.#record(operation.name);
+		// A wait observes exactly one launch generation. Automatic or explicit
+		// relaunches reuse the managed record, so polling the record without this
+		// binding can hang past an exit or consume the replacement's output.
+		const boundGeneration = record.generation;
 		await this.#refreshDetached(record);
 		let matched: string | undefined;
 		let pattern: RegExp | undefined;
@@ -1073,7 +1101,10 @@ class DaemonBroker {
 			record.snapshot.readyAt !== undefined ||
 			record.snapshot.state === "ready" ||
 			(record.snapshot.state === "running" && !record.spec.ready);
+		const generationEnded = (): boolean =>
+			record.generation !== boundGeneration || record.snapshot.state === "restarting";
 		const condition = (): boolean => {
+			if (generationEnded()) return true;
 			if (pattern) {
 				const match = pattern.exec(record.readinessBuffer);
 				if (!match) return false;
@@ -1086,6 +1117,13 @@ class DaemonBroker {
 			return readyObserved() || terminalState(record.snapshot.state);
 		};
 		const woke = condition() || (await this.#waitUntil(record, condition, operation.timeoutMs));
+		if (generationEnded()) {
+			const exit = record.snapshot.exitCode === undefined ? "" : ` with exit code ${record.snapshot.exitCode}`;
+			throw new Error(
+				`Daemon ${operation.name} generation ${boundGeneration} exited${exit}; ` +
+					"the wait was rejected instead of continuing against a replacement generation",
+			);
+		}
 		// A for:"ready" wait that woke on a terminal exit without ever observing
 		// readiness is still "not ready" — surface it as timed out so callers and the
 		// renderer don't chain work against a dead process.
@@ -1340,7 +1378,7 @@ class DaemonBroker {
 	}
 
 	#scheduleIdleShutdown(): void {
-		if (this.#shuttingDown || this.#clients.size > 0) return;
+		if (this.#shuttingDown || this.#sockets.size > 0) return;
 		clearTimeout(this.#idleTimer);
 		this.#idleTimer = setTimeout(() => {
 			this.#idleTimer = undefined;
@@ -1348,12 +1386,12 @@ class DaemonBroker {
 				const livePersistent = [...this.#records.values()].some(
 					record => record.spec.persist && !terminalState(record.snapshot.state),
 				);
-				if (this.#clients.size > 0 || livePersistent) return;
+				if (this.#sockets.size > 0 || livePersistent) return;
 				if (await hasLiveDaemonProjectPresence(this.#runtimeDir)) {
 					this.#scheduleIdleShutdown();
 					return;
 				}
-				if (this.#clients.size === 0) await this.shutdown();
+				if (this.#sockets.size === 0) await this.shutdown();
 			})();
 		}, this.#idleGraceMs);
 	}
@@ -1362,6 +1400,10 @@ class DaemonBroker {
 export interface DaemonBrokerStartOptions {
 	/** Base of the exponential child-restart backoff. */
 	restartBackoffBaseMs?: number;
+	/** Maximum time for a newly accepted socket to authenticate. */
+	clientAuthTimeoutMs?: number;
+	/** Called after the broker endpoint is ready to accept authenticated requests. */
+	onListening?: () => void | Promise<void>;
 }
 
 /** Start the detached project or global daemon broker selected by the CLI worker host. */
@@ -1380,6 +1422,11 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 		Number.isFinite(requestedRestartBackoffBaseMs) && requestedRestartBackoffBaseMs >= 0
 			? requestedRestartBackoffBaseMs
 			: RESTART_BACKOFF_BASE_MS;
+	const requestedClientAuthTimeoutMs = options.clientAuthTimeoutMs ?? CLIENT_AUTH_TIMEOUT_MS;
+	const clientAuthTimeoutMs =
+		Number.isFinite(requestedClientAuthTimeoutMs) && requestedClientAuthTimeoutMs >= 0
+			? requestedClientAuthTimeoutMs
+			: CLIENT_AUTH_TIMEOUT_MS;
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
 	const lease = await acquireBrokerLease(runtimeDir);
 	if (!lease) return;
@@ -1400,10 +1447,17 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 	});
 	const token = (await Bun.file(path.join(runtimeDir, TOKEN_FILE)).text()).trim();
 	if (!token) throw new Error("Daemon broker token is empty");
-	const broker = new DaemonBroker(projectDir, runtimeDir, token, idleGraceMs, restartBackoffBaseMs);
+	const broker = new DaemonBroker(
+		projectDir,
+		runtimeDir,
+		token,
+		idleGraceMs,
+		restartBackoffBaseMs,
+		clientAuthTimeoutMs,
+	);
 	const cancelCleanup = postmortem.register("daemon-broker", () => broker.shutdown());
 	try {
-		await broker.run();
+		await broker.run(options.onListening);
 	} finally {
 		cancelCleanup();
 		await releaseBrokerLease(lease);

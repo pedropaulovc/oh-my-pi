@@ -152,7 +152,6 @@ function makeRenderCtx(
 ): { ctx: InteractiveModeContext; chatContainer: TranscriptContainer } {
 	const chatContainer = new TranscriptContainer();
 	chatContainer.setToolActivityVisible(!hideToolActivity);
-	let helpers: UiHelpers;
 	const ctx = {
 		chatContainer,
 		pendingMessagesContainer: new Container(),
@@ -163,7 +162,7 @@ function makeRenderCtx(
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
 		updateEditorTopBorder: vi.fn(),
-		ui: { requestRender: vi.fn(), imageBudget: undefined },
+		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn(), imageBudget: undefined },
 		resetTranscript: () => {
 			ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 			ctx.chatContainer.disposeChildren();
@@ -212,7 +211,7 @@ function makeRenderCtx(
 				ref: "blob:sha256:hash",
 			})),
 		},
-		addMessageToChat: (message: AgentMessage, options?: { populateHistory?: boolean }) =>
+		addMessageToChat: (message: AgentMessage, options?: { imageLinks?: readonly (string | undefined)[] }) =>
 			helpers.addMessageToChat(message, options),
 		getUserMessageText: (message: Message) => helpers.getUserMessageText(message),
 		renderSessionContext: (context: SessionContext, options?: RenderSessionContextOptions) =>
@@ -224,7 +223,7 @@ function makeRenderCtx(
 		) => helpers.renderSessionContextIncrementally(context, options, renderChunk),
 		showStatus: vi.fn(),
 	} as unknown as InteractiveModeContext;
-	helpers = new UiHelpers(ctx);
+	const helpers = new UiHelpers(ctx);
 	return { ctx, chatContainer };
 }
 
@@ -241,7 +240,6 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 		expect(llmContextSpy).not.toHaveBeenCalled();
 		expect(renderSessionContextSpy).toHaveBeenCalledWith(transcript, {
 			updateFooter: true,
-			populateHistory: false,
 		});
 	});
 });
@@ -276,13 +274,9 @@ describe("UiHelpers.renderInitialMessages — responsiveness", () => {
 		const transcript = transcriptWith(messages);
 		const { ctx } = makeRenderCtx(transcript);
 		let chunks = 0;
-		await new UiHelpers(ctx).renderSessionContextIncrementally(
-			transcript,
-			{ updateFooter: true, populateHistory: true },
-			() => {
-				chunks++;
-			},
-		);
+		await new UiHelpers(ctx).renderSessionContextIncrementally(transcript, { updateFooter: true }, () => {
+			chunks++;
+		});
 		return chunks;
 	}
 
@@ -414,6 +408,29 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 
 		expect(hasImageComponent(chatContainer)).toBe(true);
 		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("display image 1: 1x1");
+	});
+
+	it("restores manual Bash image blocks from persisted message content", async () => {
+		await Settings.init({ inMemory: true, overrides: { "terminal.showImages": true } });
+		setTerminalImageProtocol(ImageProtocol.Sixel);
+		const transcript = transcriptWith([
+			{
+				role: "bashExecution",
+				command: "emit-image",
+				output: "generated",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+				images: [pngImage],
+				timestamp: 1,
+			},
+		]);
+		const { ctx, chatContainer } = makeRenderCtx(transcript);
+
+		await new UiHelpers(ctx).renderInitialMessages();
+
+		expect(countImageComponents(chatContainer)).toBe(1);
+		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("$ emit-image");
 	});
 
 	it("preserves hidden read images so enabling them later can replay the image", async () => {
@@ -789,5 +806,39 @@ describe("UiHelpers.renderInitialMessages — replay convergence (issue #7811)",
 		// Initial context build + exactly one reconciliation restart.
 		expect(transcriptSpy).toHaveBeenCalledTimes(2);
 		expect(ctx.initialChatRendered).toBeTrue();
+	});
+});
+describe("UiHelpers.renderInitialMessages — prompt history isolation", () => {
+	it("never calls editor.addToHistory when rendering past user messages", async () => {
+		await Settings.init({ inMemory: true });
+		const transcript = transcriptWith([
+			{ role: "user", content: "first user prompt", timestamp: 1 },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "reply 1" }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet",
+				usage: emptyUsage,
+				stopReason: "stop",
+				timestamp: 2,
+			},
+			{ role: "user", content: "second user prompt", timestamp: 3 },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "reply 2" }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet",
+				usage: emptyUsage,
+				stopReason: "stop",
+				timestamp: 4,
+			},
+		]);
+		const { ctx } = makeRenderCtx(transcript);
+
+		await new UiHelpers(ctx).renderInitialMessages();
+
+		expect(ctx.editor.addToHistory).not.toHaveBeenCalled();
 	});
 });

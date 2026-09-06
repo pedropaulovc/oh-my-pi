@@ -44,12 +44,11 @@ describe("error-id classification", () => {
 	});
 
 	it("classifies provider connection failures as transient", () => {
-		const assistant = message({
-			errorMessage: "Unable to connect. Is the computer able to access the url?",
-		});
-		const id = AIError.classifyMessage(assistant);
-		expect(AIError.is(id, AIError.Flag.Transient)).toBe(true);
-		expect(AIError.retriable(id)).toBe(true);
+		for (const errorMessage of ["Unable to connect. Is the computer able to access the url?", "Socket is closed"]) {
+			const id = AIError.classifyMessage(message({ errorMessage }));
+			expect(AIError.is(id, AIError.Flag.Transient)).toBe(true);
+			expect(AIError.retriable(id)).toBe(true);
+		}
 	});
 
 	it("keeps authenticated connection rejections non-retryable", () => {
@@ -147,6 +146,40 @@ describe("error-id classification", () => {
 		});
 		expect(AIError.codexChatGPTAccountPolicyModel(oversized)).toBeUndefined();
 		expect(AIError.is(AIError.classifyMessage(oversized), AIError.Flag.AccountPolicy)).toBe(false);
+	});
+	it("classifies only Cursor plan-gate resource exhaustion as account policy", () => {
+		for (const errorMessage of [
+			'Connect error resource_exhausted: Error [details: {"error":"ERROR_RATE_LIMITED_CHANGEABLE","details":{"title":"Named models unavailable","detail":"Free plans can only use Auto."}}]',
+			'Connect error resource_exhausted: Error [details: {"error":"ERROR_RATE_LIMITED_CHANGEABLE","details":{"title":"Model unavailable on Start","detail":"Switch to an included model to continue."}}]',
+		]) {
+			const id = AIError.classifyMessage(
+				message({
+					provider: "cursor",
+					model: "cursor-grok-4.6",
+					errorMessage,
+				}),
+			);
+			expect(AIError.is(id, AIError.Flag.AccountPolicy)).toBe(true);
+			expect(AIError.is(id, AIError.Flag.ContentBlocked)).toBe(true);
+			expect(AIError.retriable(id)).toBe(false);
+		}
+
+		const relayedMessage =
+			'Connect error resource_exhausted: Error [details: {"error":"ERROR_RATE_LIMITED_CHANGEABLE","details":{"title":"Named models unavailable","detail":"Free plans can only use Auto."}}]';
+		const relayedId = AIError.classifyMessage(
+			message({ provider: "openrouter", model: "cursor-grok-4.6", errorMessage: relayedMessage }),
+		);
+		expect(AIError.is(relayedId, AIError.Flag.AccountPolicy)).toBe(false);
+		expect(AIError.is(relayedId, AIError.Flag.ContentBlocked)).toBe(false);
+
+		for (const errorMessage of [
+			"Connect error resource_exhausted: Error",
+			'Connect error resource_exhausted: Error [details: {"details":{"title":"Named models unavailable"}}]',
+			'Connect error resource_exhausted: Error [details: {"error":"ERROR_RATE_LIMITED_CHANGEABLE","details":{"title":"Temporary capacity unavailable"}}]',
+		]) {
+			const id = AIError.classifyMessage(message({ provider: "cursor", model: "cursor-grok-4.6", errorMessage }));
+			expect(AIError.is(id, AIError.Flag.AccountPolicy)).toBe(false);
+		}
 	});
 
 	it("keeps raw status fallback unclassified", () => {

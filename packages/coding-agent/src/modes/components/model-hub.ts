@@ -115,6 +115,17 @@ interface SidebarEntry {
 	catalogCount?: number;
 }
 
+/**
+ * The focused sidebar entry plus its screen row, captured before a rebuild so
+ * the viewport can be restored around it. `index` is the entry's position in
+ * `#entries` (−1 when absent); `offset` is its row relative to the scroll top.
+ */
+interface SidebarAnchor {
+	id: string;
+	index: number;
+	offset: number;
+}
+
 interface StripChip {
 	label: string;
 	/** Pre-styled label body (without selection decoration). */
@@ -222,7 +233,6 @@ export class ModelHubComponent implements Component {
 	#scheduledProviderRefreshes = new Map<string, Timer>();
 	#refreshSpinnerFrame = 0;
 	#refreshSpinnerInterval?: Timer;
-
 	// Frame geometry from the last render, for mouse hit-testing (the
 	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
 	#contentRowStart = 1;
@@ -271,7 +281,7 @@ export class ModelHubComponent implements Component {
 		// the synchronous hydration above.
 		if (this.#scopedModels.length === 0) {
 			this.#registry
-				.refresh("offline")
+				.refresh("online")
 				.then(() => this.#syncFromRegistryState())
 				.catch(error => {
 					this.#configError = error instanceof Error ? error.message : String(error);
@@ -309,6 +319,10 @@ export class ModelHubComponent implements Component {
 
 	/** Rebuild items, roles, and the sidebar from the registry's in-memory state. */
 	#syncFromRegistryState(): void {
+		// A background rebuild (provider refresh, mutation) must not yank the
+		// sidebar viewport: remember the focused entry's screen row so it — or
+		// its nearest survivor — stays put after #buildSidebar reshuffles entries.
+		const anchor = this.#captureSidebarAnchor();
 		let allModels: ReadonlyArray<Model>;
 		let availableModels: ReadonlyArray<Model>;
 		if (this.#scopedModels.length > 0) {
@@ -347,6 +361,7 @@ export class ModelHubComponent implements Component {
 		}
 
 		this.#buildSidebar(allModels, availableModels);
+		this.#restoreSidebarAnchor(anchor);
 		this.#applyScope();
 	}
 
@@ -383,6 +398,19 @@ export class ModelHubComponent implements Component {
 				// locked; keyless/custom endpoints (ollama, vllm, …) surface as
 				// selectable so discovery can populate them.
 				if (authStorage.hasAuth(provider) || !locked.has(provider)) {
+					// #2761: implicit local endpoints (optional: true) stay hidden
+					// until discovery actually reaches a server. "idle" means never
+					// probed; "unavailable" means the endpoint is unreachable; both
+					// would render a dead tab for a provider the user never
+					// configured. models.yml discovery providers (optional: false)
+					// and providers with stored auth keep their entry so
+					// misconfigurations stay visible and diagnosable.
+					if (!authStorage.hasAuth(provider)) {
+						const discovery = this.#registry.getProviderDiscoveryState(provider);
+						if (discovery?.optional && (discovery.status === "idle" || discovery.status === "unavailable")) {
+							continue;
+						}
+					}
 					locked.delete(provider);
 					unlocked.add(provider);
 				}
@@ -461,6 +489,45 @@ export class ModelHubComponent implements Component {
 			this.#activeEntryId = "all";
 			this.#sidebarFollowActive = true;
 		}
+	}
+
+	/** Snapshot the focused entry and its row within the sidebar viewport. */
+	#captureSidebarAnchor(): SidebarAnchor {
+		const index = this.#entries.findIndex(entry => entry.id === this.#activeEntryId);
+		return { id: this.#activeEntryId, index, offset: index - this.#sidebarScroll };
+	}
+
+	/**
+	 * Reposition the sidebar after {@link #buildSidebar} rebuilt `#entries`. A
+	 * surviving focused entry keeps its screen row; if it vanished (a keyless
+	 * provider flipping back to hidden mid-navigation), focus falls to the
+	 * nearest surviving entry instead of snapping to the top.
+	 */
+	#restoreSidebarAnchor(anchor: SidebarAnchor): void {
+		if (anchor.index < 0) return;
+		const survivor = this.#entries.findIndex(entry => entry.id === anchor.id);
+		if (survivor >= 0) {
+			this.#sidebarScroll = Math.max(0, survivor - anchor.offset);
+			return;
+		}
+		const replacement = this.#nearestNavigableEntry(anchor.index);
+		if (!replacement) return;
+		this.#activeEntryId = replacement.id;
+		this.#sidebarScroll = Math.max(0, this.#entries.indexOf(replacement) - anchor.offset);
+	}
+
+	/** The selectable entry nearest `preferredIndex` in the current `#entries`. */
+	#nearestNavigableEntry(preferredIndex: number): SidebarEntry | undefined {
+		const entries = this.#entries;
+		if (entries.length === 0) return undefined;
+		const start = Math.max(0, Math.min(preferredIndex, entries.length - 1));
+		for (let radius = 0; radius < entries.length; radius++) {
+			for (const index of radius === 0 ? [start] : [start + radius, start - radius]) {
+				const entry = entries[index];
+				if (entry && !this.#isHopSkipped(entry)) return entry;
+			}
+		}
+		return undefined;
 	}
 
 	#activeEntry(): SidebarEntry {
@@ -1830,9 +1897,9 @@ export class ModelHubComponent implements Component {
 				value = theme.fg("dim", "—");
 			}
 
-			// Quick-cycle membership badge (`⟳2` = second stop of the ctrl+p cycle).
+			// Quick-cycle membership badge (`⟳ 2` = second stop of the ctrl+p cycle).
 			const cycleIndex = cycleOrder.indexOf(role);
-			const cycleStyled = cycleIndex >= 0 ? theme.fg("accent", `${theme.icon.loop}${cycleIndex + 1}`) : "";
+			const cycleStyled = cycleIndex >= 0 ? theme.fg("accent", `${theme.icon.loop} ${cycleIndex + 1}`) : "";
 
 			let line = ` ${cursor} ${dot} ${tagStyled}  ${value}`;
 			const right = [levelStyled, cycleStyled].filter(part => part.length > 0).join("  ");
