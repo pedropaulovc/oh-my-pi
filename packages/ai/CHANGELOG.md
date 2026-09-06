@@ -9,6 +9,10 @@
 ### Changed
 
 - `xai-tts` now sends `speed`, accepts `pcm` output, and allows xAI's current 60,000-character input (was 15,000) ([#19184](https://github.com/can1357/oh-my-pi/pull/19184) by [@Xytronix](https://github.com/Xytronix))
+### Fixed
+
+- Fixed fresh auth-broker snapshot caches retaining stale credentials: startup now revalidates through the configured client transport under one shared 500 ms deadline (or a supplied revalidation signal), falls back to cache for unavailable or slow brokers, and preserves 401/403 token-rejection errors ([#11073](https://github.com/can1357/oh-my-pi/pull/11073) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
 ## [19.2.1] - 2026-11-25
 
 ### Added

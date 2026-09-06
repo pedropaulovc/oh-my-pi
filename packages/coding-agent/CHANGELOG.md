@@ -5,6 +5,10 @@
 ### Added
 
 - Dictation now works with xAI speech-to-text models such as `xai-oauth/grok-voice-transcribe-2.0` ([#19184](https://github.com/can1357/oh-my-pi/pull/19184) by [@Xytronix](https://github.com/Xytronix))
+### Fixed
+
+- Fixed auth-broker startup reporting a rejected bearer token (401/403) as an unreachable broker; it now explains that the reachable broker rejected the token and provides guidance for updating it ([#11073](https://github.com/can1357/oh-my-pi/pull/11073) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
 ## [19.2.1] - 2026-11-25
 
 ### Breaking Changes
