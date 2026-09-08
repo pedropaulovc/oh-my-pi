@@ -1633,6 +1633,7 @@ export class AgentSession {
 			skipIdleFlush: true,
 			isStale: entry =>
 				entry.epoch !== (entry.source?.type === "process" ? this.#launchProgressEpoch : this.#asyncDeliveryEpoch) ||
+				entry.job?.status === "cancelled" ||
 				(entry.job !== undefined && this.#asyncJobManager?.isDeliverySuppressed(entry.jobId) === true),
 			// Ambient entries accumulate for as long as the owner stays idle; fold
 			// them into one bounded window per job so the queue cannot grow (and
@@ -1651,6 +1652,7 @@ export class AgentSession {
 				isStale: entry =>
 					entry.epoch !==
 						(entry.source?.type === "process" ? this.#launchProgressEpoch : this.#asyncDeliveryEpoch) ||
+					entry.job?.status === "cancelled" ||
 					(entry.job !== undefined && this.#asyncJobManager?.isDeliverySuppressed(entry.jobId) === true),
 				idleTurnBudget: this.#wakeTurnBudget,
 				coalesceKey: asyncProgressCoalesceKey,
@@ -7145,6 +7147,7 @@ export class AgentSession {
 				label: notification.name,
 				startedAt,
 			},
+			monitorId: notification.monitorId,
 			seq: notification.seq,
 			elapsedMs: Math.max(0, Date.now() - startedAt),
 			epoch,
@@ -7155,6 +7158,13 @@ export class AgentSession {
 			reminder: notification.reminder,
 		});
 		this.#signalLaunchMonitorChanged();
+	}
+
+	discardLaunchProgress(monitorId: string, epoch: number): void {
+		const matchesMonitor = (entry: AsyncProgressEntry): boolean =>
+			entry.epoch === epoch && entry.source?.type === "process" && entry.monitorId === monitorId;
+		this.yieldQueue.take<AsyncProgressEntry>(ASYNC_PROGRESS_MESSAGE_TYPE, matchesMonitor);
+		this.yieldQueue.take<AsyncProgressEntry>(ASYNC_PROGRESS_WAKE_QUEUE_KIND, matchesMonitor);
 	}
 
 	#signalLaunchMonitorChanged(): void {
