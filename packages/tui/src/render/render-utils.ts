@@ -936,7 +936,13 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	return filePath;
 }
 
-/** Shorten embedded home paths; normalize Windows separators unless the caller preserves native error text. */
+/**
+ * Replace home-directory paths embedded in display text without matching a
+ * longer path component. Windows-style homes are matched case-insensitively,
+ * and a home that sits inside a URI keeps its separator so the URI stays
+ * syntactically valid. Windows separators are normalized unless the caller
+ * preserves native error text.
+ */
 export function shortenEmbeddedPaths(text: string, homeDir?: string, preserveSeparators = false): string {
 	const resolvedHome = homeDir ?? defaultHomeDir();
 	if (!resolvedHome || resolvedHome.length <= 1) return text;
@@ -968,10 +974,8 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string, preserveSep
 			const trailing = segment.match(/[)"'`,.;:\]]*$/)?.[0] ?? "";
 			const end = segment.length - trailing.length;
 			if (leading.length >= end) return segment;
-			const shortened = shortenPath(segment.slice(leading.length, end), resolvedHome);
-			const normalized = shortened.startsWith("~")
-				? shortened.replaceAll(path.win32.sep, path.posix.sep)
-				: shortened;
+			const embeddedPath = segment.slice(leading.length, end);
+			const normalized = embeddedPath.startsWith("~") ? embeddedPath.replaceAll("\\", "/") : embeddedPath;
 			return `${leading}${normalized}${trailing}`;
 		})
 		.join(" ");
