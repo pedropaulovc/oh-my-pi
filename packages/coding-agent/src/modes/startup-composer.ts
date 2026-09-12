@@ -36,6 +36,7 @@ interface PendingComposer {
 	readonly composer: Composer;
 	readonly cwd: string;
 	readonly cache: boolean;
+	recentSessions?: Promise<RecentSession[] | undefined>;
 }
 
 let pendingComposer: PendingComposer | undefined;
@@ -43,10 +44,13 @@ let pendingComposer: PendingComposer | undefined;
 /** Ownership token that transfers one already-started Composer to InteractiveMode. */
 export class ComposerLease {
 	readonly composer: Composer;
+	/** Recent-session rows already loading in parallel with the runtime module graph. */
+	readonly recentSessions?: Promise<RecentSession[] | undefined>;
 	#adopted = false;
 
-	constructor(composer: Composer) {
+	constructor(composer: Composer, recentSessions?: Promise<RecentSession[] | undefined>) {
 		this.composer = composer;
+		this.recentSessions = recentSessions;
 	}
 
 	/** Transfer terminal ownership exactly once. */
@@ -78,6 +82,7 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 				welcome: undefined,
 				recentSessions: [],
 				lspServers: [],
+				status: undefined,
 			};
 	const theme = { ...cached.theme, ...options.theme };
 	initThemeSync(theme.symbolPreset, theme.colorBlindMode, theme.darkTheme, theme.lightTheme);
@@ -95,6 +100,7 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 		now: options.now,
 		preferences,
 		welcome,
+		status: cached.status,
 	});
 	try {
 		composer.start({ clearScrollback: true, deferInput: true });
@@ -104,16 +110,16 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 		} catch {}
 		throw error;
 	}
-	const pending = { composer, cwd, cache: useCache };
+	const pending: PendingComposer = { composer, cwd, cache: useCache };
 	pendingComposer = pending;
-	void refreshRecentSessions(pending, options.recentSessions);
+	pending.recentSessions = refreshRecentSessions(pending, options.recentSessions);
 }
 
 /** Take the live prepaint composer away from the module-level startup owner. */
 export function takeStartupComposerLease(): ComposerLease | undefined {
 	const pending = pendingComposer;
 	pendingComposer = undefined;
-	return pending ? new ComposerLease(pending.composer) : undefined;
+	return pending ? new ComposerLease(pending.composer, pending.recentSessions) : undefined;
 }
 
 /** Stop and forget any prepaint composer that never reached InteractiveMode. */
@@ -131,7 +137,6 @@ export function applyStartupComposerPreferences(update: PrepaintComposerPreferen
 		composerShape: update.composerShape,
 		showHardwareCursor: update.showHardwareCursor,
 		maxInlineImages: update.maxInlineImages,
-		scrollbackRebuild: update.scrollbackRebuild,
 		resizeScrollback: update.resizeScrollback,
 		imeSafeCursor: update.imeSafeCursor,
 		autocompleteMaxVisible: update.autocompleteMaxVisible,
@@ -166,7 +171,7 @@ export function setStartupComposerLspServers(servers: LspServerInfo[]): void {
 async function refreshRecentSessions(
 	pending: PendingComposer,
 	loadOverride: (() => Promise<RecentSession[]>) | undefined,
-): Promise<void> {
+): Promise<RecentSession[] | undefined> {
 	try {
 		const sessions = loadOverride ? await loadOverride() : await loadRecentSessions(pending.cwd);
 		if (pending.cache) {
@@ -174,10 +179,13 @@ async function refreshRecentSessions(
 				logger.debug("composer recent sessions cache write failed", { error });
 			});
 		}
-		if (pendingComposer !== pending) return;
-		pending.composer.updateWelcome({ recentSessions: sessions });
+		if (pendingComposer === pending) {
+			pending.composer.updateWelcome({ recentSessions: sessions });
+		}
+		return sessions;
 	} catch (error) {
 		logger.debug("composer recent sessions load failed", { error });
+		return undefined;
 	}
 }
 

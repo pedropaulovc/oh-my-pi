@@ -17,7 +17,7 @@ import {
 	truncateTailBytes,
 } from "@oh-my-pi/pi-coding-agent/session/streaming-output";
 import { formatOutputNotice, outputMeta } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { logger, removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const createdTempDirs: string[] = [];
 const originalForceProtocol = Bun.env.PI_FORCE_IMAGE_PROTOCOL;
@@ -153,6 +153,17 @@ describe("truncateTail", () => {
 		expect(result.content).toBe("ghij");
 		expect(result.truncatedBy).toBe("bytes");
 		expect(result.lastLinePartial).toBe(true);
+	});
+
+	test("fills the remaining byte budget from a giant line before smaller trailing lines", () => {
+		const result = truncateTail("abcdefghijk\n}\n```", { maxLines: 10, maxBytes: 10 });
+
+		expect(result.content).toBe("hijk\n}\n```");
+		expect(result.truncatedBy).toBe("bytes");
+		expect(result.outputLines).toBe(3);
+		expect(result.outputBytes).toBe(10);
+		expect(result.partialByteWindows).toBe(true);
+		expect(result.lastLinePartial).toBe(false);
 	});
 });
 
@@ -320,6 +331,301 @@ describe("OutputSink", () => {
 		expect(artifactText).toBe("headabcdefgh");
 	});
 
+	test("delivers mirrored text and settles its stamp when artifact flushing fails", async () => {
+		const dir = await createTempDir();
+		const artifactPath = path.join(dir, "missing", "output.log");
+		const events: Array<
+			| { type: "chunk"; chunk: string; stamp: number; artifactId: string | undefined }
+			| { type: "settled"; stamp: number }
+		> = [];
+		const sink = new OutputSink({
+			artifactPath,
+			artifactId: "unavailable-artifact",
+			artifactWriteMode: "mirror",
+			chunkStamp: () => 11,
+			onChunk: (chunk, stamp, artifactId) => events.push({ type: "chunk", chunk, stamp, artifactId }),
+			onChunkSettled: stamp => events.push({ type: "settled", stamp }),
+		});
+
+		sink.push("live despite persistence failure");
+		const dumped = await sink.dump();
+
+		expect(events).toEqual([
+			{
+				type: "chunk",
+				chunk: "live despite persistence failure",
+				stamp: 11,
+				artifactId: undefined,
+			},
+			{ type: "settled", stamp: 11 },
+		]);
+		expect(dumped.artifactId).toBeUndefined();
+		expect(await Bun.file(artifactPath).exists()).toBeFalse();
+	});
+
+	test("settles a sampled mirror delivery when preview delivery throws", async () => {
+		const dir = await createTempDir();
+		const artifactPath = path.join(dir, "preview-failure.log");
+		const settled: number[] = [];
+		const sink = new OutputSink({
+			artifactPath,
+			artifactId: "artifact-preview-failure",
+			artifactWriteMode: "mirror",
+			chunkStamp: () => 7,
+			onChunk: () => {
+				throw new Error("preview unavailable");
+			},
+			onChunkSettled: stamp => settled.push(stamp),
+		});
+
+		sink.push("persisted despite preview failure");
+		await expect(sink.dump()).rejects.toThrow("preview unavailable");
+
+		expect(settled).toEqual([7]);
+		expect(await Bun.file(artifactPath).text()).toBe("persisted despite preview failure");
+	});
+
+	test("finalizes the capped artifact when a mirror preview delivery fails", async () => {
+		const dir = await createTempDir();
+		const artifactPath = path.join(dir, "preview-failure-capped.log");
+		const sink = new OutputSink({
+			artifactPath,
+			artifactId: "artifact-preview-failure-capped",
+			artifactWriteMode: "mirror",
+			spillThreshold: 16,
+			artifactMaxBytes: 32,
+			artifactHeadBytes: 16,
+			onChunk: () => {
+				throw new Error("preview unavailable");
+			},
+		});
+
+		// 64 raw bytes against a 32-byte cap: the tail and its elision notice are
+		// written only by finalization, which a rejected preview must not skip.
+		sink.push("0123456789ABCDEF".repeat(4));
+		await expect(sink.dump()).rejects.toThrow("preview unavailable");
+
+		const artifactText = await Bun.file(artifactPath).text();
+		expect(artifactText).toContain("[ARTIFACT TRUNCATED:");
+		expect(artifactText.endsWith("0123456789ABCDEF")).toBe(true);
+	});
+
+	test("continues mirror delivery after a rejected preview callback and surfaces the failure at dump", async () => {
+		const dir = await createTempDir();
+		const artifactPath = path.join(dir, "continued-mirror.log");
+		let stamp = 0;
+		let rejectNext = true;
+		const deliveries: Array<{ chunk: string; stamp: number }> = [];
+		const settled: number[] = [];
+		const firstSettled = Promise.withResolvers<void>();
+		const sink = new OutputSink({
+			artifactPath,
+			artifactId: "continued-mirror",
+			artifactWriteMode: "mirror",
+			chunkStamp: () => stamp,
+			onChunk: (chunk, chunkStamp) => {
+				deliveries.push({ chunk, stamp: chunkStamp });
+				if (!rejectNext) return;
+				rejectNext = false;
+				throw new Error("preview unavailable");
+			},
+			onChunkSettled: chunkStamp => {
+				settled.push(chunkStamp);
+				if (chunkStamp === 0) firstSettled.resolve();
+			},
+		});
+
+		sink.push("first");
+		await firstSettled.promise;
+		// The command keeps running after the failed delivery: reading the
+		// mirrored artifact turns the event loop over, and an unhandled rejection
+		// left on the delivery tail fails this test under bun (its default
+		// unhandled-rejection handling is fatal outside the runner).
+		expect(await Bun.file(artifactPath).text()).toBe("first");
+		stamp = 1;
+		sink.push("second");
+		stamp = 2;
+		sink.push("third");
+
+		// The first failure wins and surfaces once dump() settles the tail; the
+		// later chunks were still delivered and the artifact finalized.
+		await expect(sink.dump()).rejects.toThrow("preview unavailable");
+		expect(deliveries).toEqual([
+			{ chunk: "first", stamp: 0 },
+			{ chunk: "second", stamp: 1 },
+			{ chunk: "third", stamp: 2 },
+		]);
+		expect(settled).toEqual([0, 1, 2]);
+		expect(await Bun.file(artifactPath).text()).toBe("firstsecondthird");
+		// Surfaced once: the follow-up dispose() from a caller's finally is quiet.
+		await sink.dispose();
+	});
+
+	test("keeps the mirror tail alive when a settlement callback throws", async () => {
+		const dir = await createTempDir();
+		const artifactPath = path.join(dir, "settle-failure.log");
+		let stamp = 0;
+		const deliveries: Array<{ chunk: string; stamp: number }> = [];
+		const settled: number[] = [];
+		const firstSettled = Promise.withResolvers<void>();
+		const sink = new OutputSink({
+			artifactPath,
+			artifactId: "settle-failure",
+			artifactWriteMode: "mirror",
+			chunkStamp: () => stamp,
+			onChunk: (chunk, chunkStamp) => {
+				deliveries.push({ chunk, stamp: chunkStamp });
+			},
+			onChunkSettled: chunkStamp => {
+				settled.push(chunkStamp);
+				if (chunkStamp !== 0) return;
+				firstSettled.resolve();
+				throw new Error("barrier resolver failed");
+			},
+		});
+
+		sink.push("first");
+		await firstSettled.promise;
+		// The producer keeps running: a rejection escaping the settlement hook
+		// would leave the tail rejected (fatal under bun) and block later chunks.
+		expect(await Bun.file(artifactPath).text()).toBe("first");
+		stamp = 1;
+		sink.push("second");
+
+		await expect(sink.dump()).rejects.toThrow("barrier resolver failed");
+		expect(deliveries).toEqual([
+			{ chunk: "first", stamp: 0 },
+			{ chunk: "second", stamp: 1 },
+		]);
+		expect(settled).toEqual([0, 1]);
+		expect(await Bun.file(artifactPath).text()).toBe("firstsecond");
+		await sink.dispose();
+	});
+
+	test("mirror mode delivers and settles chunks with their entry stamps", async () => {
+		let stamp = 0;
+		const deliveries: Array<{ chunk: string; stamp: number }> = [];
+		const settled: number[] = [];
+		const sink = new OutputSink({
+			artifactWriteMode: "mirror",
+			chunkStamp: () => stamp,
+			onChunk: (chunk, chunkStamp) => deliveries.push({ chunk, stamp: chunkStamp }),
+			onChunkSettled: chunkStamp => settled.push(chunkStamp),
+		});
+
+		sink.push("before");
+		stamp = 1;
+		sink.push("after");
+		await sink.dump();
+
+		expect(deliveries).toEqual([
+			{ chunk: "before", stamp: 0 },
+			{ chunk: "after", stamp: 1 },
+		]);
+		expect(settled).toEqual([0, 1]);
+	});
+
+	test("a throttle-held chunk keeps the stamp of its first held byte", async () => {
+		let stamp = 0;
+		const deliveries: Array<{ chunk: string; stamp: number }> = [];
+		const sink = new OutputSink({
+			chunkThrottleMs: 60_000,
+			chunkStamp: () => stamp,
+			onChunk: (chunk, chunkStamp) => deliveries.push({ chunk, stamp: chunkStamp }),
+		});
+
+		sink.push("first");
+		sink.push("held");
+		stamp = 1;
+		await sink.dump();
+
+		expect(deliveries).toEqual([
+			{ chunk: "first", stamp: 0 },
+			{ chunk: "held", stamp: 0 },
+		]);
+	});
+
+	test("makes mirrored bytes readable before each onChunk notification", async () => {
+		const dir = await createTempDir();
+		const artifactPath = path.join(dir, "mirrored-output.log");
+		const artifactFile = Bun.file(artifactPath);
+		const observations: Array<Promise<{ notified: string; mirrored: string }>> = [];
+		let notified = "";
+		const sink = new OutputSink({
+			artifactPath,
+			artifactId: "mirror-readable-onchunk",
+			artifactWriteMode: "mirror",
+			chunkThrottleMs: 60_000,
+			onChunk: chunk => {
+				notified += chunk;
+				const notifiedAtCallback = notified;
+				observations.push(artifactFile.text().then(mirrored => ({ notified: notifiedAtCallback, mirrored })));
+			},
+		});
+
+		sink.push("first\n");
+		sink.push("second\n");
+		const dumped = await sink.dump();
+		for (const observation of await Promise.all(observations)) {
+			expect(observation.mirrored).toContain(observation.notified);
+		}
+		expect(notified).toBe("first\nsecond\n");
+		expect(notified).toBe(dumped.output);
+		expect(await artifactFile.text()).toBe(notified);
+	});
+
+	test("mirror mode delivers a queued chunk with the stamp captured at entry", async () => {
+		const dir = await createTempDir();
+		let epoch = 0;
+		const deliveries: Array<{ chunk: string; stamp: number }> = [];
+		const sink = new OutputSink({
+			artifactPath: path.join(dir, "queued-mirror.log"),
+			artifactId: "queued-mirror",
+			artifactWriteMode: "mirror",
+			chunkStamp: () => epoch,
+			onChunk: (chunk, stamp) => deliveries.push({ chunk, stamp }),
+		});
+
+		sink.push("pre-boundary\n");
+		// The mirror delivery is still queued behind the artifact flush when the
+		// boundary moves; the stamp must reflect entry time, not delivery time.
+		epoch = 1;
+		sink.push("post-boundary\n");
+		await sink.dump();
+
+		expect(deliveries).toEqual([
+			{ chunk: "pre-boundary\n", stamp: 0 },
+			{ chunk: "post-boundary\n", stamp: 1 },
+		]);
+	});
+
+	test("settles a sampled mirror delivery when artifact persistence fails", async () => {
+		const dir = await createTempDir();
+		const settled: number[] = [];
+		const deliveries: string[] = [];
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		try {
+			const sink = new OutputSink({
+				artifactPath: path.join(dir, "missing", "output.log"),
+				artifactId: "unavailable-artifact",
+				artifactWriteMode: "mirror",
+				chunkStamp: () => 7,
+				onChunk: chunk => deliveries.push(chunk),
+				onChunkSettled: stamp => settled.push(stamp),
+			});
+
+			sink.push("cannot persist");
+			const dumped = await sink.dump();
+
+			expect(deliveries).toEqual(["cannot persist"]);
+			expect(settled).toEqual([7]);
+			expect(dumped.output).toBe("cannot persist");
+			expect(dumped.artifactId).toBeUndefined();
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
 	test("throttled onChunk coalesces held-back chunks instead of dropping them", async () => {
 		const chunks: string[] = [];
 		const sink = new OutputSink({ onChunk: chunk => chunks.push(chunk), chunkThrottleMs: 60_000 });
@@ -363,17 +669,82 @@ describe("OutputSink", () => {
 		expect(chunks).toEqual(["a", "b"]);
 	});
 
+	test("dispose delivers a throttled mirror tail before finalizing its artifact", async () => {
+		const dir = await createTempDir();
+		const artifactPath = path.join(dir, "disposed-mirror.log");
+		const chunks: string[] = [];
+		const sink = new OutputSink({
+			artifactPath,
+			artifactWriteMode: "mirror",
+			onChunk: chunk => chunks.push(chunk),
+			chunkThrottleMs: 60_000,
+		});
+
+		sink.push("first");
+		sink.push(" second");
+		await sink.dispose();
+
+		expect(chunks).toEqual(["first", " second"]);
+		expect(await Bun.file(artifactPath).text()).toBe("first second");
+	});
+
+	test("a rejected mirror delivery still finalizes the artifact on dispose and dump", async () => {
+		const dir = await createTempDir();
+		const payload = "0123456789ABCDEF".repeat(4); // 64 bytes; cap keeps 16 head + 16 tail
+		const failing = (name: string) => {
+			const artifactPath = path.join(dir, `${name}.log`);
+			const sink = new OutputSink({
+				artifactPath,
+				artifactId: `art-${name}`,
+				artifactWriteMode: "mirror",
+				spillThreshold: 16,
+				artifactMaxBytes: 32,
+				artifactHeadBytes: 16,
+				onChunk: () => {
+					throw new Error("preview unavailable");
+				},
+			});
+			return { sink, artifactPath };
+		};
+
+		// dispose() runs from callers' `finally` blocks: it swallows the delivery
+		// failure but still replays the capped tail, which only happens at finalize.
+		const disposed = failing("disposed");
+		disposed.sink.push(payload);
+		await disposed.sink.dispose();
+		const disposedText = await Bun.file(disposed.artifactPath).text();
+		expect(disposedText).toContain("[ARTIFACT TRUNCATED:");
+		expect(disposedText.endsWith("0123456789ABCDEF")).toBe(true);
+
+		// dump() surfaces the failure to its caller, after finalizing the same way.
+		const dumped = failing("dumped");
+		dumped.sink.push(payload);
+		await expect(dumped.sink.dump()).rejects.toThrow("preview unavailable");
+		const dumpedText = await Bun.file(dumped.artifactPath).text();
+		expect(dumpedText).toContain("[ARTIFACT TRUNCATED:");
+		expect(dumpedText.endsWith("0123456789ABCDEF")).toBe(true);
+	});
+
 	test("replace cancels a throttled tail and discards its pending preview", () => {
 		vi.useFakeTimers();
+		let stamp = 1;
+		const settled: number[] = [];
 		const chunks: string[] = [];
-		const sink = new OutputSink({ onChunk: chunk => chunks.push(chunk), chunkThrottleMs: 20 });
+		const sink = new OutputSink({
+			onChunk: chunk => chunks.push(chunk),
+			chunkStamp: () => stamp,
+			onChunkSettled: settledStamp => settled.push(settledStamp),
+			chunkThrottleMs: 20,
+		});
 
 		sink.push("a");
+		stamp = 2;
 		sink.push("superseded");
 		sink.replace("replacement");
 		vi.advanceTimersByTime(20);
 
 		expect(chunks).toEqual(["a"]);
+		expect(settled).toEqual([1, 2]);
 	});
 
 	test("caps artifact-on-disk size: head + notice + tail when stream exceeds cap", async () => {
@@ -544,7 +915,7 @@ describe("truncation notice formatting", () => {
 		expect(formatTailTruncationNotice(truncation)).toBe("");
 	});
 
-	test("formatTailTruncationNotice supports partial-line and complete-line notices", () => {
+	test("formatTailTruncationNotice distinguishes partial leading and final lines", () => {
 		const partialLineTruncation = truncateTail("abcdefghij", { maxLines: 10, maxBytes: 4 });
 		const partialLineNotice = formatTailTruncationNotice(partialLineTruncation, {
 			fullOutputPath: "/tmp/full.log",
@@ -560,6 +931,11 @@ describe("truncation notice formatting", () => {
 
 		const byteTruncation = truncateTail("aaa\nbbbb\ncc", { maxLines: 10, maxBytes: 6 });
 		expect(formatTailTruncationNotice(byteTruncation)).toBe("\n\n[Showing lines 3-3 of 3]");
+
+		const leadingPartialTruncation = truncateTail("abcdefghijk\n}\n```", { maxLines: 10, maxBytes: 10 });
+		expect(formatTailTruncationNotice(leadingPartialTruncation)).toBe(
+			"\n\n[Showing last 10B across lines 1-3 of 3; line 1 is partial]",
+		);
 	});
 
 	test("formatHeadTruncationNotice returns empty string for non-truncated results", () => {
@@ -607,17 +983,65 @@ describe("truncateMiddle", () => {
 		expect(result.elidedBytes).toBeGreaterThan(0);
 	});
 
-	test("falls back to tail-only when head budget cannot accept the first line", () => {
+	test("uses non-overlapping byte windows when the first line exceeds the head budget", () => {
 		const giantFirstLine = `${"x".repeat(200)}\nshort-2\nshort-3`;
 		const result = truncateMiddle(giantFirstLine, {
 			maxBytes: 40,
 			maxLines: 10,
-			maxHeadBytes: 8, // first line is 200 bytes — exceeds head budget
+			maxHeadBytes: 8,
 			maxHeadLines: 1,
 		});
 		expect(result.truncated).toBe(true);
-		// Should not contain the elision marker; it's a regular tail truncation.
-		expect(result.content).not.toContain("elided");
+		expect(result.truncatedBy).toBe("middle");
+		expect(result.content.startsWith("xxxxxxxx")).toBe(true);
+		expect(result.content.endsWith("short-3")).toBe(true);
+		expect(result.content).toContain("elided");
+		expect(result.elidedBytes).toBeGreaterThan(0);
+		expect(result.headLines).toBe(1);
+		expect(result.tailLines).toBe(3);
+		expect(result.partialByteWindows).toBe(true);
+		expect(result.lastLinePartial).toBe(false);
+	});
+
+	test("does not duplicate overlapping fallback windows", () => {
+		const content = `${"x".repeat(5000)}\n${Array.from({ length: 100 }, (_, i) => `line-${i}`).join("\n")}`;
+		const result = truncateMiddle(content, { maxBytes: 8192, maxLines: 80 });
+
+		expect(result.truncatedBy).toBe("middle");
+		expect(result.elidedBytes).toBeGreaterThan(0);
+		expect(result.content).not.toContain("[…0B elided…]");
+		expect(result.headLines).toBe(1);
+		expect(result.tailLines).toBeLessThanOrEqual(40);
+		expect(result.outputBytes).toBeLessThanOrEqual(8192 + 64);
+	});
+
+	test("marks multi-line partial byte windows so exact ranges are omitted", () => {
+		const content = `${"x".repeat(20_000)}\n${"y".repeat(20_000)}`;
+		const result = truncateMiddle(content, { maxBytes: 8192, maxLines: 80 });
+
+		expect(result.truncatedBy).toBe("middle");
+		expect(result.partialByteWindows).toBe(true);
+		expect(result.elidedBytes).toBeGreaterThan(0);
+	});
+
+	test("keeps a giant trailing line within budget", () => {
+		const content = `label\n${"x".repeat(20_000)}`;
+		const result = truncateMiddle(content, { maxBytes: 8192, maxLines: 80 });
+
+		expect(result.truncated).toBe(true);
+		expect(result.truncatedBy).toBe("middle");
+		expect(result.content.startsWith("label\n")).toBe(true);
+		expect(result.content).toContain("elided");
+		expect(result.outputBytes).toBeLessThanOrEqual(8192 + 64);
+	});
+
+	test("marks single-line byte windows so line ranges can be omitted", () => {
+		const result = truncateMiddle("x".repeat(20_000), { maxBytes: 8192, maxLines: 80 });
+
+		expect(result.truncatedBy).toBe("middle");
+		expect(result.partialByteWindows).toBe(true);
+		expect(result.headLines).toBe(1);
+		expect(result.tailLines).toBe(1);
 	});
 
 	test("formatMiddleElisionMarker uses lines, falling back to bytes for <=1 line", () => {

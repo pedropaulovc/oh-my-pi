@@ -21,6 +21,86 @@ function decorationContext(editorText: string, line: number = 0, startCol: numbe
 }
 
 describe("macOS spelling feature gates", () => {
+	it("keeps typo undercurls visible while a changed line is rechecked", async () => {
+		const secondCheck = Promise.withResolvers<readonly { start: number; length: number }[]>();
+		const checkSpelling = mock((text: string) =>
+			text === "recieved" ? Promise.resolve([{ start: 0, length: 8 }]) : secondCheck.promise,
+		);
+		const provider = new MacOSSpellingProvider(backend({ checkSpelling }));
+		provider.setFeatures({ typoDetection: true, autocomplete: false, autocorrect: false });
+		const updated = Promise.withResolvers<void>();
+		provider.onUpdate = updated.resolve;
+
+		provider.decorateTypos("recieved", decorationContext("recieved"));
+		await updated.promise;
+		expect(provider.decorateTypos("recieved!", decorationContext("recieved!"))).toContain("\x1b[4:3m");
+
+		secondCheck.resolve([]);
+		await Promise.resolve();
+	});
+	it("keeps the queued verification check when a projected undercurl paints while busy", async () => {
+		// Regression: fast-typing "each" projected the stale "eac" range from the
+		// cached "{ #eac" check onto "{ #each" and then deleted its own queued
+		// verification check, freezing the undercurl until an unrelated repaint.
+		const requests: Array<{
+			text: string;
+			result: PromiseWithResolvers<readonly { start: number; length: number }[]>;
+		}> = [];
+		const provider = new MacOSSpellingProvider(
+			backend({
+				checkSpelling: text => {
+					const result = Promise.withResolvers<readonly { start: number; length: number }[]>();
+					requests.push({ text, result });
+					return result.promise;
+				},
+			}),
+		);
+		provider.setFeatures({ typoDetection: true, autocomplete: false, autocorrect: false });
+		let updated = Promise.withResolvers<void>();
+		provider.onUpdate = () => updated.resolve();
+
+		provider.decorateTypos("{ #eac", decorationContext("{ #eac"));
+		requests[0]?.result.resolve([{ start: 3, length: 3 }]);
+		await updated.promise;
+		updated = Promise.withResolvers();
+
+		// A check for another lane is in flight when the extended text renders.
+		const editorText = "{ #each\nother";
+		provider.decorateTypos("other", decorationContext(editorText, 1));
+		const painted = provider.decorateTypos("{ #each", decorationContext(editorText, 0));
+		expect(painted).toContain("\x1b[4:3m"); // transitional projected undercurl on "eac"
+		await Bun.sleep(0); // let the queued "other" check start
+		expect(requests.map(request => request.text)).toEqual(["{ #eac", "other"]);
+
+		requests[1]?.result.resolve([]);
+		await Bun.sleep(0);
+		// The queued verification for "{ #each" must survive the projected paint.
+		expect(requests.map(request => request.text)).toEqual(["{ #eac", "other", "{ #each"]);
+
+		requests[2]?.result.resolve([]);
+		await updated.promise;
+		expect(provider.decorateTypos("{ #each", decorationContext(editorText, 0))).toBe("{ #each");
+	});
+	it("never re-emits text when the backend returns overlapping typo ranges", async () => {
+		// Regression: a whole-line range overlapping a word range made decorateTypos
+		// render the overlapped slice twice ("thgh" → "thghthgh") and desynced the
+		// rendered width from the measured width, teleporting the cursor.
+		const text = "stencil-labs inc thgh";
+		const checkSpelling = mock(async () => [
+			{ start: 0, length: text.length },
+			{ start: 17, length: 4 },
+		]);
+		const provider = new MacOSSpellingProvider(backend({ checkSpelling }));
+		provider.setFeatures({ typoDetection: true, autocomplete: false, autocorrect: false });
+		const updated = Promise.withResolvers<void>();
+		provider.onUpdate = updated.resolve;
+
+		provider.decorateTypos(text, decorationContext(text));
+		await updated.promise;
+		const rendered = provider.decorateTypos(text, decorationContext(text));
+		expect(rendered.replace(/\x1b\[[0-9;:]*m/g, "")).toBe(text);
+	});
+
 	it("enables typo detection without enabling autocomplete or autocorrect", async () => {
 		const checkSpelling = mock(async () => [{ start: 0, length: 8 }]);
 		const completeWord = mock(async () => ["received"]);

@@ -20,7 +20,7 @@ export const benchHelp = {
 } satisfies CommandMetadata;
 
 export const browserRelayHelp = {
-	description: "Run the local CDP relay that lets the browser tool drive your own Chrome tabs",
+	description: "Run the local CDP relay that lets the browser prelude drive your own Chrome tabs",
 } satisfies CommandMetadata;
 
 export const cleanseHelp = {
@@ -46,10 +46,17 @@ export const dryBalanceHelp = {
 } satisfies CommandMetadata;
 
 export const galleryHelp = {
-	description: "Preview tool renderers across streaming, in-progress, success, and failure states",
+	description: "Preview tool, composer, and status-line renderers in a deterministic visual gallery",
 } satisfies CommandMetadata;
 
 export const gcHelp = { description: "Run storage garbage collection" } satisfies CommandMetadata;
+export const ifBenchHelp = {
+	description:
+		"Benchmark instruction following and working memory: one cached thread of glyph array actions with a moving cat-sound directive",
+} satisfies CommandMetadata;
+export const gitHelp = {
+	description: "Interactive fullscreen git UI: split diff viewer, staging sidebar, and commit composer",
+} satisfies CommandMetadata;
 
 export const grepHelp = { description: "Test grep tool" } satisfies CommandMetadata;
 
@@ -119,5 +126,5 @@ export const usageHelp = {
 } satisfies CommandMetadata;
 
 export const worktreeHelp = {
-	description: "List or clear agent-managed git worktrees (~/.omp/wt)",
+	description: "Add, list, or clear git worktrees (clone-first when enabled)",
 } satisfies CommandMetadata;
