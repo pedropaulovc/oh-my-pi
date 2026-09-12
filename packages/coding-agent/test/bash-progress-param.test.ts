@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import * as path from "node:path";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { findBackgroundNotice } from "@oh-my-pi/pi-coding-agent/async/auto-background";
 import { type AsyncJob, AsyncJobManager, type AsyncJobProgressInfo } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { ProgressLines } from "@oh-my-pi/pi-coding-agent/async/progress-lines";
 import { OutputSink } from "@oh-my-pi/pi-coding-agent/session/streaming-output";
@@ -366,10 +367,13 @@ describe("bash progress parameter", () => {
 		});
 		const elapsedMs = performance.now() - startedAt;
 		const resultText = result.content.find(block => block.type === "text")?.text ?? "";
+		const jobId = result.details?.async?.jobId ?? "";
+		const backgroundNotice = findBackgroundNotice(resultText, jobId);
+		const previewText = backgroundNotice === undefined ? resultText : resultText.slice(0, -backgroundNotice.length);
 
 		expect(held).toBe(true);
 		expect(result.details?.async?.state).toBe("running");
-		expect(resultText).not.toContain("stalled-line");
+		expect(previewText).not.toContain("stalled-line");
 		// Grace (100 ms) + drain guard (1 s), not the command's lifetime.
 		expect(elapsedMs).toBeLessThan(5_000);
 
