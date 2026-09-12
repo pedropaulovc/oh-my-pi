@@ -23,7 +23,7 @@ import {
 	type DaemonOutputUnregister,
 	daemonClientForProject,
 } from "../../launch/client";
-import { normalizeExitReason } from "../../launch/exit-reason";
+import { displayExitReason } from "../../launch/exit-reason";
 import type {
 	DaemonMonitorNotification,
 	DaemonOperation,
@@ -37,7 +37,7 @@ import { flattenPreviewText, ProgressPreviewAccumulator } from "../../session/pr
 
 import type { ToolSession } from "..";
 import { resolveToCwd } from "../path-utils";
-import { formatDuration, replaceTabs, shortenEmbeddedPaths, shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
+import { formatDuration, replaceTabs, shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
@@ -1196,13 +1196,9 @@ function daemonLabel(daemon: DaemonSnapshot): string {
 	)} restarts=${daemon.restartCount}${daemon.detached ? " detached" : daemon.persist ? " persistent" : ""}`;
 }
 
-function normalizedDaemonReason(daemon: DaemonSnapshot): string | undefined {
-	const reason = normalizeExitReason(daemon.exitReason);
-	return reason ? shortenEmbeddedPaths(reason) : undefined;
-}
-
+/** `Reason: …` line for the model-facing text, home directory hidden. */
 function daemonReasonText(daemon: DaemonSnapshot, indent = ""): string | undefined {
-	const reason = normalizedDaemonReason(daemon);
+	const reason = displayExitReason(daemon.exitReason);
 	return reason ? `${indent}Reason: ${reason}` : undefined;
 }
 
