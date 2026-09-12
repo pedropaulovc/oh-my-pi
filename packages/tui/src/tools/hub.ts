@@ -895,6 +895,16 @@ function daemonMeta(daemon: DaemonSnapshot, theme: Theme): string[] {
 	return meta;
 }
 
+/**
+ * Exit diagnostics survive whatever state the process reached: a nonzero exit
+ * explains itself even when the supervisor never marked it `failed`.
+ */
+function daemonReasonLine(daemon: DaemonSnapshot, indent = ""): string | undefined {
+	if (!daemon.exitReason) return undefined;
+	const reason = truncateToWidth(sanitizeText(daemon.exitReason).replace(/\s+/g, " ").trim(), TRUNCATE_LENGTHS.LINE);
+	return reason ? `${indent}Reason: ${reason}` : undefined;
+}
+
 /** Indented `↳ owner · mode · age · state` row under a process line; owner ids are sanitized like any display text. */
 function watcherRow(watcher: DaemonMonitorWatcher, daemon: DaemonSnapshot, theme: Theme): string {
 	const owner = truncateToWidth(replaceTabs(sanitizeText(watcher.owner)), TRUNCATE_LENGTHS.TITLE);
@@ -984,8 +994,8 @@ export function launchRenderResult(
 					meta.push(theme.fg("accent", `monitor ${details.monitoring}`));
 				}
 				if (daemon?.readyMatch) body.push(theme.fg("dim", `log matched: ${replaceTabs(daemon.readyMatch)}`));
-				if (daemon?.state === "failed" && daemon.exitReason)
-					body.push(theme.fg("error", replaceTabs(daemon.exitReason)));
+				const startReason = daemon ? daemonReasonLine(daemon) : undefined;
+				if (startReason) body.push(theme.fg("error", startReason));
 				if (details?.timedOut) {
 					const pending = daemon ? readyPendingSummary(daemon, params.ready) : [];
 					body.push(
@@ -1015,6 +1025,8 @@ export function launchRenderResult(
 			case "wait": {
 				meta.push(...launchCallMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
+				const waitReason = daemon ? daemonReasonLine(daemon) : undefined;
+				if (waitReason) body.push(theme.fg("error", waitReason));
 				if (details?.matched) body.push(theme.fg("dim", `matched: ${replaceTabs(details.matched)}`));
 				if (details?.timedOut) {
 					body.push(
@@ -1035,6 +1047,8 @@ export function launchRenderResult(
 					body.push(
 						`${theme.fg("accent", replaceTabs(item.name))} ${theme.fg("dim", daemonMeta(item, theme).join(theme.sep.dot))}`,
 					);
+					const itemReason = daemonReasonLine(item);
+					if (itemReason) body.push(theme.fg("error", itemReason));
 					for (const watcher of details?.monitors ?? []) {
 						if (watcher.name === item.name) body.push(watcherRow(watcher, item, theme));
 					}
@@ -1065,10 +1079,14 @@ export function launchRenderResult(
 					meta.push(theme.fg("accent", `monitor ${mode}`));
 				}
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
+				const monitorReason = daemon ? daemonReasonLine(daemon) : undefined;
+				if (monitorReason) body.push(theme.fg("error", monitorReason));
 				break;
 			}
 			case "describe": {
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
+				const describeReason = daemon ? daemonReasonLine(daemon) : undefined;
+				if (describeReason) body.push(theme.fg("error", describeReason));
 				const spec = details?.spec;
 				if (spec) {
 					body.push(theme.fg("toolOutput", replaceTabs([spec.application, ...spec.args].join(" "))));
