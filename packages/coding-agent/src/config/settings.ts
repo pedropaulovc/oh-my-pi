@@ -2321,6 +2321,10 @@ export class Settings {
 				}
 				delete hindsightObj.agentName;
 			}
+			// mentalModelRefreshIntervalMs removed: the mental-model block is now
+			// frozen for the session lifetime rather than re-listed on a timer that
+			// rewrote the cached prompt prefix mid-session (#11961).
+			delete hindsightObj.mentalModelRefreshIntervalMs;
 		}
 
 		// power.preventIdleSleep / power.preventSystemSleep / power.declareUserActive
@@ -2656,6 +2660,8 @@ export class Settings {
 			}
 		}
 		delete raw["computer.backend"];
+
+		delete raw["hindsight.mentalModelRefreshIntervalMs"];
 
 		return raw;
 	}
