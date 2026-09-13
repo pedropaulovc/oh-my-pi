@@ -14,10 +14,18 @@ Current behavior is implemented in
   untrusted text, tool results, and serialized tool arguments before replay.
 - Response leak detection is enabled for every model whose provider is
   `openai-codex`, rather than for a fixed model-ID list.
-- A bare `to=functions.NAME` marker is not sufficient. Detection requires a
-  co-signal (channel adjacency, glitch token, script mismatch, cascade,
-  fake-result framing, or a trusted trailing-parse boundary); fenced examples
-  are ignored.
+- A bare `to=functions.NAME` marker in thinking or tool arguments is not
+  sufficient. Detection there requires a co-signal (channel adjacency, glitch
+  token, script mismatch, cascade, fake-result framing, or a trusted
+  trailing-parse boundary). In the *visible answer* the marker trips on its own
+  (`V`): fenced blocks and inline code spans are exempt, and documentation, bug
+  reports and this repository's tests all quote the marker in backticks.
+- The visible answer is additionally scanned for marker-free prior collapse
+  (§2.9): staccato line runs (`D`), fabricated harness notices (`N`), stranded
+  non-Latin script residue (`S`), and fabricated harness envelopes (`E`) — the
+  model writing omp's own `<system-notice>` / `<job-progress>` wrapper tags into
+  its answer. Thinking blocks are exempt: they are legitimately staccato and
+  legitimately multilingual.
 - The agent loop scans finalized visible text and thinking. On a hit it discards
   the partial response and retries up to two times, then escalates with an
   error. Audit callbacks receive action/signal metadata and a hash/redacted
@@ -238,3 +246,88 @@ The 2023 SolidGoldMagikarp paper documented mechanism (1)+(2)+(4). The
 new piece is (5): when constrained decoding masks the natural collapse
 target, the mass laundered through the un-masked plain-text shadow
 becomes a structurally-invisible exfiltration channel.
+
+### 2.9 Marker-free collapse in the visible channel (gpt-5.6)
+
+Source: 264 persisted omp sessions, 6,127 assistant text blocks and 52,431
+thinking blocks, 2026-08-13 .. 2026-09-10, scanned with the shipped detector.
+
+§2.8 steps 4–7 do not require the routing marker to survive. When the tool-name
+token is simply unavailable, the collapse still happens and lands in the *final
+answer* with no marker at all. Every marker-anchored signal (`C`/`G`/`S`/`B`/`R`)
+is therefore blind to it: the earlier detector needed `M` before it would
+evaluate any co-signal.
+
+Five shapes, all observed:
+
+| Signal | Shape | Blocks |
+| ------ | ----- | -----: |
+| `N` | Fabricated harness notice — `You have 1431 weighted tokens left`, a repeated single letter (`a a`), or an interactive consent dialog as the entire answer | 150 |
+| `D` | Staccato run — one short clause per line, whitespace-only separators between them: `stop.` `no.` `end.` `done.` `final.` | 56 |
+| `S` | Script residue stranded in an ASCII answer, including substitution *inside* an ASCII word: `declauding` rendered as `declაუდing` 14 times in one session | 24 |
+| `V` | A bare `to=functions.NAME` marker rendered in the final answer, outside code | 3 |
+| `E` | Fabricated harness envelope — the model writing omp's own injected `<system-notice>` / `<job-progress>` wrapper tags into its answer | 2 |
+
+219 distinct blocks across 5 sessions and 3 projects, counting a block once per
+signal set (so the per-signal column sums higher). Zero hits on the other 259
+sessions and zero on all 52,431 thinking blocks.
+
+Three observations that matter for the runtime contract:
+
+- **The notice text is fabricated, not echoed.** No omp surface emits
+  `You have N weighted tokens left`; the phrase appears nowhere in the harness
+  or in the session's system prompt, which explicitly forbids narrating token
+  budgets. The model invented a system-notice-shaped string and rendered it to
+  the user.
+- **Recurrence is driven by replay, not by the provider.** In the
+  2026-09-09T15-58-05Z session the first contaminated turn is 63 minutes and 412
+  records before the first full cascade; the same fragment reappears verbatim.
+  Remote compaction preserves provider-native history, so `/compact` does not
+  clear it. Detection has to fire on the *first* contaminated turn, which is why
+  `V` trips on a bare marker in a rendered answer.
+- **The collapse target is whatever protocol the model has been conditioned
+  on.** §2.8 describes mass landing on the plain-text shadow of the *Harmony*
+  envelope. In 2026-09-09T16-02-08Z it landed on the plain-text shadow of the
+  *omp* envelope instead: one 357,273-character answer block fabricated 824
+  `<system-notice>` wakes, incremented their `elapsed` attribute from `9.1s` to
+  `33d23h`, and answered each of its own fabricated wakes — `No.` 167 times,
+  then `34d. I'll quit.`, then `I will now actually send a final message.` The
+  mechanism is identical; only the scaffolding the model reaches for changed.
+  `E` therefore detects harness-envelope fabrication directly, independent of
+  any Harmony marker.
+
+Thresholds are measured against that corpus, not chosen:
+
+- `D` requires 5 consecutive staccato lines that also *look* collapsed: mean
+  line length ≤ 12 characters and at least half the lines sentence-terminated.
+  Line count alone is not enough — the longest clean short-line run in the
+  corpus is 8, a parts enumeration (`platen clip` / `crankshaft` / …) with mean
+  length 12.2 and no terminators. The longest clean run carrying the collapse
+  shape is 4, against a threshold of 5.
+- `N`'s consent-dialog form matches only when the prompt is the *whole* answer
+  (≤200 characters). 115 corpus blocks are nothing but that dialog, while prose
+  discussing it — this document, the bug reports, the 4.7 KB answer that first
+  described the shape — stays clean.
+- `S` allows at most 8 non-Latin characters in a block that is ≥90% ASCII, and
+  additionally requires the run to be *stranded*: abutting an ASCII letter, or
+  opening its own line without being a cited word — alone on the line, or with
+  something glued to it (`ាន? Wait ...`). A whitespace-delimited term stays
+  clean wherever it sits in the sentence ("the Japanese word for cat is 猫",
+  "猫 means cat in Japanese"). Genuinely multilingual answers blow the budget.
+- `V` and `E` are exempt inside fenced blocks, inline code spans, indented code
+  blocks, and matched `<code>…</code>` pairs, which the TUI's
+  `collapseInlineHtml` renders as inline code. Fences and spans are parsed per
+  CommonMark. A fence closes only on a repeat of the opener's character, at
+  least as long, with no info string — naive toggling let a ```` ```xml ````
+  block nested in a ```` ```text ```` block close the outer fence early, which
+  produced the only false positive measured across the corpus. An inline span
+  needs a closing run of *equal* length, ignores backslash-escaped backticks,
+  may cross a single line break, and never leaves its leaf block: a stray
+  backtick in a heading must not pair with one paragraphs later and exempt
+  everything between them. An indented block cannot interrupt a paragraph, so
+  a four-space continuation line inside prose is still scanned.
+  A fence still opens inside a block quote, whose `>` prefix the renderer's
+  lexer strips, and an HTML pair straddling two blocks does not exempt: the
+  renderer pairs tags per block and drops the rest, so that marker is prose.
+
+Fixtures: `packages/ai/test/fixtures/harmony-visible-collapse-corpus.json`.

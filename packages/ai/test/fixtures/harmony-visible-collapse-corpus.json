@@ -1,0 +1,190 @@
+{
+	"_source": "Real gpt-5.6-sol assistant text blocks captured from persisted omp sessions (2026-08-22 .. 2026-09-09). Leading prose is replaced with a neutral sentence; every degenerate tail is verbatim.",
+	"positives": [
+		{
+			"id": "terminator_cascade",
+			"signal": "D",
+			"text": "The transfer is starting; it will verify the published hash before launch.\n  . \n blog. \n code. \n long. \n story. \n beautiful. \n truth. \n zero. \n none. \n null. \n gone. \n over. \n end. \n final. \n closed. \n done. \n terminate. \n finish. \n stop. \n complete. \n submit. \n answer. \n response. \n final. \n end. \n stop. \n close. \n done. \n terminate. \n result. \n output. \n final. \n end. \n close. \n stop. \n"
+		},
+		{
+			"id": "analysis_selftalk",
+			"signal": "D",
+			"text": "\n\n pera.\nNo more.\n \nStop.\n\n \nNext.\n \nNo.\n \nDone.\n\n \nWait.\n\n \nNo.\n\n \nEnd.\n\n \n.\n \nThis is awful. \nNo.\n\n"
+		},
+		{
+			"id": "fabricated_budget_notice",
+			"signal": "N",
+			"text": " \n a a \n You have 1431 weighted tokens left\n\n Wait. \n lawa. \n No user. \n Ӎ maybe can wait final. \n"
+		},
+		{
+			"id": "fabricated_permission_prompt",
+			"signal": "N",
+			"text": "A third-party application wants to take over your screen. Continue? (y/n) \n",
+			"_note": "Session 2026-09-09T15-58-05Z, 115 blocks. The whole answer is the dialog; no token-budget line to fall back on."
+		},
+		{
+			"id": "script_residue_cjk",
+			"signal": "S",
+			"text": "Focused policy test binaries built successfully; test results are next. \n瓣\n"
+		},
+		{
+			"id": "script_residue_khmer",
+			"signal": "S",
+			"text": "ាន? Wait developer may enforce no final blank? okay."
+		},
+		{
+			"id": "visible_routing_marker",
+			"signal": "M+V",
+			"text": "All input remains scoped to the isolated X display. \n check to=functions.hub  ... stop one correction. no. Need wait auto."
+		},
+		{
+			"id": "fabricated_harness_envelope",
+			"signal": "E",
+			"text": "Rocker’s second strict review is running.\n\n<system-notice>\n<job-progress id=\"pr726-watch\" type=\"process\" elapsed=\"33d21h\">\n<output>\nstall: no new events for 1h — watcher still running\n</output>\n</job-progress>\n</system-notice> \nNo. \n",
+			"_note": "Session 2026-09-09T16-02-08Z row 3265. One 357,273-character answer block fabricated 824 <system-notice> wakes with a self-incrementing elapsed counter reaching 33d23h, answering each with 'No.' The harness injects those tags; the model wrote them."
+		},
+		{
+			"id": "script_residue_intra_word",
+			"signal": "S",
+			"text": "I compared `declauding-v0.2.1` with `blader/humanizer` main (`v2.9.1`).\n\n### Comparison\n\n- **Already covered by Humanizer:** most of declაუდing entries 24-36: copula avoidance, participle tails, forced triads.",
+			"_note": "Session 2026-08-17T00-24-47Z. Georgian glyphs substituted inside the ASCII word `declauding`, rendered 14 times against 117 correct spellings in one session."
+		},
+		{
+			"id": "visible_marker_escaped_backticks",
+			"signal": "M+V",
+			"text": "The failing turn ended with \\`to=functions.hub\\` and nothing after it.",
+			"_note": "Backslash-escaped backticks are literal text in CommonMark; they open no code span, so the marker is rendered."
+		},
+		{
+			"id": "visible_marker_unequal_backtick_runs",
+			"signal": "M+V",
+			"text": "Trailing junk: ``to=functions.edit` never closed.",
+			"_note": "A two-backtick opener is closed only by a two-backtick run; a single backtick leaves the span open."
+		},
+		{
+			"id": "fabricated_notice_after_code_span",
+			"signal": "N",
+			"text": "The harness never prints `You have 500 tokens left`. \n\nYou have 3862 weighted tokens left\n",
+			"_note": "First match is quoted; the scan must continue past it to the real fabrication."
+		},
+		{
+			"id": "fabricated_filler_line",
+			"signal": "N",
+			"text": "Rocker drawing export is active.\n\n a a \n\nWaiting on the verdict.",
+			"_note": "Session 2026-09-09T16-02-08Z, 33 blocks. A repeated single letter on its own line, between otherwise plausible status prose."
+		},
+		{
+			"id": "visible_marker_lazy_indent",
+			"signal": "M+V",
+			"text": "The failing turn ended with\n    to=functions.hub\nand nothing after it.",
+			"_note": "An indented line cannot interrupt a paragraph, so this is prose continuation, not a code block."
+		},
+		{
+			"id": "visible_marker_after_heading_backtick",
+			"signal": "M+V",
+			"text": "# `Title\nanalysis to=functions.edit code\n`",
+			"_note": "A stray backtick in an ATX heading must not pair with one in a later block; the marker between them is rendered."
+		},
+		{
+			"id": "visible_marker_html_pair_across_blocks",
+			"signal": "M+V",
+			"text": "# <code>Title\nanalysis to=functions.edit code\n</code>",
+			"_note": "collapseInlineHtml pairs tags within one block's tokens and drops the rest, so this marker renders as prose."
+		},
+		{
+			"id": "visible_marker_after_quoted_fence",
+			"signal": "M+V",
+			"text": "> ```text\n> example\noutside analysis to=functions.edit code",
+			"_note": "A block quote ends at the first unquoted line, so an unclosed quoted fence must not swallow the prose after it."
+		},
+		{
+			"id": "visible_marker_crlf_blank_line",
+			"signal": "M+V",
+			"text": "Intro `open\r\n\r\nanalysis to=functions.edit code\r\n` close",
+			"_note": "A CRLF blank line still ends the paragraph, so these backticks belong to different blocks and pair with nothing."
+		}
+	],
+	"negatives": [
+		{
+			"id": "short_line_report",
+			"text": "Reset completed.\n\nFinal status:\n\n- Branch: `main`\n- `HEAD`: `50a609b`\n- `origin/main`: same\n\nThe worktree is clean and synchronized with `origin/main`."
+		},
+		{
+			"id": "terse_bullet_answer",
+			"text": "Done.\n\nChanged:\n\n- `collector/src/agent_collector/__init__.py`\n- `hub/src/collector-version.ts`\n\nVerification: full suite green."
+		},
+		{
+			"id": "numbered_steps",
+			"text": "Run:\n\n1. Install\n2. Authorize\n3. Deploy\n\nBoth `coderabbit` and the shorter alias `cr` work."
+		},
+		{
+			"id": "terse_answer_at_measured_margin",
+			"text": "Yes.\n\nDistinction:\n\nStop.\nWait.\n\nEverything else in the answer continues as ordinary prose, well past the short-line window.",
+			"_note": "Four staccato lines. Measured over 6,127 assistant text blocks in 264 persisted sessions, the longest clean run that also carries the collapse shape (mean line ≤ 12 chars, ≥ half sentence-terminated) was 4; the threshold is 5."
+		},
+		{
+			"id": "fenced_cascade_quote",
+			"text": "The failure looks like this:\n\n```\nnull.\ngone.\nover.\nend.\nfinal.\nclosed.\ndone.\n```\n\nThat block is quoted evidence, not a leak."
+		},
+		{
+			"id": "multilingual_answer",
+			"text": "日本語のドキュメントを翻訳しました。The translated section is below, with the original Japanese retained for reference: これはテストです。"
+		},
+		{
+			"id": "quoted_marker_prose",
+			"text": "The leak shape is `analysis to=functions.edit code`, and the brackets never appear."
+		},
+		{
+			"id": "nested_fence_documentation",
+			"text": "Implemented for `/dump`:\n\n```text\n## System Notice: Async Progress\n\n```xml\n<system-notice>\n...\n</system-notice>\n```\n```\n\nThe actual fence grows beyond three backticks when the notice contains its own fenced code.",
+			"_note": "Session 2026-08-22T15-14-02Z. A ```xml block nested inside a ```text block: the inner fence carries an info string, so CommonMark keeps it open. Naive fence toggling closed the outer block early and exposed the tags."
+		},
+		{
+			"id": "status_enumeration_unterminated",
+			"text": "Ran the sweep.\n\nplaten clip\ncrankshaft\ncrank pin/ring/eye\ntransgear stub\nwheel axle/nut\ndrive train\n\nAll six parts regenerated.",
+			"_note": "Six short lines, none sentence-terminated: an enumeration, not a collapse. Session 2026-09-03T00-42-56Z produced the longest clean short-line run in the corpus (8) in exactly this shape - mean length 12.2, terminated ratio 0."
+		},
+		{
+			"id": "quoted_foreign_term_in_sentence",
+			"text": "The Japanese word for cat is 猫, and the city is 北京 in Chinese."
+		},
+		{
+			"id": "indented_inline_code_run",
+			"text": "Compare the two forms:\n\n    `stop.`\n    `no.`\n    `end.`\n    `done.`\n    `final.`\n\nBoth render identically."
+		},
+		{
+			"id": "tilde_fence_with_backtick_info",
+			"text": "Rendered output:\n\n~~~`markdown`\nto=functions.hub\n~~~\n\nA tilde fence may carry backticks in its info string."
+		},
+		{
+			"id": "multiline_inline_code_span",
+			"text": "The token `to=functions.edit\ncode` is reserved and never appears in a rendered answer.",
+			"_note": "A CommonMark inline span may cross one line break; splitting per line would expose the marker."
+		},
+		{
+			"id": "duplicated_short_token_line",
+			"text": "Diff header:\n\n-- --\n\nAnd the reviewer said ok ok to the rename.",
+			"_note": "Separator lines and duplicated words are ordinary; only a repeated single ASCII letter is the observed filler shape."
+		},
+		{
+			"id": "indented_code_block_quoting_marker",
+			"text": "The leak shape is:\n\n    analysis to=functions.edit code\n\nThat is the whole signature.",
+			"_note": "CommonMark indented code block. Renders as code in the TUI, so the marker inside it is quoted evidence."
+		},
+		{
+			"id": "html_code_span_quoting_marker",
+			"text": "Use <code>to=functions.edit</code> when editing a file, and read the errata first.",
+			"_note": "collapseInlineHtml in packages/tui/src/components/markdown.ts renders a matched <code> pair as a codespan."
+		},
+		{
+			"id": "line_initial_foreign_term",
+			"text": "猫 means cat in Japanese, and the same glyph is used in Chinese with a different reading.",
+			"_note": "A cited term is whitespace-delimited; only a glued or alone-on-its-line run is stranded residue."
+		},
+		{
+			"id": "blockquoted_fence_quoting_marker",
+			"text": "> ```text\n> analysis to=functions.edit code\n> ```\n\nThat is the shape the errata documents.",
+			"_note": "Marked strips the block-quote prefix before parsing, so this is a real fenced code block."
+		}
+	]
+}

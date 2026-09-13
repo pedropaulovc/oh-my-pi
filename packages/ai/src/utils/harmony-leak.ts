@@ -72,13 +72,96 @@ const BODY_CASCADE_RE = /to=functions\.\w+\s+code\b[\s\S]{0,200}?to=functions\./
 // Fake-result framing (`R`): marker followed within 80 chars by Cell N: framing.
 const FAKE_RESULT_RE = /to=functions\.\w+[\s\S]{0,80}?code_output\s*\nCell\s+\d+:/;
 
-const FENCE_RE = /^\s*(?:```+|~~~+)/;
+// ── Visible-channel collapse signals (`assistant_text` only) ────────────────
+//
+// The marker-anchored signals above only fire when `to=functions.` survives
+// into the output. Prior collapse (errata §2.8) frequently lands *without* it:
+// the routing token is simply unavailable and the mass spreads over ordinary
+// English terminators, script residue, and fabricated harness chatter. The
+// three signals below detect that state directly. Thresholds are measured, not
+// guessed — see `test/fixtures/harmony-visible-collapse-corpus.json` and the
+// note in `docs/ERRATA-GPT5-HARMONY.md` §2.9.
 
-// Non-Latin scripts seen in the corpus: CJK + ext, Cyrillic, Thai, Georgian,
-// Armenian, Kannada, Telugu, Devanagari, Arabic, Malayalam.
+// Staccato collapse (`D`): a run of consecutive ultra-short lines. Blank lines
+// do not break the run — the observed cascades interleave `\n \n` separators.
+// Markdown list/quote/heading/table rows and numbered steps are ordinary prose
+// structure and never count. Line count alone is not enough: a legitimate
+// line-oriented answer (`Build passed.` / `Tests passed.` / …) has the same
+// shape. Two measured properties separate them — collapse lines are shorter
+// (90th percentile mean 9.8 chars over 225 runs in the corpus) and are
+// sentence-terminated fragments, where a bare enumeration is not.
+const COLLAPSE_MIN_RUN = 5;
+const COLLAPSE_MAX_LINE_LEN = 24;
+const COLLAPSE_MAX_LINE_WORDS = 3;
+const COLLAPSE_MAX_MEAN_LEN = 12;
+const COLLAPSE_MIN_TERMINATED = 0.5;
+const COLLAPSE_STRUCTURE_RE = /^[-*+>#|\d]/;
+
+// Fabricated harness notice (`N`): the model narrates a token budget that no
+// omp surface ever emits (the system prompt forbids narrating budgets at all),
+// emits a repeated single-letter filler line, or renders an interactive
+// consent dialog as its entire answer. All three are pure fabrication in the
+// visible channel. The prompt form is whole-answer only: 115 corpus blocks are
+// nothing but that dialog, while prose *discussing* it (this repo's own docs,
+// bug reports, and the 4.7 KB answer that first described the shape) must stay
+// clean. The filler form is one repeated ASCII *letter* (`a a`, 33 corpus
+// blocks); widening it to any short token swallows legitimate separator lines
+// like `-- --` and duplicated words like `ok ok`.
+const FABRICATED_NOTICE_RE = /\bYou have [\d,]+ (?:weighted )?tokens left\b/g;
+const REPEATED_TOKEN_LINE_RE = /^[ \t]*([A-Za-z])[ \t]+\1[ \t]*$/gm;
+const FABRICATED_PROMPT_MAX_LEN = 200;
+const FABRICATED_PROMPT_RE = /^[^\n]{0,180}?(?:Continue\?[ \t]*\(y\/n\)|\[Y\/n\]|\(yes\/no\))[.\s]*$/i;
+
+// Script residue (`S`, standalone form): a handful of non-Latin characters
+// *stranded* in an otherwise ASCII answer — either substituted inside an ASCII
+// word (`declauding` → `decl\u10D0\u10E3\u10D3ing`) or sitting alone at the
+// head of a line (`\n瓣\n`). Both are shapes an author cannot produce by
+// accident. A quoted foreign term inside a sentence ("the Japanese word for
+// cat is 猫") is neither, and stays clean. Distinct from
+// `hasScriptMismatchNear`, which only qualifies a marker.
+const RESIDUE_MAX_CHARS = 8;
+const RESIDUE_MIN_TEXT_LEN = 8;
+const RESIDUE_MIN_ASCII_RATIO = 0.9;
+// Harness-envelope fabrication (`E`): the model writing omp's own injected
+// wrapper tags into its answer. These are produced by the harness and arrive as
+// input; a model has no legitimate reason to emit one outside code. Observed at
+// scale in 2026-09-09T16-02-08Z, where a single answer block fabricated 824
+// `<system-notice>` wakes with a self-incrementing `elapsed` up to `33d23h`.
+const HARNESS_ENVELOPE_RE =
+	/<\/?(?:system-notice|job-progress|system-reminder|system-directive|async-result|job-summary)\b/g;
+
+// Fence open/close. CommonMark: a closer repeats the opener's character at
+// least as many times and carries no info string, so ```` ```xml ```` nested in
+// a ```` ```text ```` block opens nothing and closes nothing. Backticks are
+// banned from a backtick-fence info string only; a tilde fence may carry them.
+const BACKTICK_FENCE_RE = /^ {0,3}(`{3,})([^\n`]*)$/;
+const TILDE_FENCE_RE = /^ {0,3}(~{3,})(.*)$/;
+// Block-quote container prefix. Marked strips it before parsing the quoted
+// content, so a fence written `> ```text` opens a real code block.
+const BLOCK_QUOTE_PREFIX_RE = /^ {0,3}(?:> ?)+/;
+
+// Inline spans live inside one leaf block. A span may run over a lazy
+// paragraph continuation, but not into a line that opens a new block (heading,
+// list item, quote, fence, thematic break) and not out of an ATX heading,
+// which is a single-line block. Without this a stray backtick in a heading
+// pairs with one further down the answer and exempts everything between them.
+const LEAF_BLOCK_START_RE =
+	/^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|`{3,}|~{3,}|(?:[-_*][ \t]*){3,}$)/;
+const ATX_HEADING_RE = /^ {0,3}#{1,6}(?:[ \t]|$)/;
+// `collapseInlineHtml` in packages/tui/src/components/markdown.ts turns a
+// matched `<code>…</code>` pair into a `codespan`, so documentation written
+// that way renders as code and must not be scanned. An unmatched tag is
+// dropped by the renderer and its content stays prose, so require the pair.
+const HTML_CODE_SPAN_RE = /<code(?:\s[^>]*)?>[\s\S]*?<\/code>/gi;
+
+// Non-Latin scripts seen in the corpora: CJK + ext, Cyrillic, Thai, Georgian,
+// Armenian, Kannada, Telugu, Devanagari, Arabic, Malayalam, plus Khmer,
+// Gujarati, Bengali, Tamil, Gurmukhi, Ethiopic and Syriac observed in the
+// visible-channel collapse corpus.
 const SCRIPT_CLASS =
-	"\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u0400-\u04FF\u0E00-\u0E7F\u10A0-\u10FF\u0530-\u058F\u0C80-\u0CFF\u0C00-\u0C7F\u0900-\u097F\u0600-\u06FF\u0D00-\u0D7F";
+	"\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u0400-\u04FF\u0E00-\u0E7F\u10A0-\u10FF\u0530-\u058F\u0C80-\u0CFF\u0C00-\u0C7F\u0900-\u097F\u0600-\u06FF\u0D00-\u0D7F\u1780-\u17FF\u0A80-\u0AFF\u0980-\u09FF\u0B80-\u0BFF\u0A00-\u0A7F\u1200-\u137F\u0700-\u074F";
 const SCRIPT_RUN_RE = new RegExp(`[${SCRIPT_CLASS}]{2,}`, "u");
+const SCRIPT_CHAR_RE = new RegExp(`[${SCRIPT_CLASS}]+`, "gu");
 
 // Recovery registry. Each entry's parser must recognize the configured
 // sentinel (per-tool, see eval/parse.ts and hashline/executor.ts) and surface
@@ -106,7 +189,7 @@ const RECOVERY_REGISTRY: Record<string, RecoveryConfig> = {
 	},
 };
 
-const SIGNAL_ORDER = ["M", "C", "G", "S", "B", "R", "T"] as const;
+const SIGNAL_ORDER = ["M", "V", "C", "G", "S", "B", "D", "N", "E", "R", "T"] as const;
 
 export type HarmonySignalClass = "H" | (typeof SIGNAL_ORDER)[number];
 
@@ -169,9 +252,17 @@ export function signalListLabel(signals: readonly HarmonySignal[]): string {
 /**
  * Detect harmony-protocol leakage in `text`. Returns undefined if clean.
  *
- * Trip rule: `H` alone, or `M` paired with at least one co-signal
- * (`C`/`G`/`S`/`B`/`R`/`T`). Bare `M` does not trip — this document, its
- * tests, and bug reports legitimately carry the marker.
+ * Trip rule: `H` alone, `D`/`N`/`S` alone on the visible-answer surface, or
+ * `M` paired with at least one co-signal (`V`/`C`/`G`/`S`/`B`/`R`/`T`).
+ *
+ * `V` is set for every marker on `assistant_text` that sits outside fenced and
+ * inline code, so a routing marker in a rendered answer trips on its own. Code
+ * spans are exempt because documentation, this module's tests, and bug reports
+ * legitimately quote the marker — and always do so in backticks.
+ *
+ * `D`/`N`/`S` are visible-channel collapse signals and are scanned only on
+ * `assistant_text`. Thinking blocks are legitimately staccato and legitimately
+ * discuss non-Latin text, and a tool argument is arbitrary data.
  *
  * The `tool_arg` surface is held to a stricter rule. A tool argument is
  * arbitrary file/data content that can legitimately carry the marker, a
@@ -180,8 +271,7 @@ export function signalListLabel(signals: readonly HarmonySignal[]): string {
  * is content trailing the structurally-valid parse, so a `tool_arg` detection
  * additionally requires the `T` co-signal. Absent a `parsedEnd` boundary `T`
  * is never set, so `tool_arg` scanning stays inert and a legitimate codex tool
- * call is never hard-aborted. `assistant_text`/`assistant_thinking` keep the
- * base rule.
+ * call is never hard-aborted.
  *
  * `parsedEnd`, when supplied, marks the byte at which a structurally valid
  * tool-argument parse ends; markers at or past it set the `T` co-signal.
@@ -198,18 +288,19 @@ export function detectHarmonyLeak(
 		toolCallId?: string;
 	} = {},
 ): HarmonyDetection | undefined {
-	const fences = computeFenceRanges(text);
+	const code = computeCodeRanges(text);
 	const signals: HarmonySignal[] = [];
+	const visible = surface === "assistant_text";
 
 	for (const match of text.matchAll(HARMONY_RE)) {
 		const start = match.index ?? 0;
-		if (isInsideFence(fences, start)) continue;
+		if (isInsideCode(code, start)) continue;
 		signals.push(makeSignal(["H"], start, start + match[0].length, match[0]));
 	}
 
 	for (const match of text.matchAll(MARKER_RE)) {
 		const start = match.index ?? 0;
-		if (isInsideFence(fences, start)) continue;
+		if (isInsideCode(code, start)) continue;
 		const end = start + match[0].length;
 		const classes: HarmonySignalClass[] = ["M"];
 
@@ -217,6 +308,7 @@ export function detectHarmonyLeak(
 		const near = text.slice(Math.max(0, start - 16), Math.min(text.length, end + 16));
 		const forward = text.slice(start, Math.min(text.length, start + 240));
 
+		if (visible) classes.push("V");
 		if (CHANNEL_WORD_RE.test(adjacent)) classes.push("C");
 		if (GLITCH_RE.test(near)) classes.push("G");
 		if (hasScriptMismatchNear(text, start, end)) classes.push("S");
@@ -227,6 +319,21 @@ export function detectHarmonyLeak(
 		// `M` alone never trips: legitimate documentation/tests carry it.
 		if (classes.length > 1) {
 			signals.push(makeSignal(classes, start, end, match[0]));
+		}
+	}
+
+	if (visible) {
+		const collapse = findStaccatoCollapse(text, code);
+		if (collapse) signals.push(makeSignal(["D"], collapse.start, collapse.end, collapse.text));
+		const notice = findFabricatedNotice(text, code);
+		if (notice) signals.push(makeSignal(["N"], notice.start, notice.end, notice.text));
+		const residue = findScriptResidue(text, code);
+		if (residue) signals.push(makeSignal(["S"], residue.start, residue.end, residue.text));
+		for (const match of text.matchAll(HARNESS_ENVELOPE_RE)) {
+			const start = match.index ?? 0;
+			if (isInsideCode(code, start)) continue;
+			signals.push(makeSignal(["E"], start, start + match[0].length, match[0]));
+			break;
 		}
 	}
 
@@ -387,41 +494,362 @@ function makeSignal(classes: HarmonySignalClass[], start: number, end: number, t
 }
 
 /**
- * Precompute fenced-code-block ranges once per text. Each range is a
- * [start, end) span of bytes inside any ```/~~~ fence. O(n) once instead of
- * O(n) per detected match.
+ * Precompute code ranges once per text: every fenced block, plus every inline
+ * code span in the text between those blocks. Each range is a [start, end)
+ * span. O(n) once instead of O(n) per detected match. Ranges come out ordered
+ * by start, which {@link isInsideCode} relies on to break early.
  */
-function computeFenceRanges(text: string): Array<[number, number]> {
+function computeCodeRanges(text: string): Array<[number, number]> {
 	const ranges: Array<[number, number]> = [];
-	let inFence = false;
-	let fenceStart = 0;
+	let fence: { start: number; marker: string; quoted: boolean } | undefined;
+	let spanScanStart = 0;
 	let lineStart = 0;
+	let prevLineEnd = 0;
 	while (lineStart <= text.length) {
 		const newline = text.indexOf("\n", lineStart);
 		const lineEnd = newline === -1 ? text.length : newline;
-		const line = text.slice(lineStart, lineEnd);
-		if (FENCE_RE.test(line)) {
-			if (inFence) {
-				ranges.push([fenceStart, lineEnd]);
-				inFence = false;
-			} else {
-				fenceStart = lineStart;
-				inFence = true;
+		const raw = text.slice(lineStart, lineEnd);
+		// A block-quote container prefixes every line with `>`; the renderer's
+		// lexer strips it before the fence is parsed, so strip it here too or a
+		// quoted example reads as top-level prose and its marker trips `V`. The
+		// container also *ends* the block: an unclosed quoted fence stops at the
+		// first unquoted line, it does not swallow the rest of the answer.
+		const quoted = BLOCK_QUOTE_PREFIX_RE.test(raw);
+		const line = quoted ? raw.replace(BLOCK_QUOTE_PREFIX_RE, "") : raw;
+		if (fence?.quoted === true && !quoted) {
+			ranges.push([fence.start, prevLineEnd]);
+			fence = undefined;
+			spanScanStart = prevLineEnd;
+		}
+		const match = BACKTICK_FENCE_RE.exec(line) ?? TILDE_FENCE_RE.exec(line);
+		if (match) {
+			const run = match[1];
+			const info = match[2].trim();
+			const closes =
+				fence !== undefined && run[0] === fence.marker[0] && run.length >= fence.marker.length && info.length === 0;
+			if (closes) {
+				ranges.push([fence!.start, lineEnd]);
+				fence = undefined;
+				spanScanStart = lineEnd;
+			} else if (fence === undefined) {
+				pushUnfencedCode(text, spanScanStart, lineStart, ranges);
+				fence = { start: lineStart, marker: run, quoted };
 			}
 		}
+		prevLineEnd = lineEnd;
 		if (newline === -1) break;
 		lineStart = newline + 1;
 	}
-	if (inFence) ranges.push([fenceStart, text.length]);
+	if (fence !== undefined) ranges.push([fence.start, text.length]);
+	else pushUnfencedCode(text, spanScanStart, text.length, ranges);
+	ranges.sort((a, b) => a[0] - b[0]);
 	return ranges;
 }
 
-function isInsideFence(ranges: Array<[number, number]>, position: number): boolean {
+/** Inline spans, HTML code spans and indented blocks in the unfenced region `[from, to)`. */
+function pushUnfencedCode(text: string, from: number, to: number, ranges: Array<[number, number]>): void {
+	pushInlineSpans(text, from, to, ranges);
+	pushIndentedBlocks(text, from, to, ranges);
+	pushHtmlCodeSpans(text, from, to, ranges);
+}
+
+/**
+ * Matched `<code>…</code>` pairs, which the TUI renders as inline code. Like
+ * backtick spans these are inline constructs: `collapseInlineHtml` pairs tags
+ * within one block's token array and drops the rest, so a pair straddling a
+ * block boundary renders as prose and must stay scannable.
+ */
+function pushHtmlCodeSpans(text: string, from: number, to: number, ranges: Array<[number, number]>): void {
+	HTML_CODE_SPAN_RE.lastIndex = from;
+	for (let m = HTML_CODE_SPAN_RE.exec(text); m !== null; m = HTML_CODE_SPAN_RE.exec(text)) {
+		const end = m.index + m[0].length;
+		if (end > to) break;
+		if (staysInOneBlock(text, m.index, end, to)) ranges.push([m.index, end]);
+	}
+}
+
+/** Whether `[start, end)` stays inside the leaf block its first character opens. */
+function staysInOneBlock(text: string, start: number, end: number, to: number): boolean {
+	const singleLine = isSingleLineBlock(text, start);
+	for (let i = text.indexOf("\n", start); i !== -1 && i < end; i = text.indexOf("\n", i + 1)) {
+		if (singleLine) return false;
+		if (text.startsWith("\n", skipInlineSpace(text, i + 1, to))) return false;
+		if (LEAF_BLOCK_START_RE.test(lineAt(text, i + 1, to))) return false;
+	}
+	return true;
+}
+
+/**
+ * CommonMark indented code blocks: chunks of lines indented by four spaces or
+ * a tab. Such a block cannot interrupt a paragraph, so it must open after a
+ * blank line, and interior blank lines belong to it. Documentation quoting a
+ * marker this way renders as code and must not be scanned.
+ */
+function pushIndentedBlocks(text: string, from: number, to: number, ranges: Array<[number, number]>): void {
+	let blockStart: number | undefined;
+	let blockEnd = 0;
+	let prevBlank = true;
+	let lineStart = from;
+	while (lineStart < to) {
+		const newline = text.indexOf("\n", lineStart);
+		const lineEnd = newline === -1 || newline > to ? to : newline;
+		const line = text.slice(lineStart, lineEnd);
+		const blank = line.trim().length === 0;
+		if (!blank && isIndentedCodeLine(line)) {
+			if (blockStart === undefined && prevBlank) blockStart = lineStart;
+			if (blockStart !== undefined) blockEnd = lineEnd;
+		} else if (!blank && blockStart !== undefined) {
+			ranges.push([blockStart, blockEnd]);
+			blockStart = undefined;
+		}
+		if (!blank) prevBlank = false;
+		else prevBlank = true;
+		if (newline === -1 || newline >= to) break;
+		lineStart = newline + 1;
+	}
+	if (blockStart !== undefined) ranges.push([blockStart, blockEnd]);
+}
+
+function isIndentedCodeLine(line: string): boolean {
+	if (line.startsWith("\t")) return true;
+	return line.startsWith("    ");
+}
+
+/**
+ * Inline code spans in `text[from, to)`, per CommonMark: a run of backticks is
+ * closed by a run of *equal* length, a backslash-escaped backtick is literal
+ * text and delimits nothing, and a span may cross a line break but not a blank
+ * line, and never leaves its leaf block. Per-line scanning would miss
+ * multiline spans and mis-read escapes; scanning without block boundaries
+ * pairs a backtick in a heading with one several paragraphs down and exempts
+ * every marker between them. Both turn a `V` decision into the wrong answer.
+ */
+function pushInlineSpans(text: string, from: number, to: number, ranges: Array<[number, number]>): void {
+	let i = from;
+	while (i < to) {
+		if (text[i] !== "`" || isEscaped(text, i)) {
+			i++;
+			continue;
+		}
+		const openStart = i;
+		while (i < to && text[i] === "`") i++;
+		const runLength = i - openStart;
+		const close = findClosingRun(text, i, to, runLength, isSingleLineBlock(text, openStart));
+		if (close === undefined) continue;
+		ranges.push([openStart, close]);
+		i = close;
+	}
+}
+
+function isEscaped(text: string, position: number): boolean {
+	let slashes = 0;
+	for (let i = position - 1; i >= 0 && text[i] === "\\"; i--) slashes++;
+	return slashes % 2 === 1;
+}
+
+/**
+ * End offset of the next backtick run of exactly `runLength`, or undefined.
+ * Stops at the end of the opener's leaf block: a blank line, a line that opens
+ * a new block, or the first newline when the opener sits in an ATX heading.
+ */
+function findClosingRun(
+	text: string,
+	from: number,
+	to: number,
+	runLength: number,
+	singleLineBlock: boolean,
+): number | undefined {
+	let i = from;
+	while (i < to) {
+		const c = text[i];
+		if (c === "\n") {
+			if (singleLineBlock) return undefined;
+			if (text.startsWith("\n", skipInlineSpace(text, i + 1, to))) return undefined;
+			if (LEAF_BLOCK_START_RE.test(lineAt(text, i + 1, to))) return undefined;
+		}
+		if (c !== "`" || isEscaped(text, i)) {
+			i++;
+			continue;
+		}
+		const start = i;
+		while (i < to && text[i] === "`") i++;
+		if (i - start === runLength) return i;
+	}
+	return undefined;
+}
+
+/** Whether `position` sits in a block that cannot span lines (an ATX heading). */
+function isSingleLineBlock(text: string, position: number): boolean {
+	const lineStart = text.lastIndexOf("\n", position - 1) + 1;
+	return ATX_HEADING_RE.test(lineAt(text, lineStart, text.length));
+}
+
+/** The line at `lineStart`, without its CRLF carriage return. */
+function lineAt(text: string, lineStart: number, to: number): string {
+	const newline = text.indexOf("\n", lineStart);
+	const end = newline === -1 || newline > to ? to : newline;
+	const line = text.slice(lineStart, end);
+	return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
+
+/** Skips inline whitespace, including a CRLF carriage return. */
+function skipInlineSpace(text: string, from: number, to: number): number {
+	let i = from;
+	while (i < to && (text[i] === " " || text[i] === "\t" || text[i] === "\r")) i++;
+	return i;
+}
+
+function isInsideCode(ranges: Array<[number, number]>, position: number): boolean {
 	for (const [start, end] of ranges) {
 		if (position >= start && position < end) return true;
 		if (start > position) break;
 	}
 	return false;
+}
+
+/** A line is staccato when it is short, holds few words, and is not markdown structure. */
+function isStaccatoLine(line: string): boolean {
+	if (line.length > COLLAPSE_MAX_LINE_LEN) return false;
+	if (COLLAPSE_STRUCTURE_RE.test(line)) return false;
+	let words = 0;
+	let inWord = false;
+	for (let i = 0; i < line.length; i++) {
+		const c = line.charCodeAt(i);
+		const space = c === 32 || c === 9;
+		if (!space && !inWord) {
+			words++;
+			if (words > COLLAPSE_MAX_LINE_WORDS) return false;
+		}
+		inWord = !space;
+	}
+	return words > 0;
+}
+
+/**
+ * Longest run of consecutive staccato lines, reported when it reaches
+ * {@link COLLAPSE_MIN_RUN} *and* carries the two measured collapse properties:
+ * short mean line length and a majority of sentence-terminated lines. Blank
+ * lines are transparent - the observed cascades interleave whitespace-only
+ * separators between every emitted terminator.
+ */
+function findStaccatoCollapse(
+	text: string,
+	code: Array<[number, number]>,
+): { start: number; end: number; text: string } | undefined {
+	let runStart = 0;
+	let runEnd = 0;
+	let run = 0;
+	let chars = 0;
+	let terminated = 0;
+	let lineStart = 0;
+	const reset = () => {
+		run = 0;
+		chars = 0;
+		terminated = 0;
+	};
+	const collapsed = () =>
+		run >= COLLAPSE_MIN_RUN && chars / run <= COLLAPSE_MAX_MEAN_LEN && terminated / run >= COLLAPSE_MIN_TERMINATED;
+	while (lineStart <= text.length) {
+		const newline = text.indexOf("\n", lineStart);
+		const lineEnd = newline === -1 ? text.length : newline;
+		const raw = text.slice(lineStart, lineEnd);
+		const trimmed = raw.trim();
+		if (trimmed.length > 0) {
+			const contentStart = lineStart + (raw.length - raw.trimStart().length);
+			if (isStaccatoLine(trimmed) && !isInsideCode(code, contentStart)) {
+				if (run === 0) runStart = contentStart;
+				run++;
+				chars += trimmed.length;
+				if (/[.!?]$/.test(trimmed)) terminated++;
+				runEnd = lineEnd;
+			} else {
+				if (collapsed()) return { start: runStart, end: runEnd, text: text.slice(runStart, runEnd) };
+				reset();
+			}
+		}
+		if (newline === -1) break;
+		lineStart = newline + 1;
+	}
+	if (collapsed()) return { start: runStart, end: runEnd, text: text.slice(runStart, runEnd) };
+	return undefined;
+}
+
+/**
+ * Fabricated harness chatter: a narrated token budget, a repeated single-token
+ * filler line, or a whole answer that is nothing but an interactive consent
+ * prompt. The first two are scanned past code spans - a quoted example
+ * followed by a real fabrication must still trip.
+ */
+function findFabricatedNotice(
+	text: string,
+	code: Array<[number, number]>,
+): { start: number; end: number; text: string } | undefined {
+	for (const pattern of [FABRICATED_NOTICE_RE, REPEATED_TOKEN_LINE_RE]) {
+		pattern.lastIndex = 0;
+		for (const match of text.matchAll(pattern)) {
+			const start = match.index ?? 0;
+			if (isInsideCode(code, start)) continue;
+			return { start, end: start + match[0].length, text: match[0] };
+		}
+	}
+	const trimmed = text.trim();
+	if (trimmed.length > FABRICATED_PROMPT_MAX_LEN || !FABRICATED_PROMPT_RE.test(trimmed)) return undefined;
+	const start = text.indexOf(trimmed);
+	return { start, end: start + trimmed.length, text: trimmed };
+}
+
+/**
+ * Non-Latin characters *stranded* in an otherwise ASCII answer: substituted
+ * inside an ASCII word, or alone on their own line. A quoted foreign term in
+ * running prose is neither. Bounded by an absolute character budget rather
+ * than a ratio so a one-line answer and a long report are held to the same
+ * rule; genuinely multilingual answers blow the budget and stay clean.
+ */
+function findScriptResidue(
+	text: string,
+	code: Array<[number, number]>,
+): { start: number; end: number; text: string } | undefined {
+	if (text.length < RESIDUE_MIN_TEXT_LEN) return undefined;
+	SCRIPT_CHAR_RE.lastIndex = 0;
+	let residue = 0;
+	const candidates: Array<[number, number]> = [];
+	for (const match of text.matchAll(SCRIPT_CHAR_RE)) {
+		const start = match.index ?? 0;
+		if (isInsideCode(code, start)) continue;
+		residue += match[0].length;
+		if (residue > RESIDUE_MAX_CHARS) return undefined;
+		candidates.push([start, start + match[0].length]);
+	}
+	if (candidates.length === 0) return undefined;
+	let ascii = 0;
+	for (let i = 0; i < text.length; i++) {
+		if (text.charCodeAt(i) < 128) ascii++;
+	}
+	if (ascii / text.length < RESIDUE_MIN_ASCII_RATIO) return undefined;
+	for (const [start, end] of candidates) {
+		if (isStranded(text, start, end)) return { start, end, text: text.slice(start, end) };
+	}
+	return undefined;
+}
+
+/**
+ * A run of script characters is stranded when an ASCII letter abuts it
+ * (substitution inside a word, `decl\u10D0\u10E3\u10D3ing`), or when it opens
+ * its own line and is not a cited word: either it is alone on the line
+ * (`\n瓣\n`) or something is glued to it with no space (`ាន? Wait ...`).
+ * A quoted foreign term is a whitespace-delimited word inside a sentence -
+ * "the Japanese word for cat is 猫", and equally "猫 means cat in Japanese" -
+ * so a line-initial run followed by a space and prose stays clean.
+ */
+function isStranded(text: string, start: number, end: number): boolean {
+	const before = start > 0 ? text[start - 1] : "";
+	const after = end < text.length ? text[end] : "";
+	if (/[A-Za-z]/.test(before) || /[A-Za-z]/.test(after)) return true;
+	const lineStart = text.lastIndexOf("\n", start - 1) + 1;
+	if (text.slice(lineStart, start).trim().length !== 0) return false;
+	const lineEnd = text.indexOf("\n", end);
+	const rest = text.slice(end, lineEnd === -1 ? text.length : lineEnd);
+	return rest.trim().length === 0 || !/^[ \t]/.test(rest);
 }
 
 function hasScriptMismatchNear(text: string, start: number, end: number): boolean {

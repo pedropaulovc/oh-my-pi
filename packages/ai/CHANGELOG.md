@@ -48,6 +48,10 @@
 - Ollama cache hits now populate cached-token usage: `prompt_eval_cached_count` from the `/api/chat` done chunk maps to `cacheRead`, with `input` reduced to the uncached portion, so status-line `cache_turn`/`cache_hit` segments and cache-prefix audits report real hit rates instead of false misses.
 - Fixed requests that run across a price change being costed at the newer rate; peak/off-peak estimates now use the rate in effect when the request started.
 - Fixed GitHub Copilot Business seats getting HTTP 403 on every model while the same token succeeds with a Chat client identity: chat and model-policy requests now identify as `copilot-chat`, denied requests retry once as the Copilot CLI (`copilot-developer-cli`), and `COPILOT_INTEGRATION_ID` pins the `Copilot-Integration-Id` header up front; model discovery keeps the CLI identity and the 403 message names the identity and the remedies ([#11372](https://github.com/can1357/oh-my-pi/issues/11372)).
+### Fixed
+
+- Harmony leak detection now catches visible-answer collapse that has lost its `to=functions.NAME` marker, the shape gpt-5.6-sol produces most often; five shapes abort and retry the turn on their own ([#11466](https://github.com/can1357/oh-my-pi/issues/11466), `docs/ERRATA-GPT5-HARMONY.md` §2.9).
+- Fenced blocks, inline code spans, indented code blocks and matched `<code>` pairs (which the TUI renders as inline code, and which must stay inside one block) are exempt, as are fences inside block quotes; fences and spans are parsed per CommonMark and a span no longer leaves its leaf block, so a nested ` ```xml ` block no longer closes an outer ` ```text ` fence and an escaped or unbalanced backtick no longer exempts a rendered marker.
 
 ## [18.1.16] - 2026-09-09
 
