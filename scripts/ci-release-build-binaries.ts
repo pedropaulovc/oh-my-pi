@@ -26,6 +26,64 @@ if (
 	throw new Error("@huggingface/transformers package manifest has no string version");
 }
 const transformersVersion = transformersManifest.version;
+const packageManifest: unknown = createRequire(import.meta.url)("../packages/coding-agent/package.json");
+if (
+	typeof packageManifest !== "object" ||
+	packageManifest === null ||
+	!("version" in packageManifest) ||
+	typeof packageManifest.version !== "string"
+) {
+	throw new Error("Coding-agent package manifest has no string version");
+}
+const sourceVersion = packageManifest.version;
+
+interface DogfoodBuildSettings {
+	readonly repository: string;
+	readonly version: string;
+}
+
+const DOGFOOD_REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const DOGFOOD_VERSION_RE = /^(\d+\.\d+\.\d+)-dogfood\.1$/;
+
+export function resolveDogfoodBuildSettings(env: NodeJS.ProcessEnv = Bun.env): DogfoodBuildSettings | null {
+	const repository = env.DOGFOOD_REPOSITORY?.trim() || undefined;
+	const version = env.DOGFOOD_VERSION?.trim() || undefined;
+	if ((repository === undefined) !== (version === undefined)) {
+		throw new Error("DOGFOOD_REPOSITORY and DOGFOOD_VERSION must be provided together");
+	}
+	if (repository === undefined || version === undefined) return null;
+	if (!DOGFOOD_REPOSITORY_RE.test(repository)) {
+		throw new Error(`DOGFOOD_REPOSITORY must be an owner/name repository identifier: ${repository}`);
+	}
+	const versionMatch = DOGFOOD_VERSION_RE.exec(version);
+	if (!versionMatch) {
+		throw new Error(`DOGFOOD_VERSION must match <semver>-dogfood.1: ${version}`);
+	}
+	if (versionMatch[1] !== sourceVersion) {
+		throw new Error(`DOGFOOD_VERSION ${version} does not match source package version ${sourceVersion}`);
+	}
+	return { repository, version };
+}
+
+function resolveOutputPath(target: BinaryTarget, dogfood: DogfoodBuildSettings | null): string {
+	if (dogfood === null) return target.outfile;
+	switch (target.id) {
+		case "linux-x64":
+			return "packages/coding-agent/binaries/omp-dogfood-linux-x64";
+		case "win32-x64":
+			return "packages/coding-agent/binaries/omp-dogfood-windows-x64.exe";
+		default:
+			throw new Error(`Dogfood builds support only linux-x64 and win32-x64, not ${target.id}`);
+	}
+}
+
+function describeDogfoodDefines(dogfood: DogfoodBuildSettings | null): string {
+	if (dogfood === null) return "";
+	return ` defines=${JSON.stringify({
+		__OMP_DOGFOOD_REPOSITORY__: dogfood.repository,
+		__OMP_BUILD_VERSION__: dogfood.version,
+	})}`;
+}
 // Worker threads re-enter the binary's single CLI host entry.
 const isDryRun = process.argv.includes("--dry-run");
 const targets: BinaryTarget[] = [
@@ -136,12 +194,13 @@ async function embedNative(target: BinaryTarget): Promise<void> {
 	});
 }
 
-async function buildBinary(target: BinaryTarget): Promise<void> {
-	console.log(`Building ${target.outfile}...`);
+async function buildBinary(target: BinaryTarget, dogfood: DogfoodBuildSettings | null): Promise<void> {
+	const outfile = resolveOutputPath(target, dogfood);
+	console.log(`Building ${outfile}...`);
 	await embedNative(target);
 	if (isDryRun) {
 		console.log(
-			`DRY RUN Bun.build target=${target.target} outfile=${target.outfile} external=${COMPILED_EXTERNAL_DEPENDENCIES.join(",")}`,
+			`DRY RUN Bun.build target=${target.target} outfile=${outfile} external=${COMPILED_EXTERNAL_DEPENDENCIES.join(",")}${describeDogfoodDefines(dogfood)}`,
 		);
 		return;
 	}
@@ -149,10 +208,12 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 	await compileCodingAgent({
 		repoRoot,
 		entrypoint,
-		outfile: path.join(repoRoot, target.outfile),
+		outfile: path.join(repoRoot, outfile),
 		transformersVersion,
 		target: target.target,
 		minifyIdentifiers: true,
+		dogfoodRepository: dogfood?.repository,
+		buildVersion: dogfood?.version,
 		skipBuiltinCodesign: shouldAdhocSignDarwinBinary(target),
 	});
 	// Bun 1.3.12 emits a truncated Mach-O signature on darwin builds.
@@ -165,7 +226,7 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 				"-",
 				"--entitlements",
 				path.join(repoRoot, "scripts", "macos-entitlements.plist"),
-				path.join(repoRoot, target.outfile),
+				path.join(repoRoot, outfile),
 			],
 			repoRoot,
 		);
@@ -193,6 +254,7 @@ async function resetArtifacts(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+	const dogfood = resolveDogfoodBuildSettings();
 	const requestedTargets = parseRequestedTargets();
 	const selectedTargets = requestedTargets ? targets.filter(target => requestedTargets.has(target.id)) : targets;
 
@@ -208,6 +270,9 @@ async function main(): Promise<void> {
 	if (selectedTargets.length === 0) {
 		throw new Error("No release targets selected.");
 	}
+	if (dogfood !== null) {
+		for (const target of selectedTargets) resolveOutputPath(target, dogfood);
+	}
 
 	await fs.mkdir(binariesDir, { recursive: true });
 	// Generate inside the try so resetArtifacts() always restores the empty
@@ -215,11 +280,11 @@ async function main(): Promise<void> {
 	try {
 		await generateBundle();
 		for (const target of selectedTargets) {
-			await buildBinary(target);
+			await buildBinary(target, dogfood);
 		}
 	} finally {
 		await resetArtifacts();
 	}
 }
 
-await main();
+if (import.meta.main) await main();

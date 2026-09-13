@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { $env, $which, APP_NAME, compareVersions, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
+import { $env, $which, APP_NAME, compareVersions, isCompiledBinary, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { $ } from "bun";
@@ -21,6 +21,7 @@ import {
 	unsupportedProxyMessage,
 	withTimeoutSignal,
 } from "../utils/fetch-timeout";
+import { CliUsageError } from "./usage-error";
 
 const REPO = "can1357/oh-my-pi";
 const PACKAGE = "@oh-my-pi/pi-coding-agent";
@@ -42,6 +43,61 @@ const NPM_REGISTRY = "https://registry.npmjs.org/";
 const GITHUB_API = "https://api.github.com";
 const RELEASE_METADATA_TIMEOUT_MS = 30_000;
 const BINARY_DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * Fork repository (`owner/name`) baked into a dogfood build by the build
+ * script's `--define`. Source runs and official builds never define it, so
+ * every read goes through `typeof`: evaluating an undefined identifier any
+ * other way is a ReferenceError.
+ */
+declare const __OMP_DOGFOOD_REPOSITORY__: string | undefined;
+
+/**
+ * Executable a dogfood build installs itself as. Deliberately distinct from
+ * {@link APP_NAME}: a dogfood install lives beside the official one and must
+ * never replace it.
+ */
+const DOGFOOD_APP_NAME = `${APP_NAME}-dogfood`;
+
+/**
+ * Dogfood release tags: the upstream semver the integration branch was built
+ * from plus a monotonic counter, e.g. `v18.1.19-dogfood.2`. Anything else — an
+ * upstream `v18.1.19`, a canary prerelease, a hand-cut tag — is rejected
+ * rather than guessed at, so a dogfood build can never install an upstream or
+ * unrelated asset.
+ */
+const DOGFOOD_TAG_RE = /^v(\d+\.\d+\.\d+-dogfood\.\d+)$/;
+
+/** `owner/name`, with no empty segment, path suffix, or whitespace. */
+const REPOSITORY_SLUG_RE = /^[^/\s]+\/[^/\s]+$/;
+
+/** Identity of the fork a dogfood build updates itself from. */
+export interface DogfoodUpdateSource {
+	/** `owner/name` of the fork publishing dogfood releases. */
+	repository: string;
+	/** Executable name replaced in place (`omp-dogfood`). */
+	appName: string;
+}
+
+/**
+ * Dogfood identity of the running build, or undefined for source runs and
+ * official builds — which keep npm discovery, update channels, and the
+ * package-manager routing below exactly as they are.
+ *
+ * A defined-but-malformed repository throws instead of degrading to the
+ * official path: falling back would point a dogfood build at the upstream npm
+ * release and update the vanilla `omp` install.
+ */
+export function dogfoodUpdateSource(): DogfoodUpdateSource | undefined {
+	if (typeof __OMP_DOGFOOD_REPOSITORY__ !== "string") return undefined;
+	const repository = __OMP_DOGFOOD_REPOSITORY__.trim();
+	if (!REPOSITORY_SLUG_RE.test(repository)) {
+		throw new Error(
+			`Invalid dogfood repository baked into this build: ${JSON.stringify(__OMP_DOGFOOD_REPOSITORY__)}`,
+		);
+	}
+	return { repository, appName: DOGFOOD_APP_NAME };
+}
 
 /**
  * Core native addon package. Bumped in lock-step with {@link PACKAGE} so the
@@ -97,6 +153,24 @@ export interface ReleaseInfo {
 	/** npm names to install, resolved after following any `omp.rename` pointers. */
 	packages: ReleasePackages;
 }
+
+/**
+ * A dogfood release published by the fork. Always binary-only: dogfood builds
+ * are never published to npm, so there is nothing for a package manager to
+ * install.
+ */
+export interface DogfoodReleaseInfo {
+	tag: string;
+	version: string;
+	dist: "binary";
+	/** Fork that published it; every asset URL must live under this repository. */
+	repository: string;
+	/** Never set: a dogfood release installs no npm packages. */
+	packages?: undefined;
+}
+
+/** Release description for either update product. */
+export type AnyReleaseInfo = ReleaseInfo | DogfoodReleaseInfo;
 
 export interface ReleaseBinaryAsset {
 	url: string;
@@ -226,12 +300,17 @@ export function shouldForceBinaryUpdate(
  * `options.allowPrerelease` is set, which the canary channel passes: canary
  * GitHub releases are published as prereleases, and the exact-tag match below
  * still pins the download to the specific requested version.
+ *
+ * `options.repository` names the repository the asset must be served from and
+ * defaults to the official {@link REPO}. A dogfood build passes its own fork,
+ * which pins the download to that fork's release: upstream-hosted assets fail
+ * the exact-URL check below even when the tag and digest line up.
  */
 export function resolveReleaseBinaryAsset(
 	release: unknown,
 	expectedTag: string,
 	binaryName: string,
-	options: { allowPrerelease?: boolean } = {},
+	options: { allowPrerelease?: boolean; repository?: string } = {},
 ): ReleaseBinaryAsset {
 	if (!isRecord(release)) {
 		throw new Error("Invalid GitHub release metadata");
@@ -269,7 +348,7 @@ export function resolveReleaseBinaryAsset(
 		throw new Error(`GitHub release asset ${binaryName} has an unsupported digest`);
 	}
 
-	const expectedUrl = `https://github.com/${REPO}/releases/download/${expectedTag}/${binaryName}`;
+	const expectedUrl = `https://github.com/${options.repository ?? REPO}/releases/download/${expectedTag}/${binaryName}`;
 	if (asset.browser_download_url !== expectedUrl) {
 		throw new Error(`GitHub release asset ${binaryName} has an unexpected download URL`);
 	}
@@ -281,15 +360,25 @@ export function resolveReleaseBinaryAsset(
 	};
 }
 
-async function getReleaseBinaryAsset(
-	expectedVersion: string,
-	binaryName: string,
-	fetchImpl: Fetch = fetch,
-	githubToken?: string,
-	allowPrerelease = false,
-): Promise<ReleaseBinaryAsset> {
-	const tag = `v${expectedVersion}`;
-	const resolvedGitHubToken = githubToken ?? (await resolveGitHubToken());
+/** GitHub release metadata request; the token is optional and metadata-only. */
+interface GithubMetadataRequest {
+	fetchImpl?: Fetch;
+	/** Explicit `""` suppresses the ambient token, which the rate-limit hint keys off. */
+	githubToken?: string;
+	/** Request deadline; defaults to the normal 30-second metadata timeout. */
+	timeoutMs?: number;
+}
+
+/**
+ * Fetch and decode GitHub release metadata.
+ *
+ * Both products read release metadata the same way — the fork is public, so
+ * the token (when present) only buys a higher rate limit, never access.
+ */
+async function fetchGithubReleaseMetadata(url: string, request: GithubMetadataRequest): Promise<unknown> {
+	const fetchImpl = request.fetchImpl ?? fetch;
+	const resolvedGitHubToken = request.githubToken ?? (await resolveGitHubToken());
+	const timeoutMs = request.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
 	const headers: Record<string, string> = {
 		Accept: "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28",
@@ -298,13 +387,15 @@ async function getReleaseBinaryAsset(
 
 	let response: Response;
 	try {
-		response = await fetchImpl(`${GITHUB_API}/repos/${REPO}/releases/tags/${encodeURIComponent(tag)}`, {
+		response = await fetchImpl(url, {
 			headers,
-			signal: withTimeoutSignal(RELEASE_METADATA_TIMEOUT_MS),
+			signal: withTimeoutSignal(timeoutMs),
 		});
 	} catch (err) {
 		if (isTimeoutError(err)) {
-			throw new Error("Timed out fetching GitHub release metadata after 30s", { cause: err });
+			throw new Error(`Timed out fetching GitHub release metadata after ${Math.round(timeoutMs / 1000)}s`, {
+				cause: err,
+			});
 		}
 		if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
 		throw err;
@@ -317,8 +408,102 @@ async function getReleaseBinaryAsset(
 	if (!response.ok) {
 		throw new Error(`Failed to fetch GitHub release metadata: ${response.statusText}`);
 	}
+	return await response.json();
+}
 
-	return resolveReleaseBinaryAsset(await response.json(), tag, binaryName, { allowPrerelease });
+/** Release-asset lookup for a specific published version. */
+interface ReleaseAssetRequest extends GithubMetadataRequest {
+	expectedVersion: string;
+	binaryName: string;
+	/** Repository serving the asset; defaults to the official {@link REPO}. */
+	repository?: string;
+	allowPrerelease?: boolean;
+}
+
+async function getReleaseBinaryAsset(request: ReleaseAssetRequest): Promise<ReleaseBinaryAsset> {
+	const repository = request.repository ?? REPO;
+	const tag = `v${request.expectedVersion}`;
+	const metadata = await fetchGithubReleaseMetadata(
+		`${GITHUB_API}/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`,
+		request,
+	);
+	return resolveReleaseBinaryAsset(metadata, tag, request.binaryName, {
+		allowPrerelease: request.allowPrerelease,
+		repository,
+	});
+}
+
+/**
+ * Parse one entry returned by `GET /repos/<fork>/releases`.
+ *
+ * Every field is checked rather than trusted: the tag must be an exact
+ * `v<x.y.z>-dogfood.<n>`, the release must be published (not a draft, not a
+ * prerelease — the dogfood pipeline publishes normal releases), and it must be
+ * hosted by the fork this build was compiled for. A build pointed at the
+ * upstream repository therefore fails here instead of installing upstream's
+ * `omp` over the dogfood executable.
+ */
+export function resolveDogfoodRelease(metadata: unknown, repository: string): DogfoodReleaseInfo {
+	if (!isRecord(metadata)) {
+		throw new Error("Invalid GitHub release metadata");
+	}
+	const tag = metadata.tag_name;
+	if (typeof tag !== "string") {
+		throw new Error("GitHub release metadata has no tag name");
+	}
+	const version = DOGFOOD_TAG_RE.exec(tag)?.[1];
+	if (!version) {
+		throw new Error(
+			`GitHub release ${tag} is not a ${DOGFOOD_APP_NAME} release; expected v<major>.<minor>.<patch>-dogfood.<n>`,
+		);
+	}
+	if (metadata.draft !== false) {
+		throw new Error(`GitHub release ${tag} is a draft, not a published release`);
+	}
+	if (metadata.prerelease !== false) {
+		throw new Error(`GitHub release ${tag} is a prerelease; ${DOGFOOD_APP_NAME} installs published releases only`);
+	}
+	const expectedPrefix = `https://github.com/${repository}/releases/`;
+	const htmlUrl = metadata.html_url;
+	if (typeof htmlUrl !== "string" || !htmlUrl.toLowerCase().startsWith(expectedPrefix.toLowerCase())) {
+		throw new Error(`GitHub release ${tag} is not published by ${repository}`);
+	}
+	return { tag, version, dist: "binary", repository };
+}
+
+/** Select the highest published dogfood version from a GitHub releases page. */
+export function resolveLatestDogfoodRelease(metadata: unknown, repository: string): DogfoodReleaseInfo {
+	if (!Array.isArray(metadata)) throw new Error("Invalid GitHub releases metadata");
+	let latest: DogfoodReleaseInfo | undefined;
+	for (const candidate of metadata) {
+		let release: DogfoodReleaseInfo;
+		try {
+			release = resolveDogfoodRelease(candidate, repository);
+		} catch {
+			continue;
+		}
+		if (!latest || compareVersions(release.version, latest.version) > 0) latest = release;
+	}
+	if (!latest) throw new Error(`No published ${DOGFOOD_APP_NAME} release found in ${repository}`);
+	return latest;
+}
+
+/**
+ * Latest published dogfood release of the fork this build was compiled for.
+ *
+ * Forks may also publish ordinary releases, so this scans the latest release
+ * page and selects the highest valid dogfood version instead of trusting the
+ * repository-wide `releases/latest` pointer.
+ */
+export async function getLatestDogfoodRelease(
+	source: DogfoodUpdateSource,
+	request: GithubMetadataRequest = {},
+): Promise<DogfoodReleaseInfo> {
+	const metadata = await fetchGithubReleaseMetadata(
+		`${GITHUB_API}/repos/${source.repository}/releases?per_page=100`,
+		request,
+	);
+	return resolveLatestDogfoodRelease(metadata, source.repository);
 }
 
 export interface VerifiedBinaryDownloadOptions {
@@ -404,6 +589,8 @@ export interface BinaryReplacementOptions {
 	tempPath: string;
 	backupPath: string;
 	expectedVersion: string;
+	/** Executable being replaced, for messages; defaults to `omp`. */
+	appName?: string;
 	verifyInstalledVersion: (expectedVersion: string) => Promise<InstalledVersionVerification>;
 }
 
@@ -838,7 +1025,15 @@ async function fetchLatestManifest(
 }
 
 /**
- * Get the latest release info from the npm registry, following `omp.rename`
+ * Get the latest release info for the running product.
+ *
+ * A dogfood build resolves the fork's latest published dogfood release from
+ * the GitHub API — never npm, which only ever carries upstream versions, so a
+ * dogfood build would otherwise announce and install vanilla `omp` releases.
+ * Update channels do not exist for dogfood builds and are ignored here; the
+ * command layer rejects them as a usage error.
+ *
+ * The official product reads the npm registry, following `omp.rename`
  * pointers ({@link resolveReleaseRename}) when the package has moved to a new
  * npm name. Version, dist, and install names all come from the final manifest
  * in the chain. Uses npm instead of GitHub API to avoid unauthenticated rate
@@ -846,7 +1041,16 @@ async function fetchLatestManifest(
  */
 export async function getLatestRelease(
 	options: { timeoutMs?: number; channel?: UpdateChannel } = {},
-): Promise<ReleaseInfo> {
+): Promise<AnyReleaseInfo> {
+	const dogfood = dogfoodUpdateSource();
+	if (dogfood) return await getLatestDogfoodRelease(dogfood, { timeoutMs: options.timeoutMs });
+	return await getLatestOfficialRelease(options);
+}
+
+async function getLatestOfficialRelease(options: {
+	timeoutMs?: number;
+	channel?: UpdateChannel;
+}): Promise<ReleaseInfo> {
 	const timeoutMs = options.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
 	const channel = options.channel ?? "stable";
 	const packages: ReleasePackages = { ...CURRENT_PACKAGES };
@@ -1128,9 +1332,12 @@ export function isMuslLinuxForTest(options: Required<MuslDetectionOptions>): boo
 }
 
 /**
- * Get the appropriate binary name for this platform.
+ * Release asset name for this platform: `<app>-<os>-<arch>` (plus `.exe` on
+ * Windows). `appName` selects the product — `omp` for official releases,
+ * `omp-dogfood` for the fork's dogfood releases, which publish their assets
+ * under the same platform suffixes.
  */
-function getBinaryName(): string {
+export function getBinaryName(appName: string = APP_NAME): string {
 	const platform = process.platform;
 	const arch = process.arch;
 
@@ -1162,9 +1369,9 @@ function getBinaryName(): string {
 	}
 
 	if (os === "windows") {
-		return `${APP_NAME}-${os}-${archName}.exe`;
+		return `${appName}-${os}-${archName}.exe`;
 	}
-	return `${APP_NAME}-${os}-${archName}`;
+	return `${appName}-${os}-${archName}`;
 }
 
 /**
@@ -1172,6 +1379,85 @@ function getBinaryName(): string {
  */
 function resolveOmpPath(): string | undefined {
 	return $which(APP_NAME) ?? undefined;
+}
+
+/**
+ * Whether `targetPath` is the vanilla `omp` executable.
+ *
+ * A dogfood update replaces the `omp-dogfood` executable only. Landing on
+ * `omp` — through a stray PATH entry, an `omp-dogfood -> omp` symlink, or an
+ * execPath fallback in a non-dogfood binary — would overwrite the official
+ * install with a fork build, so it is refused rather than repaired.
+ */
+function isVanillaOmpExecutable(targetPath: string): boolean {
+	const base = path.basename(targetPath).toLowerCase();
+	return base === APP_NAME || base === `${APP_NAME}.exe`;
+}
+
+function isDogfoodExecutable(targetPath: string): boolean {
+	const base = path.basename(targetPath).toLowerCase();
+	return base === DOGFOOD_APP_NAME || base === `${DOGFOOD_APP_NAME}.exe` || base.startsWith(`${DOGFOOD_APP_NAME}-`);
+}
+
+/** Injection seam for {@link resolveDogfoodBinaryPath}; production uses the defaults. */
+export interface DogfoodTargetResolution {
+	/** PATH lookup for `omp-dogfood`; defaults to {@link $which}. */
+	which?: (command: string) => string | null | undefined;
+	/** This process's executable; defaults to `process.execPath`. */
+	execPath?: string;
+	/** Whether this build is a compiled standalone binary; defaults to {@link isCompiledBinary}. */
+	compiled?: boolean;
+	realpath?: (filePath: string) => string | undefined;
+}
+
+/**
+ * Resolve the `omp-dogfood` executable a dogfood update replaces.
+ *
+ * The PATH entry wins so the launcher the user actually runs stays current;
+ * a symlinked entry is resolved to its real binary (self-healing, same as the
+ * official binary path). With no PATH entry the running compiled executable is
+ * updated in place, which covers a dogfood binary installed outside PATH. A
+ * source run has no executable to replace — `process.execPath` there is bun
+ * itself — so it fails loudly instead.
+ *
+ * Package managers are never consulted: dogfood builds are not published to
+ * npm, Homebrew, or mise, so brew/mise/bun/npm installs (and the persisted
+ * official update channel) are left untouched.
+ */
+export function resolveDogfoodBinaryPath(options: DogfoodTargetResolution = {}): string {
+	const lookup = options.which ?? $which;
+	const pathEntry = lookup(DOGFOOD_APP_NAME);
+	if (pathEntry) {
+		const resolved = (options.realpath ?? tryRealpath)(pathEntry) ?? pathEntry;
+		if (isVanillaOmpExecutable(resolved)) {
+			throw new Error(
+				`Refusing to replace ${resolved}: ${DOGFOOD_APP_NAME} resolves to the vanilla ${APP_NAME} executable, which dogfood updates never overwrite`,
+			);
+		}
+		if (!isDogfoodExecutable(resolved)) {
+			throw new Error(
+				`Refusing to replace ${resolved}: ${DOGFOOD_APP_NAME} must resolve to a dogfood-named executable`,
+			);
+		}
+		return resolved;
+	}
+	if (!(options.compiled ?? isCompiledBinary())) {
+		throw new Error(
+			`Could not resolve the ${DOGFOOD_APP_NAME} executable: it is not in PATH and this is not a compiled ${DOGFOOD_APP_NAME} build`,
+		);
+	}
+	const execPath = options.execPath ?? process.execPath;
+	if (isVanillaOmpExecutable(execPath)) {
+		throw new Error(
+			`Refusing to replace ${execPath}: a ${DOGFOOD_APP_NAME} build must not be installed as the vanilla ${APP_NAME} executable`,
+		);
+	}
+	if (!isDogfoodExecutable(execPath)) {
+		throw new Error(
+			`Refusing to replace ${execPath}: a ${DOGFOOD_APP_NAME} build must use a dogfood-named executable`,
+		);
+	}
+	return execPath;
 }
 
 /**
@@ -1387,7 +1673,7 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 		const verification = await options.verifyInstalledVersion(options.expectedVersion);
 		if (!verification.ok) {
 			throw new Error(
-				`${formatVerificationFailure(verification, options.expectedVersion)}; restored previous ${APP_NAME} binary`,
+				`${formatVerificationFailure(verification, options.expectedVersion)}; restored previous ${options.appName ?? APP_NAME} binary`,
 			);
 		}
 
@@ -1811,6 +2097,11 @@ let updateAttemptSeq = 0;
 
 /**
  * Download a release binary to a target path, replacing an existing file.
+ *
+ * `options.repository` and `options.appName` select the product: they default
+ * to the official repository and `omp`, and a dogfood update passes its fork
+ * and `omp-dogfood`. Everything below — download, digest verification, the
+ * per-target lock, the atomic swap, and the rollback — is shared.
  */
 export async function updateViaBinaryAt(
 	targetPath: string,
@@ -1820,13 +2111,18 @@ export async function updateViaBinaryAt(
 		fetchImpl?: Fetch;
 		githubToken?: string;
 		allowPrerelease?: boolean;
+		/** Repository serving the release asset; defaults to the official repo. */
+		repository?: string;
+		/** Executable being replaced, for asset naming and messages; defaults to `omp`. */
+		appName?: string;
 		/** Refuse replacement unless the existing path is a non-script OMP executable. */
 		validateExistingTarget?: boolean;
 		verifyInstalledVersion?: typeof verifyInstalledVersion;
 	} = {},
 ): Promise<void> {
 	if (options.validateExistingTarget) await validateExistingUpdateTarget(targetPath);
-	const binaryName = options.binaryName ?? getBinaryName();
+	const appName = options.appName ?? APP_NAME;
+	const binaryName = options.binaryName ?? getBinaryName(appName);
 	// Unique per attempt so two overlapping `omp update` runs never share a temp
 	// or backup path. A fixed temp name (`<binary>.new`) let the second run's
 	// pre-download unlink delete the first run's still-downloading temp file; the
@@ -1839,13 +2135,14 @@ export async function updateViaBinaryAt(
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
 	const tempPath = `${targetPath}.${attempt}.new`;
 	const backupPath = `${targetPath}.${attempt}.bak`;
-	const asset = await getReleaseBinaryAsset(
+	const asset = await getReleaseBinaryAsset({
 		expectedVersion,
 		binaryName,
-		options.fetchImpl,
-		options.githubToken,
-		options.allowPrerelease,
-	);
+		repository: options.repository,
+		fetchImpl: options.fetchImpl,
+		githubToken: options.githubToken,
+		allowPrerelease: options.allowPrerelease,
+	});
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 	await downloadVerifiedBinary({
 		url: asset.url,
@@ -1867,6 +2164,7 @@ export async function updateViaBinaryAt(
 			tempPath,
 			backupPath,
 			expectedVersion,
+			appName,
 			verifyInstalledVersion: options.verifyInstalledVersion ?? (version => verifyBinaryAtPath(targetPath, version)),
 		});
 		// The launcher is no longer bun-managed: drop bun's metadata sidecar so
@@ -1884,7 +2182,7 @@ export async function updateViaBinaryAt(
 		return result;
 	});
 	printVerifiedVersion(expectedVersion, verification.path ?? targetPath);
-	console.log(chalk.dim(`Restart ${APP_NAME} to use the new version`));
+	console.log(chalk.dim(`Restart ${appName} to use the new version`));
 }
 
 /**
@@ -1932,13 +2230,13 @@ export async function updateViaShimTakeover(
 	const exePath = path.join(launcherDir, `${APP_NAME}.exe`);
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
 	const tempPath = `${exePath}.${attempt}.new`;
-	const asset = await getReleaseBinaryAsset(
+	const asset = await getReleaseBinaryAsset({
 		expectedVersion,
 		binaryName,
-		options.fetchImpl,
-		options.githubToken,
-		options.allowPrerelease,
-	);
+		fetchImpl: options.fetchImpl,
+		githubToken: options.githubToken,
+		allowPrerelease: options.allowPrerelease,
+	});
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 	await downloadVerifiedBinary({
 		url: asset.url,
@@ -2056,6 +2354,76 @@ function persistChannel(channel: UpdateChannel): void {
 	}
 }
 
+/** Usage error raised when a channel flag reaches a dogfood build. */
+function dogfoodChannelUsageError(source: DogfoodUpdateSource): CliUsageError {
+	return new CliUsageError(
+		`--canary and --stable are not supported by ${source.appName}; dogfood builds track ${source.repository} releases only`,
+	);
+}
+
+/** Injection seam for {@link runDogfoodUpdateCommand}; production passes nothing. */
+export interface DogfoodUpdateOverrides {
+	fetchImpl?: Fetch;
+	/** Executable to replace; defaults to {@link resolveDogfoodBinaryPath}. */
+	targetPath?: string;
+	verifyInstalledVersion?: (expectedVersion: string) => Promise<InstalledVersionVerification>;
+	/** Test seam; production always validates the existing dogfood executable. */
+	validateExistingTarget?: boolean;
+}
+
+/**
+ * Update a dogfood build from its fork's latest published dogfood release.
+ *
+ * Binary-only by construction: dogfood builds exist only as GitHub release
+ * assets, so there is no npm discovery, no channel, and no package manager to
+ * route through. The official install (`omp`, and whatever brew/mise/bun/npm
+ * owns it) and the persisted `update.channel` setting are never touched.
+ */
+export async function runDogfoodUpdateCommand(
+	source: DogfoodUpdateSource,
+	opts: { force: boolean; check: boolean; channel?: UpdateChannel },
+	overrides: DogfoodUpdateOverrides = {},
+): Promise<void> {
+	if (opts.channel) throw dogfoodChannelUsageError(source);
+	console.log(chalk.dim(`Current version: ${VERSION}`));
+	console.log(chalk.dim(`Update source: ${source.repository} (${source.appName})`));
+
+	let release: DogfoodReleaseInfo;
+	try {
+		release = await getLatestDogfoodRelease(source, { fetchImpl: overrides.fetchImpl });
+	} catch (err) {
+		console.error(chalk.red(`Failed to check for updates: ${err}`));
+		process.exit(1);
+	}
+
+	const comparison = compareVersions(release.version, VERSION);
+	if (comparison <= 0 && !opts.force) {
+		const icon = theme?.status?.success ?? "✔";
+		console.log(chalk.green(`${icon} Already up to date`));
+		return;
+	}
+	console.log(
+		comparison > 0
+			? chalk.cyan(`New version available: ${release.version}`)
+			: chalk.yellow(`Forcing reinstall of ${release.version}`),
+	);
+	if (opts.check) return;
+
+	try {
+		const targetPath = overrides.targetPath ?? resolveDogfoodBinaryPath();
+		await updateViaBinaryAt(targetPath, release.version, {
+			appName: source.appName,
+			repository: release.repository,
+			fetchImpl: overrides.fetchImpl,
+			validateExistingTarget: overrides.validateExistingTarget ?? true,
+			verifyInstalledVersion: overrides.verifyInstalledVersion,
+		});
+	} catch (err) {
+		console.error(chalk.red(`Update failed: ${err}`));
+		process.exit(1);
+	}
+}
+
 /**
  * Run the update command.
  */
@@ -2064,6 +2432,11 @@ export async function runUpdateCommand(opts: {
 	check: boolean;
 	channel?: UpdateChannel;
 }): Promise<void> {
+	const dogfood = dogfoodUpdateSource();
+	if (dogfood) {
+		await runDogfoodUpdateCommand(dogfood, opts);
+		return;
+	}
 	console.log(chalk.dim(`Current version: ${VERSION}`));
 	const persistedChannel = readPersistedChannel() ?? "stable";
 	const channel = opts.channel ?? persistedChannel;
@@ -2073,7 +2446,7 @@ export async function runUpdateCommand(opts: {
 	// Check for updates
 	let release: ReleaseInfo;
 	try {
-		release = await getLatestRelease({ channel });
+		release = await getLatestOfficialRelease({ channel });
 	} catch (err) {
 		console.error(chalk.red(`Failed to check for updates: ${err}`));
 		process.exit(1);
@@ -2172,8 +2545,32 @@ export async function runUpdateCommand(opts: {
 
 /**
  * Print update command help.
+ *
+ * A dogfood build advertises its own executable and drops the channel flags:
+ * dogfood releases have no stable/canary split, and passing either is a usage
+ * error ({@link runDogfoodUpdateCommand}).
  */
 export function printUpdateHelp(): void {
+	const dogfood = dogfoodUpdateSource();
+	if (dogfood) {
+		console.log(`${chalk.bold(`${dogfood.appName} update`)} - Check for and install ${dogfood.appName} updates
+
+${chalk.bold("Usage:")}
+  ${dogfood.appName} update [options]
+
+${chalk.bold("Options:")}
+  -c, --check     Check for updates without installing
+  -f, --force     Force reinstall even if up to date
+  -l, --plugins   Update installed plugins
+
+${chalk.bold("Examples:")}
+  ${dogfood.appName} update              Update to the latest ${dogfood.repository} dogfood release
+  ${dogfood.appName} update --check      Check if updates are available
+  ${dogfood.appName} update --force      Force reinstall
+  ${dogfood.appName} update -l           Update installed plugins
+`);
+		return;
+	}
 	console.log(`${chalk.bold(`${APP_NAME} update`)} - Check for and install updates
 
 ${chalk.bold("Usage:")}

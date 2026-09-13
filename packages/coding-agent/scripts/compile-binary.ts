@@ -24,8 +24,31 @@ export interface CodingAgentCompileOptions {
 	readonly executablePath?: string;
 	/** Match release builds that minify identifiers while retaining names. */
 	readonly minifyIdentifiers?: boolean;
+	/** Compile-time fork repository identity for dogfood updater builds. */
+	readonly dogfoodRepository?: string;
+	/** Compile-time dogfood build version. */
+	readonly buildVersion?: string;
 	/** Disable Bun's built-in Darwin signing before the caller re-signs. */
 	readonly skipBuiltinCodesign?: boolean;
+}
+
+async function buildCompileDefines(options: CodingAgentCompileOptions): Promise<Record<string, string>> {
+	const hasRepository = options.dogfoodRepository !== undefined;
+	const hasVersion = options.buildVersion !== undefined;
+	if (hasRepository !== hasVersion) {
+		throw new Error("dogfoodRepository and buildVersion must be provided together");
+	}
+	return {
+		"process.env.PI_COMPILED": JSON.stringify("true"),
+		"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
+		"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
+		...(hasRepository && hasVersion
+			? {
+					__OMP_DOGFOOD_REPOSITORY__: JSON.stringify(options.dogfoodRepository),
+					__OMP_BUILD_VERSION__: JSON.stringify(options.buildVersion),
+				}
+			: {}),
+	};
 }
 
 /**
@@ -34,6 +57,7 @@ export interface CodingAgentCompileOptions {
  */
 export async function compileCodingAgent(options: CodingAgentCompileOptions): Promise<void> {
 	const previousCodesignSetting = Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
+	const userAgent = options.buildVersion ? `omp/${options.buildVersion}` : USER_AGENT;
 	if (options.skipBuiltinCodesign) {
 		Bun.env.BUN_NO_CODESIGN_MACHO_BINARY = "1";
 	}
@@ -42,11 +66,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			entrypoints: [options.entrypoint],
 			root: options.repoRoot,
 			external: [...COMPILED_EXTERNAL_DEPENDENCIES],
-			define: {
-				"process.env.PI_COMPILED": JSON.stringify("true"),
-				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
-				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
-			},
+			define: await buildCompileDefines(options),
 			// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
 			// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).
 			// Keep import.meta.resolve in bundled dependencies valid under bytecode.
@@ -60,7 +80,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			compile: {
 				// Bun's process-wide fetch User-Agent default. Any explicit
 				// provider fingerprint (Anthropic/Codex OAuth) still wins.
-				execArgv: [`--user-agent=${USER_AGENT}`],
+				execArgv: [`--user-agent=${userAgent}`],
 				...(options.executablePath
 					? { executablePath: options.executablePath }
 					: options.target
