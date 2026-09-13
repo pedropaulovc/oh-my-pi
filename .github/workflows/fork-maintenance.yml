@@ -10,7 +10,7 @@ name: Fork maintenance
 
 on:
   schedule:
-    - cron: "0 */8 * * *"
+    - cron: "0 0 */3 * *"
   repository_dispatch:
     types: [fork-maintenance]
 
