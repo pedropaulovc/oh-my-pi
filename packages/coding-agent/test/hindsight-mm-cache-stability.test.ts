@@ -7,9 +7,11 @@
 import { describe, expect, it, vi } from "bun:test";
 import type { HindsightApi, MentalModelSummary } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { renderMentalModelsBlock } from "@oh-my-pi/pi-coding-agent/hindsight/mental-models";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { SessionMemory, type SessionMemoryHost } from "@oh-my-pi/pi-coding-agent/session/session-memory";
 
 function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 	return {
@@ -94,5 +96,43 @@ describe("HindsightSessionState mental-model freeze", () => {
 		expect(flush).toHaveBeenCalled();
 		expect(reload).not.toHaveBeenCalled();
 		expect(state.mentalModelsSnippet).toBe("<mental_models>frozen</mental_models>");
+	});
+});
+
+describe("SessionMemory mental-model boundary reload", () => {
+	it("publishes the refreshed snapshot when an in-place session starts", async () => {
+		let snapshot = "<mental_models>old</mental_models>";
+		const state = {
+			aliasOf: undefined,
+			config: makeConfig(),
+			resetConversationTracking: vi.fn(),
+			refreshMentalModelsSnippet: vi.fn(async () => {
+				snapshot = "<mental_models>refreshed</mental_models>";
+			}),
+		} as unknown as HindsightSessionState;
+		const published: string[] = [];
+		const host = {
+			agent: { sessionId: "next-session" },
+			settings: Settings.isolated({ "memory.backend": "hindsight" }),
+			modelRegistry: {},
+			isDisposed: () => false,
+			memoryBackendSession: () => ({}),
+			getHindsightSessionState: () => state,
+			setHindsightSessionState: () => {},
+			getMnemopiSessionState: () => undefined,
+			takeMnemopiSessionState: () => undefined,
+			setBaseSystemPrompt: () => {},
+			refreshBaseSystemPrompt: async () => {
+				published.push(snapshot);
+			},
+			replaceMemoryTools: async () => {},
+		} as unknown as SessionMemoryHost;
+		const memory = new SessionMemory(host, {});
+
+		await memory.resetContextForNewTranscript();
+
+		expect(state.resetConversationTracking).toHaveBeenCalledTimes(1);
+		expect(state.refreshMentalModelsSnippet).toHaveBeenCalledTimes(1);
+		expect(published).toEqual(["<mental_models>refreshed</mental_models>"]);
 	});
 });
