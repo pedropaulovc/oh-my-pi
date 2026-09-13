@@ -43,7 +43,7 @@ interface DogfoodBuildSettings {
 }
 
 const DOGFOOD_REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const DOGFOOD_VERSION_RE = /^(\d+\.\d+\.\d+)-dogfood\.1$/;
+const DOGFOOD_VERSION_RE = /^(\d+\.\d+\.\d+)-dogfood\.[1-9]\d*$/;
 
 export function resolveDogfoodBuildSettings(env: NodeJS.ProcessEnv = Bun.env): DogfoodBuildSettings | null {
 	const repository = env.DOGFOOD_REPOSITORY?.trim() || undefined;
@@ -57,7 +57,7 @@ export function resolveDogfoodBuildSettings(env: NodeJS.ProcessEnv = Bun.env): D
 	}
 	const versionMatch = DOGFOOD_VERSION_RE.exec(version);
 	if (!versionMatch) {
-		throw new Error(`DOGFOOD_VERSION must match <semver>-dogfood.1: ${version}`);
+		throw new Error(`DOGFOOD_VERSION must match <semver>-dogfood.<positive revision>: ${version}`);
 	}
 	if (versionMatch[1] !== sourceVersion) {
 		throw new Error(`DOGFOOD_VERSION ${version} does not match source package version ${sourceVersion}`);
