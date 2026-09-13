@@ -1,0 +1,54 @@
+name: Fork maintenance
+
+# Fork-private automation: keeps `pedropaulovc/oh-my-pi` rebased on upstream
+# `can1357/oh-my-pi`, including open upstream/fork PR stacks, rebuilds the
+# `dogfood` integration branch, and asks `dogfood-release.yml` for a build when
+# upstream cuts a release the fork has not mirrored yet.
+#
+# Scheduled workflows only run from the fork's default branch, and GitHub keeps
+# them disabled in a fork until Actions is enabled there once.
+
+on:
+  schedule:
+    - cron: "0 */8 * * *"
+  repository_dispatch:
+    types: [fork-maintenance]
+
+# Serialize ref mutation with dogfood publication. `cancel-in-progress: false`
+# lets a slow state-changing run finish while GitHub coalesces queued polls.
+concurrency:
+  group: fork-dogfood-automation
+  cancel-in-progress: false
+
+permissions:
+  contents: write # rebase/force-with-lease push of main, PR heads, dogfood
+  issues: write # maintain the single conflict alert issue
+  pull-requests: read # discover open upstream PRs headed by this fork
+
+jobs:
+  maintain:
+    name: Rebase fork branches and rebuild dogfood
+    # Both schedule and repository_dispatch load this workflow from the
+    # default branch, so a manual caller cannot select an untrusted ref.
+    if: github.repository == 'pedropaulovc/oh-my-pi'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      # Full history: rebasing stacks onto upstream main needs real merge
+      # bases, and `--update-refs` needs the whole stack present.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          # The pushes below reuse this credential.
+          persist-credentials: true
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4"
+      # The script is dependency-free (bun + git + gh only), so no install.
+      - name: Rebase branches, rebuild dogfood, dispatch release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Comma/newline/space separated fork-only branches with no open PR,
+          # in addition to open upstream and fork PR branches.
+          PRIVATE_REBASE_BRANCHES: ${{ vars.PRIVATE_REBASE_BRANCHES }}
+        run: bun scripts/fork-maintenance.ts ${{ (github.event_name == 'repository_dispatch' && github.event.client_payload.dry_run == true) && '--dry-run' || '' }}
