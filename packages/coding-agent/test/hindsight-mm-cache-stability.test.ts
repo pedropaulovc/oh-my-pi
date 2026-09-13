@@ -160,6 +160,30 @@ describe("SessionMemory mental-model boundary reload", () => {
 		expect(published[1]).toContain("updated preference");
 	});
 
+	it("preserves the previous snapshot when the boundary fetch rejects", async () => {
+		const response = Promise.withResolvers<MentalModelListResponse>();
+		const { memory, published, state } = makeBoundaryHarness(response.promise);
+
+		await memory.resetContextForNewTranscript();
+		response.reject(new Error("Hindsight unavailable"));
+		await state.mentalModelsLoadPromise;
+
+		expect(state.mentalModelsSnippet).toBe("<mental_models>old</mental_models>");
+		expect(published).toEqual(["<mental_models>old</mental_models>"]);
+	});
+
+	it("clears the previous snapshot after a successful empty response", async () => {
+		const response = Promise.withResolvers<MentalModelListResponse>();
+		const { memory, published, state } = makeBoundaryHarness(response.promise);
+
+		await memory.resetContextForNewTranscript();
+		response.resolve({ items: [] });
+		await state.mentalModelsLoadPromise;
+
+		expect(state.mentalModelsSnippet).toBeUndefined();
+		expect(published).toEqual(["<mental_models>old</mental_models>", undefined]);
+	});
+
 	it("preserves the previous snapshot when the reload misses the deadline", async () => {
 		vi.useFakeTimers();
 		try {
