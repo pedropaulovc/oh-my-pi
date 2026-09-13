@@ -94,12 +94,16 @@ export class SessionMemory {
 		this.#host.getMnemopiSessionState()?.setSessionId(sid);
 	}
 
-	/** New session file: reset auto-recall / retain-threshold counters for the new transcript. */
+	/** New transcript: reset Hindsight counters and reload its frozen mental-model snapshot. */
 	#resetHindsightConversationTrackingIfHindsight(): boolean {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return false;
 		const state = this.#host.getHindsightSessionState();
 		if (!state || state.aliasOf) return false;
 		state.resetConversationTracking();
+		// Start a bounded first-turn reload without delaying /new, fork, clear, or
+		// session switches. A slow result is discarded so the previous snapshot
+		// remains byte-stable for this transcript (#11961).
+		state.beginMentalModelsTranscriptReload();
 		return true;
 	}
 
