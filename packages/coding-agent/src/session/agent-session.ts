@@ -2431,10 +2431,11 @@ export class AgentSession {
 		// must not enqueue — the suppression marker alone is unreliable because
 		// job-id reuse clears it.
 		const epoch = this.#asyncDeliveryEpoch;
-		// A job whose live output already reached this agent (and whose complete
-		// stream sits in a stable artifact) must not re-send that output with the
-		// completion: point at the artifact and carry only the never-delivered
-		// remainder captured at settlement.
+		// A job whose live output already reached this agent must not re-send
+		// that output with completion, whether or not it has a stable artifact.
+		// Artifact-backed jobs carry only the never-delivered settlement
+		// remainder; artifact-less jobs rely on the progress message already
+		// present in the transcript.
 		const progressSummary =
 			job?.progressDelivery !== undefined &&
 			(job.progressDeliveredCount ?? 0) > 0 &&
@@ -2446,9 +2447,7 @@ export class AgentSession {
 		// leftover). Successful post-processing such as Bash minimization is
 		// terminal-only provenance and must remain visible just like failure text.
 		const formatted =
-			progressSummary && job?.terminalTextProvenance === "progress"
-				? ""
-				: await this.#formatAsyncResultForFollowUp(text);
+			job?.terminalTextProvenance === "progress" ? "" : await this.#formatAsyncResultForFollowUp(text);
 		if (this.#isDisposed) return;
 		if (epoch !== this.#asyncDeliveryEpoch) return;
 		if (manager.isDeliverySuppressed(jobId)) return;
