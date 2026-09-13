@@ -33,7 +33,7 @@ describe("Windows release binary target", () => {
 			.env({
 				...process.env,
 				DOGFOOD_REPOSITORY: "pedropaulovc/oh-my-pi",
-				DOGFOOD_VERSION: `${codingAgentVersion}-dogfood.1`,
+				DOGFOOD_VERSION: `${codingAgentVersion}-dogfood.2`,
 			})
 			.quiet()
 			.nothrow();
@@ -44,7 +44,7 @@ describe("Windows release binary target", () => {
 		expect(output).toContain("__OMP_DOGFOOD_REPOSITORY__");
 		expect(output).toContain("pedropaulovc/oh-my-pi");
 		expect(output).toContain("__OMP_BUILD_VERSION__");
-		expect(output).toContain(`${codingAgentVersion}-dogfood.1`);
+		expect(output).toContain(`${codingAgentVersion}-dogfood.2`);
 		expect(output).not.toContain("outfile=packages/coding-agent/binaries/omp-linux-x64 ");
 		expect(output).not.toContain("outfile=packages/coding-agent/binaries/omp-windows-x64.exe ");
 	});
@@ -58,7 +58,7 @@ describe("Windows release binary target", () => {
 				DOGFOOD_REPOSITORY: "pedropaulovc/oh-my-pi",
 				DOGFOOD_VERSION: codingAgentVersion,
 			}),
-		).toThrow("must match <semver>-dogfood.1");
+		).toThrow("must match <semver>-dogfood.<positive revision>");
 		expect(() =>
 			resolveDogfoodBuildSettings({
 				DOGFOOD_REPOSITORY: "pedropaulovc/oh-my-pi",
