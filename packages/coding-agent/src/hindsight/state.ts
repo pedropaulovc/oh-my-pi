@@ -22,6 +22,7 @@ import { extractMessages } from "./transcript";
 
 const RETAIN_FLUSH_BATCH_SIZE = 16;
 const RETAIN_FLUSH_INTERVAL_MS = 5_000;
+const MENTAL_MODEL_LOAD_TIMED_OUT = Symbol("mental-model-load-timed-out");
 
 interface PendingRetainItem {
 	content: string;
@@ -228,14 +229,15 @@ export class HindsightSessionState {
 	lastRecallSnippet?: string;
 	/** Cached `<mental_models>` block injected into developer instructions. */
 	mentalModelsSnippet?: string;
-	/** When the initial snippet load completed; gates the first-turn recall race. */
+	/** When the current bootstrap/boundary load settled; gates the first-turn race. */
 	mentalModelsLoadedAt?: number;
 	/**
-	 * In-flight ensure+load promise. `beforeAgentStartPrompt` awaits this on
-	 * the first turn so the MM block lands in the system prompt before the
-	 * LLM generates, even though `start()` returns before the load completes.
+	 * In-flight bootstrap or transcript-boundary load. `beforeAgentStartPrompt`
+	 * awaits it on the first turn so a timely snapshot lands before generation,
+	 * even though startup and transcript transitions remain non-blocking.
 	 */
 	mentalModelsLoadPromise?: Promise<void>;
+	#mentalModelsLoadGeneration = 0;
 	unsubscribe?: () => void;
 	/**
 	 * Releases the `onHindsightScopeChanged` subscription that drives live
@@ -480,20 +482,48 @@ export class HindsightSessionState {
 		await this.#refreshBaseSystemPromptAfter("MM load");
 	}
 
+	async #loadMentalModelsSnippet(): Promise<string | undefined> {
+		return loadMentalModelsBlock(this.client, this.bankId, this.config.mentalModelMaxRenderChars, this.recallTags);
+	}
+
 	async refreshMentalModelsSnippet(): Promise<void> {
-		const snippet = await loadMentalModelsBlock(
-			this.client,
-			this.bankId,
-			this.config.mentalModelMaxRenderChars,
-			this.recallTags,
-		);
-		this.mentalModelsSnippet = snippet;
+		this.mentalModelsSnippet = await this.#loadMentalModelsSnippet();
 		this.mentalModelsLoadedAt = Date.now();
+	}
+
+	/**
+	 * Starts a bounded reload for a new transcript without blocking the session
+	 * transition. A result that misses the first-turn deadline is discarded so
+	 * the previous snapshot stays frozen for the whole transcript.
+	 */
+	beginMentalModelsTranscriptReload(): void {
+		if (!this.config.mentalModelsEnabled) return;
+		const generation = ++this.#mentalModelsLoadGeneration;
+		this.mentalModelsLoadedAt = undefined;
+		const reload = this.#reloadMentalModelsForNewTranscript(generation).catch(error => {
+			if (generation === this.#mentalModelsLoadGeneration) this.mentalModelsLoadedAt = Date.now();
+			logger.debug("Hindsight: mental-model transcript reload failed", { error: String(error) });
+		});
+		this.mentalModelsLoadPromise = reload;
+	}
+
+	async #reloadMentalModelsForNewTranscript(generation: number): Promise<void> {
+		const loaded = this.#loadMentalModelsSnippet();
+		const snippet = await Promise.race([
+			loaded,
+			Bun.sleep(MENTAL_MODEL_FIRST_TURN_DEADLINE_MS).then(() => MENTAL_MODEL_LOAD_TIMED_OUT),
+		]);
+		if (generation !== this.#mentalModelsLoadGeneration) return;
+		this.mentalModelsLoadedAt = Date.now();
+		if (typeof snippet === "symbol") return;
+		this.mentalModelsSnippet = snippet;
+		await this.#refreshBaseSystemPromptAfter("MM transcript reload");
 	}
 
 	async reloadMentalModels(): Promise<boolean> {
 		if (this.aliasOf) return false;
 		if (!this.config.mentalModelsEnabled) return false;
+		this.#mentalModelsLoadGeneration++;
 		await this.refreshMentalModelsSnippet();
 		await this.#refreshBaseSystemPromptAfter("MM reload");
 		return true;
@@ -520,6 +550,7 @@ export class HindsightSessionState {
 	}
 
 	dispose(): void {
+		this.#mentalModelsLoadGeneration++;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.unsubscribeScope?.();
@@ -527,7 +558,7 @@ export class HindsightSessionState {
 		this.retainQueue.dispose();
 	}
 
-	async #refreshBaseSystemPromptAfter(reason: "MM load" | "MM reload"): Promise<void> {
+	async #refreshBaseSystemPromptAfter(reason: "MM load" | "MM reload" | "MM transcript reload"): Promise<void> {
 		try {
 			await this.session.refreshBaseSystemPrompt();
 		} catch (err) {

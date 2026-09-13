@@ -95,16 +95,15 @@ export class SessionMemory {
 	}
 
 	/** New transcript: reset Hindsight counters and reload its frozen mental-model snapshot. */
-	async #resetHindsightConversationTrackingIfHindsight(): Promise<boolean> {
+	#resetHindsightConversationTrackingIfHindsight(): boolean {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return false;
 		const state = this.#host.getHindsightSessionState();
 		if (!state || state.aliasOf) return false;
 		state.resetConversationTracking();
-		// The mental-model block is frozen only within one transcript. Reload it
-		// before the boundary's base-prompt rebuild so /new, fork, clear, and
-		// session switches pick up background reflects without churning the old
-		// transcript's cached prefix (#11961).
-		if (state.config.mentalModelsEnabled) await state.refreshMentalModelsSnippet();
+		// Start a bounded first-turn reload without delaying /new, fork, clear, or
+		// session switches. A slow result is discarded so the previous snapshot
+		// remains byte-stable for this transcript (#11961).
+		state.beginMentalModelsTranscriptReload();
 		return true;
 	}
 
@@ -119,7 +118,7 @@ export class SessionMemory {
 	/** Resets transcript-scoped memory counters and removes a promoted prompt. */
 	async resetContextForNewTranscript(): Promise<void> {
 		const hadPromotedMemoryPrompt = this.#baseSystemPromptBeforeMemoryPromotion !== undefined;
-		const resetHindsight = await this.#resetHindsightConversationTrackingIfHindsight();
+		const resetHindsight = this.#resetHindsightConversationTrackingIfHindsight();
 		const resetMnemopi = this.#resetMnemopiConversationTrackingIfMnemopi();
 		if (hadPromotedMemoryPrompt) {
 			this.#host.setBaseSystemPrompt(this.#baseSystemPromptBeforeMemoryPromotion!);

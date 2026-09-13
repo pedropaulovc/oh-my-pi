@@ -5,7 +5,11 @@
  */
 
 import { describe, expect, it, vi } from "bun:test";
-import type { HindsightApi, MentalModelSummary } from "@oh-my-pi/pi-coding-agent/hindsight/client";
+import type {
+	HindsightApi,
+	MentalModelListResponse,
+	MentalModelSummary,
+} from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { renderMentalModelsBlock } from "@oh-my-pi/pi-coding-agent/hindsight/mental-models";
@@ -100,17 +104,29 @@ describe("HindsightSessionState mental-model freeze", () => {
 });
 
 describe("SessionMemory mental-model boundary reload", () => {
-	it("publishes the refreshed snapshot when an in-place session starts", async () => {
-		let snapshot = "<mental_models>old</mental_models>";
-		const state = {
-			aliasOf: undefined,
+	function makeBoundaryHarness(response: Promise<MentalModelListResponse>) {
+		const published: Array<string | undefined> = [];
+		const client = { listMentalModels: () => response } as unknown as HindsightApi;
+		const stateSession = {
+			refreshBaseSystemPrompt: async () => {},
+			sessionManager: { getEntries: () => [] },
+		};
+		const state = new HindsightSessionState({
+			sessionId: "next-session",
+			client,
+			bankId: "b",
 			config: makeConfig(),
-			resetConversationTracking: vi.fn(),
-			refreshMentalModelsSnippet: vi.fn(async () => {
-				snapshot = "<mental_models>refreshed</mental_models>";
-			}),
-		} as unknown as HindsightSessionState;
-		const published: string[] = [];
+			session: stateSession as never,
+			banksSet: new Set(),
+			lastRetainedTurn: 0,
+			hasRecalledForFirstTurn: false,
+		});
+		const publish = async () => {
+			published.push(state.mentalModelsSnippet);
+		};
+		stateSession.refreshBaseSystemPrompt = publish;
+		state.mentalModelsSnippet = "<mental_models>old</mental_models>";
+		state.mentalModelsLoadedAt = Date.now();
 		const host = {
 			agent: { sessionId: "next-session" },
 			settings: Settings.isolated({ "memory.backend": "hindsight" }),
@@ -122,17 +138,47 @@ describe("SessionMemory mental-model boundary reload", () => {
 			getMnemopiSessionState: () => undefined,
 			takeMnemopiSessionState: () => undefined,
 			setBaseSystemPrompt: () => {},
-			refreshBaseSystemPrompt: async () => {
-				published.push(snapshot);
-			},
+			refreshBaseSystemPrompt: publish,
 			replaceMemoryTools: async () => {},
 		} as unknown as SessionMemoryHost;
-		const memory = new SessionMemory(host, {});
+		return { memory: new SessionMemory(host, {}), published, state };
+	}
+
+	it("does not block the transition and publishes a refresh that meets the first-turn deadline", async () => {
+		const response = Promise.withResolvers<MentalModelListResponse>();
+		const { memory, published, state } = makeBoundaryHarness(response.promise);
 
 		await memory.resetContextForNewTranscript();
+		expect(published).toEqual(["<mental_models>old</mental_models>"]);
 
-		expect(state.resetConversationTracking).toHaveBeenCalledTimes(1);
-		expect(state.refreshMentalModelsSnippet).toHaveBeenCalledTimes(1);
-		expect(published).toEqual(["<mental_models>refreshed</mental_models>"]);
+		response.resolve({
+			items: [{ id: "u", bank_id: "b", name: "User Preferences", content: "updated preference" }],
+		});
+		await state.mentalModelsLoadPromise;
+
+		expect(published).toHaveLength(2);
+		expect(published[1]).toContain("updated preference");
+	});
+
+	it("preserves the previous snapshot when the reload misses the deadline", async () => {
+		vi.useFakeTimers();
+		try {
+			const response = Promise.withResolvers<MentalModelListResponse>();
+			const { memory, published, state } = makeBoundaryHarness(response.promise);
+
+			await memory.resetContextForNewTranscript();
+			vi.advanceTimersByTime(1_500);
+			await state.mentalModelsLoadPromise;
+
+			response.resolve({
+				items: [{ id: "u", bank_id: "b", name: "User Preferences", content: "late preference" }],
+			});
+			await Promise.resolve();
+
+			expect(state.mentalModelsSnippet).toBe("<mental_models>old</mental_models>");
+			expect(published).toEqual(["<mental_models>old</mental_models>"]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
