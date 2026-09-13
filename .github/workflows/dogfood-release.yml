@@ -60,6 +60,15 @@ jobs:
             echo "::error::${UPSTREAM_TAG} is not a published stable upstream release"
             exit 1
           fi
+          latest_revision="$(
+            gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100" |
+              jq -r --arg pattern "^v${upstream_version}-dogfood\\.(?<revision>[1-9][0-9]*)$" \
+                '[.[][] | .tag_name | capture($pattern)? | select(.) | .revision | tonumber] | max // 0'
+          )"
+          if (( DOGFOOD_REVISION <= latest_revision )); then
+            echo "::error::dogfood_revision must exceed published revision ${latest_revision} for ${UPSTREAM_TAG}"
+            exit 1
+          fi
 
           source_sha="${SOURCE_SHA,,}"
 
