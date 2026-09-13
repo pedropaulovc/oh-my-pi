@@ -24,8 +24,7 @@
   - `packages/coding-agent/src/debug/terminal-info.ts` — terminal state collection/formatting
   - `packages/coding-agent/src/debug/protocol-probe.ts` — terminal protocol probe panel and sample image
 
-
-For the interactive cache view and report sidecar, set `PI_PROMPT_CACHE_DEBUG=1` before starting `omp`. The diagnostic is derived from final provider request bodies and stores only bounded digests, counts, classifications, and metadata; it is separate from unsafe `PI_REQ_DEBUG` capture.
+For the interactive cache view and report sidecar, set `PI_PROMPT_CACHE_DEBUG=1` before starting `omp`. A live, process-qualified JSONL journal is written under the managed reports directory. The diagnostic captures the exact final wire body when transport is observable and a prepared serialized body for caller-owned clients; it stores only bounded digests, counts, classifications, and metadata and remains separate from unsafe `PI_REQ_DEBUG` capture.
 
 ## Inputs
 
