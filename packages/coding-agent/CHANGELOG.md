@@ -5,6 +5,9 @@
 ### Changed
 
 - Documented that native JS/TS hook factories must live in `.omp/hooks/pre/` or `.omp/hooks/post/` (not directly in `.omp/hooks/`), and cross-linked the hooks and extension-loading docs ([#11942](https://github.com/can1357/oh-my-pi/issues/11942)).
+### Added
+
+- Fork dogfood binaries can now update independently with `omp-dogfood update` without modifying the official `omp` installation.
 
 ## [18.1.19] - 2026-09-12
 
