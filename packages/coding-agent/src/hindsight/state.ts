@@ -228,7 +228,7 @@ export class HindsightSessionState {
 	lastRecallSnippet?: string;
 	/** Cached `<mental_models>` block injected into developer instructions. */
 	mentalModelsSnippet?: string;
-	/** When the cached snippet was last refreshed; gates the agent_end re-list. */
+	/** When the initial snippet load completed; gates the first-turn recall race. */
 	mentalModelsLoadedAt?: number;
 	/**
 	 * In-flight ensure+load promise. `beforeAgentStartPrompt` awaits this on
@@ -508,17 +508,13 @@ export class HindsightSessionState {
 				// is settled. The queue is also debounced/size-bounded, but
 				// flushing here keeps the bank fresh between turns.
 				void this.flushRetainQueue();
-				// MM TTL refresh: re-list once we're past the cache deadline. List
-				// is cheap (no reflect call); the LLM doesn't see this happen.
-				if (
-					this.config.mentalModelsEnabled &&
-					this.mentalModelsLoadedAt !== undefined &&
-					Date.now() - this.mentalModelsLoadedAt >= this.config.mentalModelRefreshIntervalMs
-				) {
-					void this.refreshMentalModelsSnippet().then(async () => {
-						await this.#refreshBaseSystemPromptAfter("MM TTL reload");
-					});
-				}
+				// Mental models are deliberately NOT re-listed here. Rewriting the
+				// cached <mental_models> block mid-session changes the base system
+				// prompt bytes and busts the provider prompt-cache prefix (#11961).
+				// The block is frozen for the session lifetime — like local-memory
+				// guidance after #3745 — so a background reflect applies to the NEXT
+				// session's bootstrap load. `/memory mm reload` stays the explicit
+				// opt-in invalidation.
 			}
 		});
 	}
@@ -531,7 +527,7 @@ export class HindsightSessionState {
 		this.retainQueue.dispose();
 	}
 
-	async #refreshBaseSystemPromptAfter(reason: "MM load" | "MM reload" | "MM TTL reload"): Promise<void> {
+	async #refreshBaseSystemPromptAfter(reason: "MM load" | "MM reload"): Promise<void> {
 		try {
 			await this.session.refreshBaseSystemPrompt();
 		} catch (err) {

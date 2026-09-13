@@ -290,9 +290,11 @@ export function renderMentalModelsBlock(models: MentalModelSummary[], budgetChar
 	let consumed = 0;
 	let truncated = false;
 	for (const model of models) {
-		const heading = `# ${model.name}`;
-		const refreshed = model.last_refreshed_at ? ` _(refreshed ${model.last_refreshed_at})_` : "";
-		const headerLine = `${heading}${refreshed}`;
+		// Volatile `last_refreshed_at` is deliberately kept OUT of the model-facing
+		// heading: a background reflect that only bumps the timestamp would
+		// otherwise rewrite the cached prefix on identical content (#11961). The
+		// timestamp still surfaces in the user-facing `/memory mm list`/`show`.
+		const headerLine = `# ${model.name}`;
 		const body = (model.content ?? "").trim();
 		const truncatedBody = truncateTo(body, perModelBudget);
 		if (truncatedBody.length < body.length) truncated = true;
@@ -422,9 +424,6 @@ function longestCommonSubsequence(a: string[], b: string[]): string[] {
 
 /** Awaited only by the first-turn race in `beforeAgentStartPrompt`. */
 export const MENTAL_MODEL_FIRST_TURN_DEADLINE_MS = 1500;
-
-/** Cache TTL: re-list models on `agent_end` once this many ms have elapsed. */
-export const MENTAL_MODEL_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Need-only export of the raw seed list for tests. */
 export const builtinSeedsForTest: ReadonlyArray<Readonly<RawSeed>> = BUILTIN_SEEDS;
