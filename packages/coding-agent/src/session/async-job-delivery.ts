@@ -271,6 +271,11 @@ export type AsyncResultJobDetails = {
 	status?: AsyncJob["status"];
 	exitCode?: number;
 	timedOut?: boolean;
+	/** Bounded, sanitized terminal result copy for transcript rendering. */
+	terminalText?: string;
+	terminalHead?: string;
+	terminalTail?: string;
+	terminalTruncated?: boolean;
 };
 
 export type AsyncResultDetails = {
@@ -336,6 +341,7 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			// Preserve tabs in the model-facing completion payload. Transcript
 			// renderers normalize tabs at the TUI boundary.
 			terminalText: entry.progressSummary && entry.result ? sanitizeText(entry.result) : undefined,
+			terminalPreview: entry.result ? buildLineSnappedPreview(sanitizeText(entry.result)) : undefined,
 			artifactId: entry.progressSummary?.artifactId,
 			leftoverText: leftover?.text ? sanitizeText(leftover.text) : undefined,
 			leftoverTruncated: leftover?.truncated === true,
@@ -357,6 +363,14 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			status: job.status,
 			exitCode: job.exitCode,
 			timedOut: job.timedOut,
+			...(job.terminalPreview
+				? {
+						terminalText: job.terminalPreview.text,
+						terminalHead: job.terminalPreview.head,
+						terminalTail: job.terminalPreview.tail,
+						terminalTruncated: job.terminalPreview.truncated,
+					}
+				: {}),
 		})),
 	};
 	const text = prompt.render(asyncResultTemplate, {
