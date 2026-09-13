@@ -197,6 +197,38 @@ function sameStringSet(left: readonly string[], right: readonly string[]): boole
  */
 export const MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT = 16_000;
 
+/** Outcome of loading a rendered mental-model block with fetch failure kept distinct from empty content. */
+export type MentalModelsBlockLoadResult = { ok: true; block: string | undefined } | { ok: false };
+
+/**
+ * Pull the current mental-model snapshot while preserving whether the server
+ * request failed. Boundary reloads use this distinction to retain a previously
+ * rendered snapshot when Hindsight is unavailable.
+ */
+export async function tryLoadMentalModelsBlock(
+	client: HindsightApi,
+	bankId: string,
+	budgetChars: number = MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT,
+	visibleTags?: readonly string[],
+): Promise<MentalModelsBlockLoadResult> {
+	let response: MentalModelListResponse;
+	try {
+		response = await client.listMentalModels(bankId, { detail: "content" });
+	} catch (err) {
+		logger.debug("Hindsight: loadMentalModelsBlock list failed", { bankId, error: String(err) });
+		return { ok: false };
+	}
+
+	const models = (response.items ?? []).filter(
+		m => modelVisibleForTags(m, visibleTags) && typeof m.content === "string" && m.content.trim().length > 0,
+	);
+	if (models.length === 0) return { ok: true, block: undefined };
+
+	models.sort((a, b) => a.name.localeCompare(b.name));
+	const block = renderMentalModelsBlock(models, budgetChars);
+	return { ok: true, block: block || undefined };
+}
+
 /**
  * Pull the current mental-model snapshot from the server and render it into a
  * `<mental_models>` block ready to be appended to developer instructions.
@@ -218,22 +250,8 @@ export async function loadMentalModelsBlock(
 	budgetChars: number = MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT,
 	visibleTags?: readonly string[],
 ): Promise<string | undefined> {
-	let response: MentalModelListResponse;
-	try {
-		response = await client.listMentalModels(bankId, { detail: "content" });
-	} catch (err) {
-		logger.debug("Hindsight: loadMentalModelsBlock list failed", { bankId, error: String(err) });
-		return undefined;
-	}
-
-	const models = (response.items ?? []).filter(
-		m => modelVisibleForTags(m, visibleTags) && typeof m.content === "string" && m.content.trim().length > 0,
-	);
-	if (models.length === 0) return undefined;
-
-	models.sort((a, b) => a.name.localeCompare(b.name));
-	const block = renderMentalModelsBlock(models, budgetChars);
-	return block || undefined;
+	const result = await tryLoadMentalModelsBlock(client, bankId, budgetChars, visibleTags);
+	return result.ok ? result.block : undefined;
 }
 
 function modelVisibleForTags(model: MentalModelSummary, visibleTags?: readonly string[]): boolean {

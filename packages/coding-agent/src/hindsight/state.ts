@@ -14,9 +14,9 @@ import {
 } from "./content";
 import {
 	ensureMentalModels,
-	loadMentalModelsBlock,
 	MENTAL_MODEL_FIRST_TURN_DEADLINE_MS,
 	resolveSeedsForScope,
+	tryLoadMentalModelsBlock,
 } from "./mental-models";
 import { extractMessages } from "./transcript";
 
@@ -482,12 +482,14 @@ export class HindsightSessionState {
 		await this.#refreshBaseSystemPromptAfter("MM load");
 	}
 
-	async #loadMentalModelsSnippet(): Promise<string | undefined> {
-		return loadMentalModelsBlock(this.client, this.bankId, this.config.mentalModelMaxRenderChars, this.recallTags);
-	}
-
 	async refreshMentalModelsSnippet(): Promise<void> {
-		this.mentalModelsSnippet = await this.#loadMentalModelsSnippet();
+		const result = await tryLoadMentalModelsBlock(
+			this.client,
+			this.bankId,
+			this.config.mentalModelMaxRenderChars,
+			this.recallTags,
+		);
+		this.mentalModelsSnippet = result.ok ? result.block : undefined;
 		this.mentalModelsLoadedAt = Date.now();
 	}
 
@@ -508,15 +510,20 @@ export class HindsightSessionState {
 	}
 
 	async #reloadMentalModelsForNewTranscript(generation: number): Promise<void> {
-		const loaded = this.#loadMentalModelsSnippet();
+		const loaded = tryLoadMentalModelsBlock(
+			this.client,
+			this.bankId,
+			this.config.mentalModelMaxRenderChars,
+			this.recallTags,
+		);
 		const snippet = await Promise.race([
 			loaded,
 			Bun.sleep(MENTAL_MODEL_FIRST_TURN_DEADLINE_MS).then(() => MENTAL_MODEL_LOAD_TIMED_OUT),
 		]);
 		if (generation !== this.#mentalModelsLoadGeneration) return;
 		this.mentalModelsLoadedAt = Date.now();
-		if (typeof snippet === "symbol") return;
-		this.mentalModelsSnippet = snippet;
+		if (typeof snippet === "symbol" || !snippet.ok) return;
+		this.mentalModelsSnippet = snippet.block;
 		await this.#refreshBaseSystemPromptAfter("MM transcript reload");
 	}
 
