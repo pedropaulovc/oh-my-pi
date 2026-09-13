@@ -511,10 +511,10 @@ export class HindsightSessionState {
 				// Mental models are deliberately NOT re-listed here. Rewriting the
 				// cached <mental_models> block mid-session changes the base system
 				// prompt bytes and busts the provider prompt-cache prefix (#11961).
-				// The block is frozen for the session lifetime — like local-memory
-				// guidance after #3745 — so a background reflect applies to the NEXT
-				// session's bootstrap load. `/memory mm reload` stays the explicit
-				// opt-in invalidation.
+				// The block is frozen for the current transcript — like local-memory
+				// guidance after #3745 — so a background reflect applies when the
+				// next transcript/session boundary reloads it. `/memory mm reload`
+				// stays the explicit in-session invalidation.
 			}
 		});
 	}
