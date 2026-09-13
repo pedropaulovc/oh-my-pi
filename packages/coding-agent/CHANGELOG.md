@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Fork dogfood binaries can now update independently with `omp-dogfood update` without modifying the official `omp` installation.
+
 ## [18.1.19] - 2026-09-12
 
 - Fixed `--mode json` returning exit 0 on a turn-fatal provider/auth/network error ([#11498](https://github.com/can1357/oh-my-pi/issues/11498)).
