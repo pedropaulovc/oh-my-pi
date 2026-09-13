@@ -34,6 +34,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           UPSTREAM_TAG: ${{ github.event.client_payload.upstream_tag }}
           SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          DOGFOOD_REVISION: ${{ github.event.client_payload.dogfood_revision || '1' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -45,6 +46,10 @@ jobs:
           upstream_version="${BASH_REMATCH[1]}"
           if [[ ! "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
             echo "::error::source_sha must be a full 40-character commit SHA"
+            exit 1
+          fi
+          if [[ ! "$DOGFOOD_REVISION" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::dogfood_revision must be a positive integer"
             exit 1
           fi
           upstream_release_tag="$(
@@ -64,7 +69,7 @@ jobs:
             exit 1
           fi
 
-          dogfood_version="${upstream_version}-dogfood.1"
+          dogfood_version="${upstream_version}-dogfood.${DOGFOOD_REVISION}"
           release_tag="v${dogfood_version}"
           if gh release view "$release_tag" --repo "$REPOSITORY" --json tagName >/dev/null 2>&1; then
             echo "::error::GitHub release ${release_tag} already exists"
