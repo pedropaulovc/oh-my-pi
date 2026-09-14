@@ -72,6 +72,10 @@
 - Completed asynchronous jobs now show their terminal result text in the TUI, including failures.
 - `/debug` now includes an opt-in prompt-cache view and includes bounded derived cache diagnostics plus dropped-record metadata in report bundles when `PI_PROMPT_CACHE_DEBUG=1` ([#11938](https://github.com/can1357/oh-my-pi/pull/11938) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
+### Fixed
+
+- Hindsight mental-model refresh no longer rewrites the active session's cached system-prompt prefix: the rendered `<mental_models>` block is frozen for the session lifetime (a background reflect applies to the next session; `/memory mm reload` remains the explicit in-session refresh), and volatile `last_refreshed_at` metadata no longer enters the model-facing prompt ([#11961](https://github.com/can1357/oh-my-pi/issues/11961)).
+
 ## [18.1.19] - 2026-09-12
 
 - Fixed `--mode json` returning exit 0 on a turn-fatal provider/auth/network error ([#11498](https://github.com/can1357/oh-my-pi/issues/11498)).
