@@ -3,8 +3,10 @@ import {
 	dogfoodTagFor,
 	findEquivalentMainBoundary,
 	hasActiveDogfoodRun,
+	latestDogfoodRelease,
 	orderIntegrationTips,
 	parsePrivateBranches,
+	planDogfoodRelease,
 	planPush,
 	planRebaseGroups,
 } from "./fork-maintenance";
@@ -166,15 +168,73 @@ describe("planPush", () => {
 });
 
 describe("dogfoodTagFor", () => {
-	it("maps an upstream release tag to its fork dogfood tag", () => {
+	it("maps an upstream release tag and revision to its fork dogfood tag", () => {
 		expect(dogfoodTagFor("v0.12.4")).toBe("v0.12.4-dogfood.1");
-		expect(dogfoodTagFor(" 18.1.19 ")).toBe("v18.1.19-dogfood.1");
+		expect(dogfoodTagFor(" 18.1.19 ", 4)).toBe("v18.1.19-dogfood.4");
 	});
 
 	it("refuses prereleases and non-release tags so canaries never trigger a dogfood release", () => {
 		expect(dogfoodTagFor("v0.12.4-canary.3")).toBeUndefined();
 		expect(dogfoodTagFor("v0.12.4-dogfood.1")).toBeUndefined();
 		expect(dogfoodTagFor("nightly")).toBeUndefined();
+	});
+});
+
+describe("latestDogfoodRelease", () => {
+	it("picks the highest revision of the requested version and reports its build source", () => {
+		const latest = latestDogfoodRelease(
+			[
+				{ tag_name: "v18.2.0-dogfood.1", target_commitish: "AAA" },
+				{ tag_name: "v18.2.0-dogfood.10", target_commitish: "BBB" },
+				{ tag_name: "v18.2.0-dogfood.2", target_commitish: "CCC" },
+				{ tag_name: "v18.3.0-dogfood.7", target_commitish: "DDD" },
+			],
+			"v18.2.0",
+		);
+		// Revisions are numeric, not lexicographic: .10 outranks .2.
+		expect(latest).toEqual({ revision: 10, sourceSha: "bbb" });
+	});
+
+	it("ignores other versions and malformed dogfood tags", () => {
+		const releases = [
+			{ tag_name: "v18.1.22-dogfood.3", target_commitish: "aaa" },
+			{ tag_name: "v18.2.0-dogfood.0", target_commitish: "bbb" },
+			{ tag_name: "v18.2.0-dogfood", target_commitish: "ccc" },
+			{ tag_name: "v18.2.0", target_commitish: "ddd" },
+		];
+		expect(latestDogfoodRelease(releases, "v18.2.0")).toBeUndefined();
+	});
+});
+
+describe("planDogfoodRelease", () => {
+	it("publishes the first revision when the fork never released this upstream version", () => {
+		expect(planDogfoodRelease("v18.2.0", "abc123", [])).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.1",
+			revision: 1,
+		});
+	});
+
+	it("respins the next revision when the dogfood head moved under an already-released version", () => {
+		const releases = [{ tag_name: "v18.2.0-dogfood.2", target_commitish: "old000" }];
+		expect(planDogfoodRelease("v18.2.0", "new111", releases)).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.3",
+			revision: 3,
+		});
+	});
+
+	it("publishes nothing when the newest release already built this exact head", () => {
+		const releases = [{ tag_name: "v18.2.0-dogfood.2", target_commitish: "ABC123" }];
+		const plan = planDogfoodRelease("v18.2.0", "abc123", releases);
+		expect(plan.publish).toBe(false);
+		expect(plan.dogfoodTag).toBe("v18.2.0-dogfood.2");
+	});
+
+	it("refuses to publish for an upstream prerelease", () => {
+		const plan = planDogfoodRelease("v18.2.0-canary.4", "abc123", []);
+		expect(plan.publish).toBe(false);
+		expect(plan.dogfoodTag).toBeUndefined();
 	});
 });
 
