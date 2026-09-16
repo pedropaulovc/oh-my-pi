@@ -2,8 +2,12 @@ name: Fork maintenance
 
 # Fork-private automation: keeps `pedropaulovc/oh-my-pi` rebased on upstream
 # `can1357/oh-my-pi`, including open upstream/fork PR stacks, rebuilds the
-# `dogfood` integration branch, and asks `dogfood-release.yml` for a build when
-# upstream cuts a release the fork has not mirrored yet.
+# `dogfood` integration branch, and asks `dogfood-release.yml` for a build
+# whenever that rebuilt head differs from the commit the newest published
+# dogfood release was built from — i.e. whenever upstream `main` or a tracked
+# fork branch moved. The `v<version>-dogfood.<revision>` revision increments
+# automatically, so a respin needs no new upstream release; an unchanged
+# integration rebuilds to the same OID and publishes nothing.
 #
 # Scheduled workflows only run from the fork's default branch, and GitHub keeps
 # them disabled in a fork until Actions is enabled there once.
