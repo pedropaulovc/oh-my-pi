@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+	type ForkReleaseSummary,
 	dogfoodTagFor,
 	findEquivalentMainBoundary,
 	hasActiveDogfoodRun,
@@ -180,35 +181,56 @@ describe("dogfoodTagFor", () => {
 	});
 });
 
+const OID_A = "a".repeat(40);
+const OID_B = "b".repeat(40);
+const OID_C = "c".repeat(40);
+
+function published(tag: string, target: string): ForkReleaseSummary {
+	return { tag_name: tag, target_commitish: target, draft: false };
+}
+
 describe("latestDogfoodRelease", () => {
 	it("picks the highest revision of the requested version and reports its build source", () => {
 		const latest = latestDogfoodRelease(
 			[
-				{ tag_name: "v18.2.0-dogfood.1", target_commitish: "AAA" },
-				{ tag_name: "v18.2.0-dogfood.10", target_commitish: "BBB" },
-				{ tag_name: "v18.2.0-dogfood.2", target_commitish: "CCC" },
-				{ tag_name: "v18.3.0-dogfood.7", target_commitish: "DDD" },
+				published("v18.2.0-dogfood.1", OID_A),
+				published("v18.2.0-dogfood.10", OID_B.toUpperCase()),
+				published("v18.2.0-dogfood.2", OID_C),
+				published("v18.3.0-dogfood.7", OID_A),
 			],
 			"v18.2.0",
 		);
 		// Revisions are numeric, not lexicographic: .10 outranks .2.
-		expect(latest).toEqual({ revision: 10, sourceSha: "bbb" });
+		expect(latest).toEqual({ revision: 10, sourceSha: OID_B });
 	});
 
 	it("ignores other versions and malformed dogfood tags", () => {
 		const releases = [
-			{ tag_name: "v18.1.22-dogfood.3", target_commitish: "aaa" },
-			{ tag_name: "v18.2.0-dogfood.0", target_commitish: "bbb" },
-			{ tag_name: "v18.2.0-dogfood", target_commitish: "ccc" },
-			{ tag_name: "v18.2.0", target_commitish: "ddd" },
+			published("v18.1.22-dogfood.3", OID_A),
+			published("v18.2.0-dogfood.0", OID_B),
+			published("v18.2.0-dogfood", OID_C),
+			published("v18.2.0", OID_A),
 		];
 		expect(latestDogfoodRelease(releases, "v18.2.0")).toBeUndefined();
+	});
+
+	it("skips drafts so an interrupted publish is not mistaken for a build", () => {
+		const releases = [
+			published("v18.2.0-dogfood.1", OID_A),
+			{ tag_name: "v18.2.0-dogfood.2", target_commitish: OID_B, draft: true },
+		];
+		expect(latestDogfoodRelease(releases, "v18.2.0")).toEqual({ revision: 1, sourceSha: OID_A });
+	});
+
+	it("reports no source when the release names a branch instead of a commit", () => {
+		const releases = [published("v18.2.0-dogfood.1", "dogfood")];
+		expect(latestDogfoodRelease(releases, "v18.2.0")).toEqual({ revision: 1, sourceSha: undefined });
 	});
 });
 
 describe("planDogfoodRelease", () => {
 	it("publishes the first revision when the fork never released this upstream version", () => {
-		expect(planDogfoodRelease("v18.2.0", "abc123", [])).toEqual({
+		expect(planDogfoodRelease("v18.2.0", OID_A, [])).toEqual({
 			publish: true,
 			dogfoodTag: "v18.2.0-dogfood.1",
 			revision: 1,
@@ -216,8 +238,8 @@ describe("planDogfoodRelease", () => {
 	});
 
 	it("respins the next revision when the dogfood head moved under an already-released version", () => {
-		const releases = [{ tag_name: "v18.2.0-dogfood.2", target_commitish: "old000" }];
-		expect(planDogfoodRelease("v18.2.0", "new111", releases)).toEqual({
+		const releases = [published("v18.2.0-dogfood.2", OID_A)];
+		expect(planDogfoodRelease("v18.2.0", OID_B, releases)).toEqual({
 			publish: true,
 			dogfoodTag: "v18.2.0-dogfood.3",
 			revision: 3,
@@ -225,14 +247,45 @@ describe("planDogfoodRelease", () => {
 	});
 
 	it("publishes nothing when the newest release already built this exact head", () => {
-		const releases = [{ tag_name: "v18.2.0-dogfood.2", target_commitish: "ABC123" }];
-		const plan = planDogfoodRelease("v18.2.0", "abc123", releases);
+		const releases = [published("v18.2.0-dogfood.2", OID_A.toUpperCase())];
+		const plan = planDogfoodRelease("v18.2.0", OID_A, releases);
 		expect(plan.publish).toBe(false);
 		expect(plan.dogfoodTag).toBe("v18.2.0-dogfood.2");
 	});
 
+	it("allocates above a draft revision, and still publishes the head the draft failed to ship", () => {
+		const releases = [
+			published("v18.2.0-dogfood.1", OID_A),
+			{ tag_name: "v18.2.0-dogfood.2", target_commitish: OID_B, draft: true },
+		];
+		expect(planDogfoodRelease("v18.2.0", OID_B, releases)).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.3",
+			revision: 3,
+		});
+	});
+
+	it("allocates above an orphaned tag whose release was deleted", () => {
+		const releases = [published("v18.2.0-dogfood.2", OID_A)];
+		const tags = ["v18.2.0-dogfood.1", "v18.2.0-dogfood.3", "v18.1.22-dogfood.9"];
+		expect(planDogfoodRelease("v18.2.0", OID_B, releases, tags)).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.4",
+			revision: 4,
+		});
+	});
+
+	it("publishes when the newest release cannot prove which commit it built", () => {
+		const releases = [published("v18.2.0-dogfood.1", "dogfood")];
+		expect(planDogfoodRelease("v18.2.0", OID_A, releases)).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.2",
+			revision: 2,
+		});
+	});
+
 	it("refuses to publish for an upstream prerelease", () => {
-		const plan = planDogfoodRelease("v18.2.0-canary.4", "abc123", []);
+		const plan = planDogfoodRelease("v18.2.0-canary.4", OID_A, []);
 		expect(plan.publish).toBe(false);
 		expect(plan.dogfoodTag).toBeUndefined();
 	});
