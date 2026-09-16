@@ -4,8 +4,13 @@
  *
  * Runs on a schedule in the fork (never upstream) and keeps the fork's branches
  * rebased on upstream `main`, rebuilds the `dogfood` integration branch, and
- * asks `dogfood-release.yml` for a dogfood build whenever upstream cut a new
- * normal release that the fork has not mirrored yet.
+ * asks `dogfood-release.yml` for a dogfood build whenever the rebuilt `dogfood`
+ * head differs from the source commit of the newest published dogfood release
+ * for the current upstream version — i.e. whenever upstream `main` or any
+ * tracked fork branch moved. The revision in `v<version>-dogfood.<revision>`
+ * is allocated one above the highest published revision for that version, so a
+ * respin needs no new upstream release. An unchanged integration rebuilds to
+ * the identical `dogfood` OID and therefore publishes nothing.
  *
  * Tracked branches:
  *   - `main`                       — rebased onto `upstream/main`
@@ -265,18 +270,87 @@ export function findEquivalentMainBoundary(cherryOutput: string): string | undef
 
 const NORMAL_RELEASE_TAG = /^v?(\d+\.\d+\.\d+)$/;
 
+/** Upstream version of a stable release tag; prereleases (canary, rc, …) have
+ * no dogfood counterpart and return `undefined`. */
+export function upstreamVersionOf(upstreamTag: string): string | undefined {
+	return NORMAL_RELEASE_TAG.exec(upstreamTag.trim())?.[1];
+}
+
 /**
- * Map an upstream release tag to its fork dogfood tag. Prereleases (canary,
- * rc, …) have no dogfood counterpart and return `undefined`.
+ * Fork dogfood tag for an upstream release tag and build revision. Prereleases
+ * return `undefined`.
  */
-export function dogfoodTagFor(upstreamTag: string): string | undefined {
-	const match = NORMAL_RELEASE_TAG.exec(upstreamTag.trim());
-	return match ? `v${match[1]}-dogfood.1` : undefined;
+export function dogfoodTagFor(upstreamTag: string, revision = 1): string | undefined {
+	const version = upstreamVersionOf(upstreamTag);
+	return version ? `v${version}-dogfood.${revision}` : undefined;
 }
 
 /** `run-name` that `dogfood-release.yml` reports for a given upstream tag. */
 export function dogfoodRunTitle(upstreamTag: string): string {
 	return `Dogfood ${upstreamTag}`;
+}
+
+/** A published fork release, as reported by `repos/<fork>/releases`. */
+export interface ForkReleaseSummary {
+	tag_name: string;
+	/** Commit the release was built from — the `dogfood` head at dispatch. */
+	target_commitish: string;
+}
+
+/** Newest published dogfood release for one upstream version. */
+export interface PublishedDogfood {
+	revision: number;
+	sourceSha: string;
+}
+
+/**
+ * Highest-revision published dogfood release for `upstreamTag`, or `undefined`
+ * when the fork has never released that upstream version.
+ */
+export function latestDogfoodRelease(
+	releases: readonly ForkReleaseSummary[],
+	upstreamTag: string,
+): PublishedDogfood | undefined {
+	const version = upstreamVersionOf(upstreamTag);
+	if (!version) return undefined;
+	const tagPattern = new RegExp(`^v${version.replaceAll(".", "\\.")}-dogfood\\.([1-9]\\d*)$`);
+	let latest: PublishedDogfood | undefined;
+	for (const release of releases) {
+		const revision = Number(tagPattern.exec(release.tag_name.trim())?.[1]);
+		if (!revision || (latest && revision <= latest.revision)) continue;
+		latest = { revision, sourceSha: release.target_commitish.trim().toLowerCase() };
+	}
+	return latest;
+}
+
+/** Whether the rebuilt `dogfood` head still needs a release, and under which tag. */
+export type DogfoodReleasePlan =
+	| { publish: false; dogfoodTag?: string; reason: string }
+	| { publish: true; dogfoodTag: string; revision: number };
+
+/**
+ * Decide whether the current `dogfood` head deserves a release. Content, not
+ * upstream version, is the trigger: any movement of upstream `main` or a
+ * tracked fork branch rebuilds `dogfood` to a new OID, which earns the next
+ * revision. Republishing the same OID is the only suppressed case.
+ */
+export function planDogfoodRelease(
+	upstreamTag: string,
+	dogfoodSha: string,
+	releases: readonly ForkReleaseSummary[],
+): DogfoodReleasePlan {
+	const version = upstreamVersionOf(upstreamTag);
+	if (!version) return { publish: false, reason: `upstream ${upstreamTag} is not a normal release` };
+	const published = latestDogfoodRelease(releases, upstreamTag);
+	if (published?.sourceSha === dogfoodSha.trim().toLowerCase()) {
+		return {
+			publish: false,
+			dogfoodTag: `v${version}-dogfood.${published.revision}`,
+			reason: `v${version}-dogfood.${published.revision} already built ${dogfoodSha}`,
+		};
+	}
+	const revision = (published?.revision ?? 0) + 1;
+	return { publish: true, dogfoodTag: `v${version}-dogfood.${revision}`, revision };
 }
 
 /** Statuses that mean a dispatched dogfood release is still going to produce a release. */
@@ -638,9 +712,10 @@ async function rebuildDogfood(
 	const failureCountBefore = failures.length;
 	for (const tip of orderIntegrationTips(tips)) {
 		// Derive the merge commit's dates from the branch being merged, so an
-		// unchanged integration rebuilds to the identical OID. Without this the
-		// 5-minute poll would force-push a fresh dogfood head every run and
-		// invalidate the `source_sha` an in-flight dogfood release is building.
+		// unchanged integration rebuilds to the identical OID. That OID is the
+		// release trigger: a scheduled run must not force-push a fresh dogfood
+		// head (invalidating the `source_sha` an in-flight release is building)
+		// or publish a respin when nothing actually moved.
 		const date = await git("log", "-1", "--format=%cI", tip.branch);
 		const result = await run(
 			[
@@ -767,14 +842,20 @@ async function maybeDispatchRelease(
 	}
 	const release = await ghJson<ReleaseSummary>(["api", `repos/${options.upstream}/releases/latest`]);
 	const upstreamTag = release.tag_name;
-	const dogfoodTag = dogfoodTagFor(upstreamTag);
-	if (!dogfoodTag)
-		return { upstreamTag, dispatched: false, reason: `upstream ${upstreamTag} is not a normal release` };
-	if ((await run(["gh", "api", `repos/${options.fork}/releases/tags/${dogfoodTag}`])).ok) {
-		return { upstreamTag, dogfoodTag, dispatched: false, reason: `${dogfoodTag} already released` };
-	}
-	// Release builds outlast the 5-minute poll interval, so an in-flight run for
-	// the same upstream tag must suppress a duplicate dispatch.
+	// Every published fork release, so the next revision sits above all of them
+	// and the newest one's build source can be compared with the current head.
+	const releasePages = await ghJson<ForkReleaseSummary[][]>([
+		"api",
+		"--paginate",
+		"--slurp",
+		`repos/${options.fork}/releases?per_page=100`,
+	]);
+	const plan = planDogfoodRelease(upstreamTag, dogfoodSha, releasePages.flat());
+	if (!plan.publish) return { upstreamTag, dogfoodTag: plan.dogfoodTag, dispatched: false, reason: plan.reason };
+	const dogfoodTag = plan.dogfoodTag;
+	// A build outlasts a manual re-dispatch, and the run name is tag-scoped, so
+	// any in-flight revision of this upstream tag suppresses a second dispatch;
+	// the next run picks the respin up once that release lands.
 	const runsResponse = await run([
 		"gh",
 		"api",
@@ -803,6 +884,8 @@ async function maybeDispatchRelease(
 		`client_payload[upstream_tag]=${upstreamTag}`,
 		"-f",
 		`client_payload[source_sha]=${dogfoodSha}`,
+		"-f",
+		`client_payload[dogfood_revision]=${plan.revision}`,
 	]);
 	if (!dispatch.ok) {
 		failures.push({ stage: "dispatch", branches: [DOGFOOD_BRANCH], detail: failureDetail(dispatch) });
@@ -884,7 +967,10 @@ async function main(): Promise<void> {
 
 	if (options.dryRun) {
 		notes.push(`dry run: ${tracked.length} tracked branch(es), ${groups.length} independent group(s)`);
-		const decision = await maybeDispatchRelease(options, originMain, true, failures);
+		// No rebuild happens in a dry run, so judge the release against the
+		// dogfood head as published — the decision a no-op integration reaches.
+		const dogfoodHead = await revParse(`refs/remotes/origin/${DOGFOOD_BRANCH}`);
+		const decision = await maybeDispatchRelease(options, dogfoodHead, true, failures);
 		const summary = renderSummary(groups, notes, failures, decision);
 		console.log(summary);
 		return;
