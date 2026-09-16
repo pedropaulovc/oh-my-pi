@@ -167,7 +167,7 @@ export function planRebaseGroups(
 				.filter(name => !rewritten.has(name))
 				.sort((a, b) => depthOf(a) - depthOf(b) || a.localeCompare(b));
 			let onto = baseRef;
-			let fromOid = boundaryByBranch[tip];
+			let fromOid: string | undefined = boundaryByBranch[tip];
 			if (done.length > 0) {
 				const deepest = done.reduce((best, name) =>
 					depthOf(name) > depthOf(best) || (depthOf(name) === depthOf(best) && name < best) ? name : best,
@@ -290,22 +290,37 @@ export function dogfoodRunTitle(upstreamTag: string): string {
 	return `Dogfood ${upstreamTag}`;
 }
 
-/** A published fork release, as reported by `repos/<fork>/releases`. */
+/** A fork release, as reported by `repos/<fork>/releases` (drafts included). */
 export interface ForkReleaseSummary {
 	tag_name: string;
-	/** Commit the release was built from — the `dogfood` head at dispatch. */
+	/**
+	 * Commit the release was built from — the `dogfood` head at dispatch. Only
+	 * a full OID proves a source: the API also accepts a branch name here, and
+	 * ignores the field entirely for a release created against an existing tag.
+	 */
 	target_commitish: string;
+	/** A draft reserves its tag but carries no published build. */
+	draft: boolean;
 }
 
 /** Newest published dogfood release for one upstream version. */
 export interface PublishedDogfood {
 	revision: number;
-	sourceSha: string;
+	/** `undefined` when the release does not name an OID it was built from. */
+	sourceSha: string | undefined;
+}
+
+const RELEASE_OID = /^[0-9a-f]{40}$/;
+
+function dogfoodRevisionPattern(version: string): RegExp {
+	return new RegExp(`^v${version.replaceAll(".", "\\.")}-dogfood\\.([1-9]\\d*)$`);
 }
 
 /**
  * Highest-revision published dogfood release for `upstreamTag`, or `undefined`
- * when the fork has never released that upstream version.
+ * when the fork has never published that upstream version. Drafts are skipped:
+ * asset upload starts as a draft, so an interrupted publish leaves one behind,
+ * and treating it as built would suppress the release it failed to produce.
  */
 export function latestDogfoodRelease(
 	releases: readonly ForkReleaseSummary[],
@@ -313,12 +328,14 @@ export function latestDogfoodRelease(
 ): PublishedDogfood | undefined {
 	const version = upstreamVersionOf(upstreamTag);
 	if (!version) return undefined;
-	const tagPattern = new RegExp(`^v${version.replaceAll(".", "\\.")}-dogfood\\.([1-9]\\d*)$`);
+	const tagPattern = dogfoodRevisionPattern(version);
 	let latest: PublishedDogfood | undefined;
 	for (const release of releases) {
+		if (release.draft) continue;
 		const revision = Number(tagPattern.exec(release.tag_name.trim())?.[1]);
 		if (!revision || (latest && revision <= latest.revision)) continue;
-		latest = { revision, sourceSha: release.target_commitish.trim().toLowerCase() };
+		const source = release.target_commitish.trim().toLowerCase();
+		latest = { revision, sourceSha: RELEASE_OID.test(source) ? source : undefined };
 	}
 	return latest;
 }
@@ -333,23 +350,30 @@ export type DogfoodReleasePlan =
  * upstream version, is the trigger: any movement of upstream `main` or a
  * tracked fork branch rebuilds `dogfood` to a new OID, which earns the next
  * revision. Republishing the same OID is the only suppressed case.
+ *
+ * `occupiedTags` are the `v<version>-dogfood.N` tags that already exist in the
+ * fork. A tag outlives its release, and `dogfood-release.yml` refuses to reuse
+ * one, so revisions are allocated above every tag and draft — not just above
+ * the newest published release.
  */
 export function planDogfoodRelease(
 	upstreamTag: string,
 	dogfoodSha: string,
 	releases: readonly ForkReleaseSummary[],
+	occupiedTags: readonly string[] = [],
 ): DogfoodReleasePlan {
 	const version = upstreamVersionOf(upstreamTag);
 	if (!version) return { publish: false, reason: `upstream ${upstreamTag} is not a normal release` };
 	const published = latestDogfoodRelease(releases, upstreamTag);
+	const builtTag = published ? dogfoodTagFor(upstreamTag, published.revision) : undefined;
 	if (published?.sourceSha === dogfoodSha.trim().toLowerCase()) {
-		return {
-			publish: false,
-			dogfoodTag: `v${version}-dogfood.${published.revision}`,
-			reason: `v${version}-dogfood.${published.revision} already built ${dogfoodSha}`,
-		};
+		return { publish: false, dogfoodTag: builtTag, reason: `${builtTag} already built ${dogfoodSha}` };
 	}
-	const revision = (published?.revision ?? 0) + 1;
+	const tagPattern = dogfoodRevisionPattern(version);
+	const taken = [...releases.map(release => release.tag_name), ...occupiedTags]
+		.map(name => Number(tagPattern.exec(name.trim())?.[1]))
+		.filter(revision => revision > 0);
+	const revision = Math.max(0, ...taken) + 1;
 	return { publish: true, dogfoodTag: `v${version}-dogfood.${revision}`, revision };
 }
 
@@ -842,15 +866,26 @@ async function maybeDispatchRelease(
 	}
 	const release = await ghJson<ReleaseSummary>(["api", `repos/${options.upstream}/releases/latest`]);
 	const upstreamTag = release.tag_name;
-	// Every published fork release, so the next revision sits above all of them
-	// and the newest one's build source can be compared with the current head.
+	// Every fork release including drafts, so a revision is never reused, plus
+	// the bare `v<version>-dogfood.*` tags: a tag outlives its release, and the
+	// release workflow refuses to build over one.
 	const releasePages = await ghJson<ForkReleaseSummary[][]>([
 		"api",
 		"--paginate",
 		"--slurp",
 		`repos/${options.fork}/releases?per_page=100`,
 	]);
-	const plan = planDogfoodRelease(upstreamTag, dogfoodSha, releasePages.flat());
+	const version = upstreamVersionOf(upstreamTag);
+	const tagPages = version
+		? await ghJson<{ ref: string }[][]>([
+				"api",
+				"--paginate",
+				"--slurp",
+				`repos/${options.fork}/git/matching-refs/tags/v${version}-dogfood.`,
+			])
+		: [];
+	const occupiedTags = tagPages.flat().map(tag => tag.ref.replace("refs/tags/", ""));
+	const plan = planDogfoodRelease(upstreamTag, dogfoodSha, releasePages.flat(), occupiedTags);
 	if (!plan.publish) return { upstreamTag, dogfoodTag: plan.dogfoodTag, dispatched: false, reason: plan.reason };
 	const dogfoodTag = plan.dogfoodTag;
 	// A build outlasts a manual re-dispatch, and the run name is tag-scoped, so
