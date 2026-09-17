@@ -3636,7 +3636,7 @@ export const SETTINGS_SCHEMA = {
 
 	"edit.enforceSeenLines": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "files",
 			group: "Editing",
