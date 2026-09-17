@@ -2,7 +2,7 @@ import { styleTerminalRow } from "./terminal-output";
 import type { Component } from "../tui";
 import { Text } from "../components/text";
 import { visibleWidth } from "../utils";
-import { formatAge, pluralize } from "@oh-my-pi/pi-utils";
+import { formatAge, pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shimmerEnabled, shimmerText } from "../theme/shimmer";
 import type { Theme, ThemeColor } from "../theme/theme";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../render/index";
@@ -28,6 +28,7 @@ import {
 	formatExpandHint,
 	previewLine,
 	TRUNCATE_LENGTHS,
+	shortenEmbeddedPaths,
 	shortenPath,
 	formatErrorDetail,
 	type ConfiguredThinkingLevel,
@@ -45,7 +46,7 @@ export function isWaitingPollDetails(details: unknown): boolean {
 /**
  * Hub operations: messaging (`send`/`wait`/`inbox`/`list`), jobs
  * (`wait`/`cancel`/`jobs`), and process supervision (`start`/`ps`/`logs`/
- * `stop`/`restart`/`describe`, plus `send`/`wait` when they carry `name`).
+ * `monitor`/`stop`/`restart`/`describe`, plus `send`/`wait` when they carry `name`).
  */
 export type HubOp =
 	| "send"
@@ -55,6 +56,7 @@ export type HubOp =
 	| "jobs"
 	| "cancel"
 	| "start"
+	| "monitor"
 	| "ps"
 	| "logs"
 	| "stop"
@@ -241,6 +243,29 @@ export interface DaemonSnapshot {
 	persist: boolean;
 	detached: boolean;
 }
+
+/** Model-facing delivery mode a client attached to one output subscription. */
+export type DaemonMonitorDelivery = "wake" | "ambient";
+
+/** One live output monitor as the broker sees it; listed by `list` and `describe` so watchers are debuggable. */
+export interface DaemonMonitorWatcher {
+	/** Process name the monitor targets. */
+	name: string;
+	/** Client-scoped subscription id. */
+	id: string;
+	/** Session that registered the monitor. */
+	owner: string;
+	/** Delivery mode advertised by the client; absent for clients that predate the field. */
+	delivery?: DaemonMonitorDelivery;
+	/** Epoch milliseconds when the client registered the monitor; absent for older clients. */
+	since?: number;
+	/** Session artifact id receiving the raw capture; absent for older clients. */
+	artifactId?: string;
+	/** Daemon incarnation the monitor is bound to; absent while it waits for a start. */
+	daemonId?: string;
+	/** False while the registering client is disconnected inside the reconnect grace. */
+	connected: boolean;
+}
 /** Serializable peer message retained in hub result snapshots. */
 export interface IrcMessage {
 	id: string;
@@ -269,7 +294,7 @@ export interface IrcDeliveryReceipt {
 }
 /** Broker-facing launch parameters; the hub adapts its `ps` op to `list` before calling in. */
 export interface LaunchParams {
-	op: "start" | "list" | "logs" | "wait" | "send" | "stop" | "restart" | "describe";
+	op: "start" | "list" | "logs" | "wait" | "send" | "stop" | "restart" | "describe" | "monitor";
 	name?: string;
 	application?: string;
 	args?: string[];
@@ -280,6 +305,8 @@ export interface LaunchParams {
 	restart?: "no" | "on-failure" | "always";
 	persist?: boolean;
 	detached?: boolean;
+	/** Mirrors `AsyncJobProgressDelivery | "off"` in @oh-my-pi/pi-coding-agent. */
+	progress?: "wake" | "ambient" | "off";
 	lines?: number;
 	head?: boolean;
 	grep?: string;
@@ -293,6 +320,17 @@ export interface LaunchParams {
 	signal?: "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKILL";
 	timeout?: number;
 }
+
+/**
+ * One process's rows in a `list` render: the collapsed form keeps the process
+ * line with its diagnostic and a bounded slice of watcher rows.
+ */
+interface DaemonListGroup {
+	collapsedRows: string[];
+}
+
+/** Collapsed `list` line budget: one process line plus one detail line each, and the summary row. */
+const COLLAPSED_LIST_LINE_LIMIT = PREVIEW_LIMITS.COLLAPSED_ITEMS * 2 + 1;
 
 /** Structured launch state retained for compact TUI rendering. */
 export interface LaunchToolDetails {
@@ -309,6 +347,14 @@ export interface LaunchToolDetails {
 	matched?: string;
 	/** describe: immutable launch spec backing the command/cwd detail lines. */
 	spec?: DaemonSpec;
+	/** start/monitor: progress delivery mode this call resulted in; "off" when no monitor is live. */
+	monitoring?: "wake" | "ambient" | "off";
+	/** monitor off: whether an active monitor was actually detached. */
+	monitorDetached?: boolean;
+	/** start with progress: why the requested monitor is no longer live although the process started. */
+	monitorStopped?: string;
+	/** list/describe: live output monitors per process, absent when the broker predates watcher reporting. */
+	monitors?: DaemonMonitorWatcher[];
 }
 
 /** Terminal daemon lifecycle states — the process is no longer running. */
@@ -764,6 +810,51 @@ function daemonMeta(daemon: DaemonSnapshot, theme: Theme): string[] {
 	return meta;
 }
 
+/** Maximum sanitized diagnostic text retained in daemon snapshots and display. */
+const MAX_EXIT_REASON_LENGTH = 1_024;
+
+/**
+ * Mirror of `normalizeExitReason`/`displayExitReason` in
+ * `@oh-my-pi/pi-coding-agent` (`src/launch/exit-reason.ts`): the renderer
+ * cannot import the agent package, so display normalization stays identical to
+ * the durable form. `normalize` bounds arbitrary runtime text; `display` also
+ * hides the home directory.
+ */
+export function normalizeDaemonExitReason(reason: string | undefined): string | undefined {
+	if (reason === undefined) return undefined;
+	const normalized = sanitizeText(reason).replace(/\s+/g, " ").trim();
+	if (!normalized) return undefined;
+	return normalized.length > MAX_EXIT_REASON_LENGTH
+		? `${normalized.slice(0, MAX_EXIT_REASON_LENGTH - 1)}…`
+		: normalized;
+}
+
+export function displayDaemonExitReason(reason: string | undefined): string | undefined {
+	const normalized = normalizeDaemonExitReason(reason);
+	return normalized ? shortenEmbeddedPaths(normalized) : undefined;
+}
+
+/**
+ * Exit diagnostics survive whatever state the process reached: a nonzero exit
+ * explains itself even when the supervisor never marked it `failed`. Bounded to
+ * one status line so a long diagnostic cannot reflow the row.
+ */
+function daemonReasonLine(daemon: DaemonSnapshot, indent = ""): string | undefined {
+	const reason = displayDaemonExitReason(daemon.exitReason);
+	return reason ? `${indent}Reason: ${truncateToWidth(reason, TRUNCATE_LENGTHS.LINE)}` : undefined;
+}
+
+/** Indented `↳ owner · mode · age · state` row under a process line; owner ids are sanitized like any display text. */
+function watcherRow(watcher: DaemonMonitorWatcher, daemon: DaemonSnapshot, theme: Theme): string {
+	const owner = truncateToWidth(replaceTabs(sanitizeText(watcher.owner)), TRUNCATE_LENGTHS.TITLE);
+	const facts = [theme.fg("accent", watcher.delivery ?? "unknown mode")];
+	if (watcher.since !== undefined) facts.push(`${formatDuration(Math.max(0, Date.now() - watcher.since))} ago`);
+	if (!watcher.connected) facts.push(theme.fg("warning", "disconnected"));
+	if (watcher.daemonId === undefined) facts.push(theme.fg("muted", "awaiting start"));
+	else if (watcher.daemonId !== daemon.id) facts.push(theme.fg("warning", "previous incarnation"));
+	return `  ${theme.fg("dim", "↳ watched by")} ${owner} ${theme.fg("dim", facts.join(theme.sep.dot))}`;
+}
+
 /** Op-specific call context (command line, log filters, wait condition, send payload). */
 function launchCallMeta(args: LaunchRenderArgs): string[] {
 	const meta: string[] = [];
@@ -824,6 +915,10 @@ export function launchRenderResult(
 
 	const meta: string[] = [];
 	const body: string[] = [];
+	// `list` collapses by process, not by row: the diagnostic and watcher rows
+	// belong to the process above them, so the limit counts processes and each
+	// group carries its own bounded collapsed form.
+	const listGroups: DaemonListGroup[] = [];
 	let description = params.name ?? daemon?.name;
 
 	if (isError) {
@@ -833,9 +928,17 @@ export function launchRenderResult(
 			case "start": {
 				meta.push(...launchCallMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
+				if (details?.monitoring === "off") {
+					const monitorStopped = details.monitorStopped !== undefined;
+					meta.push(
+						theme.fg(monitorStopped ? "warning" : "muted", monitorStopped ? "monitor stopped" : "monitor off"),
+					);
+				} else if (details?.monitoring) {
+					meta.push(theme.fg("accent", `monitor ${details.monitoring}`));
+				}
 				if (daemon?.readyMatch) body.push(theme.fg("dim", `log matched: ${replaceTabs(daemon.readyMatch)}`));
-				if (daemon?.state === "failed" && daemon.exitReason)
-					body.push(theme.fg("error", replaceTabs(daemon.exitReason)));
+				const startReason = daemon ? daemonReasonLine(daemon) : undefined;
+				if (startReason) body.push(theme.fg("error", startReason));
 				if (details?.timedOut) {
 					const pending = daemon ? readyPendingSummary(daemon, params.ready) : [];
 					body.push(
@@ -848,6 +951,9 @@ export function launchRenderResult(
 					);
 				} else if (params.ready && daemon && daemon.readyAt === undefined && TERMINAL_STATES[daemon.state]) {
 					body.push(theme.fg("warning", "Process exited before readiness was observed."));
+				}
+				if (details?.monitorStopped) {
+					body.push(theme.fg("warning", `Progress monitoring stopped: ${replaceTabs(details.monitorStopped)}.`));
 				}
 				break;
 			}
@@ -862,6 +968,8 @@ export function launchRenderResult(
 			case "wait": {
 				meta.push(...launchCallMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
+				const waitReason = daemon ? daemonReasonLine(daemon) : undefined;
+				if (waitReason) body.push(theme.fg("error", waitReason));
 				if (details?.matched) body.push(theme.fg("dim", `matched: ${replaceTabs(details.matched)}`));
 				if (details?.timedOut) {
 					body.push(
@@ -879,9 +987,23 @@ export function launchRenderResult(
 				const daemons = details?.daemons ?? [];
 				description = `${daemons.length || "no"} ${pluralize("process", daemons.length)}`;
 				for (const item of daemons) {
-					body.push(
+					const baseRows = [
 						`${theme.fg("accent", replaceTabs(item.name))} ${theme.fg("dim", daemonMeta(item, theme).join(theme.sep.dot))}`,
-					);
+					];
+					const itemReason = daemonReasonLine(item);
+					if (itemReason) baseRows.push(theme.fg("error", itemReason));
+					const watcherRows = (details?.monitors ?? [])
+						.filter(watcher => watcher.name === item.name)
+						.map(watcher => watcherRow(watcher, item, theme));
+					const rows = [...baseRows, ...watcherRows];
+					const collapsedWatcherRows = watcherRows.slice(0, PREVIEW_LIMITS.COLLAPSED_LINES);
+					const omittedWatchers = watcherRows.length - collapsedWatcherRows.length;
+					const collapsedRows = [...baseRows, ...collapsedWatcherRows];
+					if (omittedWatchers > 0) {
+						collapsedRows.push(theme.fg("dim", `  ${formatMoreItems(omittedWatchers, "watcher")}`));
+					}
+					listGroups.push({ collapsedRows });
+					body.push(...rows);
 				}
 				break;
 			}
@@ -899,8 +1021,24 @@ export function launchRenderResult(
 				}
 				break;
 			}
+			case "monitor": {
+				// Surface the resulting delivery mode so wake/ambient/off/no-op are
+				// distinguishable at a glance; details carry the authoritative state.
+				const mode = details?.monitoring ?? params.progress;
+				if (mode === "off") {
+					meta.push(theme.fg("muted", details?.monitorDetached === false ? "no active monitor" : "monitor off"));
+				} else if (mode) {
+					meta.push(theme.fg("accent", `monitor ${mode}`));
+				}
+				if (daemon) meta.push(...daemonMeta(daemon, theme));
+				const monitorReason = daemon ? daemonReasonLine(daemon) : undefined;
+				if (monitorReason) body.push(theme.fg("error", monitorReason));
+				break;
+			}
 			case "describe": {
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
+				const describeReason = daemon ? daemonReasonLine(daemon) : undefined;
+				if (describeReason) body.push(theme.fg("error", describeReason));
 				const spec = details?.spec;
 				if (spec) {
 					body.push(theme.fg("toolOutput", replaceTabs([spec.application, ...spec.args].join(" "))));
@@ -909,6 +1047,10 @@ export function launchRenderResult(
 					if (spec.detached) flags.push("detached");
 					else if (spec.persist) flags.push("persistent");
 					body.push(theme.fg("dim", flags.join(theme.sep.dot)));
+				}
+				if (daemon && details?.monitors) {
+					if (details.monitors.length === 0) body.push(theme.fg("muted", "no watchers"));
+					for (const watcher of details.monitors) body.push(watcherRow(watcher, daemon, theme));
 				}
 				break;
 			}
@@ -956,12 +1098,26 @@ export function launchRenderResult(
 		() => options.expanded,
 		(width, expanded) => {
 			let visible = body;
-			if (!expanded && op === "list" && body.length > PREVIEW_LIMITS.COLLAPSED_ITEMS) {
-				const remaining = body.length - PREVIEW_LIMITS.COLLAPSED_ITEMS;
-				visible = [
-					...body.slice(0, PREVIEW_LIMITS.COLLAPSED_ITEMS),
-					theme.fg("dim", `${formatMoreItems(remaining, "process")} ${formatExpandHint(theme, false, true)}`),
-				];
+			if (!isError && !expanded && op === "list") {
+				const visibleGroups: DaemonListGroup[] = [];
+				let visibleRows = 0;
+				const groupLimit = Math.min(listGroups.length, PREVIEW_LIMITS.COLLAPSED_ITEMS);
+				for (let index = 0; index < groupLimit; index++) {
+					const group = listGroups[index]!;
+					const remainingAfter = listGroups.length - (index + 1);
+					const summaryRows = remainingAfter > 0 ? 1 : 0;
+					const fitsBudget = visibleRows + group.collapsedRows.length + summaryRows <= COLLAPSED_LIST_LINE_LIMIT;
+					if (!fitsBudget && visibleGroups.length > 0) break;
+					visibleGroups.push(group);
+					visibleRows += group.collapsedRows.length;
+				}
+				const remaining = listGroups.length - visibleGroups.length;
+				visible = visibleGroups.flatMap(group => group.collapsedRows);
+				if (remaining > 0) {
+					visible.push(
+						theme.fg("dim", `${formatMoreItems(remaining, "process")} ${formatExpandHint(theme, false, true)}`),
+					);
+				}
 			}
 			return [header, ...visible].map(line => truncateToWidth(line, width));
 		},
@@ -1379,6 +1535,7 @@ export function messagingRenderResult(
 
 const LAUNCH_OPS: Record<string, true> = {
 	start: true,
+	monitor: true,
 	ps: true,
 	logs: true,
 	stop: true,
