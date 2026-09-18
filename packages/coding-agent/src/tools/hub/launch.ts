@@ -468,6 +468,14 @@ async function registerOutputSink(
 			registration.delivery = next;
 			subscription.delivery = next;
 			session.setLaunchMonitorActive?.(id, next, true, registration.epoch);
+			// Output sampled before the switch belongs to the mode the model
+			// just asked for. Only `wake` needs the move: it is the kind an idle
+			// flush drains, so ambient entries left behind would arrive on a
+			// later turn, behind newer wake output. `daemonId` is unset while a
+			// start is pending, and no output can have been queued yet then.
+			if (next === "wake" && registration.daemonId) {
+				session.promoteLaunchProgress?.(registration.daemonId, registration.epoch);
+			}
 			outputUnregister?.republish();
 		},
 	};
@@ -778,7 +786,6 @@ function registerCompletionSink(
 		reject: preservePending => settle(false, preservePending),
 	};
 }
-
 
 const KEY_INPUT: Record<string, string> = {
 	ENTER: "\r",
@@ -1214,5 +1221,3 @@ export async function executeLaunch(
 		throw error;
 	}
 }
-
-

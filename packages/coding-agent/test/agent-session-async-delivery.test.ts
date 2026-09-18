@@ -8,7 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, Message } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
@@ -56,6 +56,17 @@ function observeAsyncResultEnqueue(session: AgentSession): Promise<void> {
 		return receipt;
 	});
 	return queued.promise;
+}
+
+/** Flatten a request's messages into the text the model actually sees, in order. */
+function messageText(messages: Message[]): string {
+	return messages
+		.map(message =>
+			typeof message.content === "string"
+				? message.content
+				: message.content.map(content => (content.type === "text" ? content.text : "")).join("\n"),
+		)
+		.join("\n");
 }
 
 describe("AgentSession owner-routed async delivery", () => {
@@ -2195,6 +2206,140 @@ describe("AgentSession owner-routed async delivery", () => {
 		const completionIndex = markerIndex(followUp.context.messages, completionMarker);
 		expect(progressIndex).toBeGreaterThanOrEqual(0);
 		expect(completionIndex).toBeGreaterThan(progressIndex);
+	}, 10_000);
+
+	it("keeps a retuned monitor's samples in order when its completion flushes both queues", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const completionMarker = "Supervised process watcher exited";
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const sessionManager = SessionManager.inMemory();
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			agentId: "Main",
+		});
+
+		const epoch = session.captureLaunchProgressEpoch();
+		const sample = (seq: number, text: string, delivery: "ambient" | "wake") =>
+			session.queueLaunchProgress(
+				{
+					event: "daemon-output",
+					monitorId: "monitor-retuned",
+					name: "watcher",
+					daemonId: "daemon-retuned",
+					seq,
+					text,
+					batchKind: "progress",
+					suppressedEvents: 0,
+				},
+				delivery,
+				Date.now(),
+				epoch,
+			);
+		// Two ambient samples, then a retune to wake and a third sample: the
+		// monitor now holds output in both queue kinds.
+		sample(1, "SAMPLE ONE", "ambient");
+		sample(2, "SAMPLE TWO", "ambient");
+		sample(3, "SAMPLE THREE", "wake");
+
+		await session.queueLaunchCompletion({
+			event: "daemon-completed",
+			completionId: "completion-retuned",
+			owner: sessionManager.getSessionId(),
+			daemon: {
+				name: "watcher",
+				id: "daemon-retuned",
+				state: "exited",
+				createdAt: 1,
+				startedAt: 1,
+				exitedAt: 2,
+				exitCode: 0,
+				restartCount: 0,
+				outputBytes: 0,
+				owner: sessionManager.getSessionId(),
+				persist: false,
+				detached: false,
+			},
+		});
+		await session.waitForIdle();
+
+		const followUp = mock.calls.find(call => messageText(call.context.messages).includes(completionMarker));
+		if (!followUp) throw new Error("Launch completion follow-up never reached the model");
+		const observed = messageText(followUp.context.messages);
+		// Pre-retune output stays ahead of post-retune output, and both stay
+		// ahead of the terminal notification for the same process.
+		expect(observed.indexOf("SAMPLE ONE")).toBeGreaterThanOrEqual(0);
+		expect(observed.indexOf("SAMPLE ONE")).toBeLessThan(observed.indexOf("SAMPLE TWO"));
+		expect(observed.indexOf("SAMPLE TWO")).toBeLessThan(observed.indexOf("SAMPLE THREE"));
+		expect(observed.indexOf("SAMPLE THREE")).toBeLessThan(observed.indexOf(completionMarker));
+	}, 10_000);
+
+	it("wakes with a monitor's pre-retune output only for the generation that queued it", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const progressMarker = "PRE RETUNE PROCESS OUTPUT";
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const sessionManager = SessionManager.inMemory();
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			agentId: "Main",
+		});
+
+		const epoch = session.captureLaunchProgressEpoch();
+		session.queueLaunchProgress(
+			{
+				event: "daemon-output",
+				monitorId: "monitor-ambient",
+				name: "watcher",
+				daemonId: "daemon-ambient",
+				seq: 1,
+				text: progressMarker,
+				batchKind: "progress",
+				suppressedEvents: 0,
+			},
+			"ambient",
+			Date.now(),
+			epoch,
+		);
+		await Promise.resolve();
+		expect(mock.calls).toHaveLength(0);
+
+		// A retune whose registration predates a launch-progress boundary must
+		// not resurrect output the boundary already fenced off: nothing moves,
+		// so no idle flush is ever scheduled.
+		session.promoteLaunchProgress("daemon-ambient", epoch + 1);
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(0);
+
+		// Retuning the live registration to wake carries the output it already
+		// sampled into the queue an idle flush drains.
+		session.promoteLaunchProgress("daemon-ambient", epoch);
+		await session.waitForIdle();
+		expect(mock.calls.some(call => messageText(call.context.messages).includes(progressMarker))).toBe(true);
 	}, 10_000);
 
 	it("pushes wake progress into an idle session before the job completes", async () => {
