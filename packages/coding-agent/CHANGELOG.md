@@ -12,6 +12,10 @@
 
 ## [18.2.5] - 2026-09-17
 
+### Added
+
+- `hub` `op: "monitor"` now accepts background job `ids` to retune a running async `bash` job's progress between `wake` and `ambient` without restarting it; output already queued under the old mode is merged into the new queue. Jobs reject `progress: "off"`, and a job launched without `progress` cannot gain one after launch.
+
 ### Breaking Changes
 
 - Moved terminal UI modules—including themes, tool renderers, chat, overlay, status-line, composer, setup wizard, and Git/PS/debug apps—to `@oh-my-pi/pi-tui`. The corresponding `@oh-my-pi/pi-coding-agent` subpaths no longer exist; names re-exported from the package root remain unchanged.
