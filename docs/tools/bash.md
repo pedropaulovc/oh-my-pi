@@ -59,7 +59,7 @@ Waiting on a condition? One sleeping async `until` loop; AVOID repeated tool pol
 Progress: 200 ms batches, 10-event burst, then 1 permit/2 s; suppressed events stay in the full artifact. Truncated batches show bounded `<head>`/`<tail>` and link `artifact://<id>`.
 Chatty progress: lower source verbosity (quiet or warning-only) or filter to actionable lines; safe to retry → stop and relaunch quieter.
 Hub: retune a chatty process without stopping it — `op: "monitor"` with `progress: "ambient"` or `"off"`.
-Bash: a job's `progress` is fixed at launch; retry unsafe → let it finish.
+Bash: retune a chatty job without stopping it — `hub` `op: "monitor"` with `ids: ["<job-id>"]` and `progress: "ambient"`. Queued wake output still lands once; a job launched without `progress` cannot gain one, and a job's channel cannot be detached. Retry unsafe → let it finish.
 Suppression reports repeat this guidance a few times with increasing spacing, then stop.
 Progress is pushed while you are idle. NEVER hold the turn open to receive it — no polling (`logs`, `ps`, any `wait` on a wake-monitored job), no tailing files; end the turn. Ending a turn to await a wake is NOT a yield.
 </async-progress>
@@ -80,9 +80,9 @@ Both modes use the same per-job batching and rate limiter. Their difference is w
 
 Ambient does not change batching, rate limiting, or artifact capture. It avoids spending an inference turn on updates that would produce no useful action, such as another passing test file or download percentage. When completion starts the next turn, queued ambient progress is delivered before the completion result.
 
-For noisy output, first look for a quieter source setting, such as quiet mode or a warning/error log level. Otherwise, filter the stream to lines that may change the next action. If the command is safe to retry, cancel it and relaunch with the quieter configuration. Bash progress cannot be changed after launch, so let it finish when retrying would repeat side effects or discard expensive work.
+For noisy output, first look for a quieter source setting, such as quiet mode or a warning/error log level. Otherwise, filter the stream to lines that may change the next action. If the command is safe to retry, cancel it and relaunch with the quieter configuration. When retrying would repeat side effects or discard expensive work, keep the job running and retune its progress instead: `hub` `{"op":"monitor","ids":["<job-id>"],"progress":"ambient"}` switches a running job between `wake` and `ambient` in place. The switch only changes routing: output already queued under the old mode is merged into the new queue, so a wake batch that was permitted before the switch can still start one more turn. A job's progress channel cannot be detached (`progress: "off"` is rejected for job ids), and a job launched without `progress` cannot gain one.
 
-Hub has another option: use `monitor` to switch the current process to `ambient` or `off`. This changes only the notification subscription and does not stop the process. If quieter output is still needed, stop and start it again with new arguments or environment; `restart` alone reuses the old launch specification.
+Hub processes have a wider option: `monitor` by `name` can also detach the current session with `off`. This changes only the notification subscription and does not stop the process. If quieter output is still needed, stop and start it again with new arguments or environment; `restart` alone reuses the old launch specification.
 
 Use ambient for a long test suite when only the final status changes the plan:
 
@@ -119,8 +119,8 @@ This comparison uses the observed Claude Code 2.1.233 Monitor contract. Each sur
 | --- | --- | --- | --- |
 | Intended workload | Finite command spanning turns | Shared long-running process, watcher, service, debugger, or REPL | Command or WebSocket watcher |
 | Start operation | `bash` with `async: "auto"`, `progress: "wake"` (or `async: true` for immediate background) | `hub` `op:"start"`, `progress:"wake"` | Top-level `Monitor` call with a command or WebSocket URL |
-| Attach or retune | No; progress belongs to the command | `hub` `op:"monitor"` by stable process name | No attach/retune operation observed |
-| Detach without stopping work | No separate subscription | `progress:"off"` | Persistent monitor is stopped through task control |
+| Attach or retune | Retune only: `hub` `op:"monitor"` with job `ids` switches `wake`↔`ambient`; no attach after launch | `hub` `op:"monitor"` by stable process name | No attach/retune operation observed |
+| Detach without stopping work | No; `progress:"off"` is rejected for job `ids` | `progress:"off"` | Persistent monitor is stopped through task control |
 | Harness push while idle | Starts a follow-up turn | Starts a follow-up turn | Starts a follow-up turn |
 | Events received while busy | Permitted events buffered and delivered together; suppressed events remain in the artifact | Same shared batching contract | Permitted events buffered and delivered together; suppressed events remain in the output file |
 | Burst/rate limit | 10 events, then one event permit every 2s | Same shared meter | Observed: about 10 events, then one event permit every 2s |
