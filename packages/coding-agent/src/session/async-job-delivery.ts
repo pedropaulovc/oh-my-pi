@@ -90,7 +90,16 @@ export interface AsyncProgressSource {
 	startedAt: number;
 }
 
-type AsyncProgressIdentity = Pick<AsyncProgressEntry, "jobId" | "source">;
+/**
+ * Enough of an entry to compute its queue identity. Structural on purpose: a
+ * completion or a retune knows a daemon id long before it has a full
+ * {@link AsyncProgressSource} (label and start time belong to the monitor
+ * registration), and {@link AsyncProgressEntry} satisfies this as-is.
+ */
+export type AsyncProgressIdentity = {
+	jobId: string;
+	source?: Pick<AsyncProgressSource, "id" | "type">;
+};
 
 /** Stable typed identity shared by queue folding, batch grouping, and completion promotion. */
 export function asyncProgressSourceKey(entry: AsyncProgressIdentity): string {

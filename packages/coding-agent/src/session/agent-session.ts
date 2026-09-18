@@ -290,6 +290,7 @@ import {
 	ASYNC_PROGRESS_WAKE_QUEUE_KIND,
 	ASYNC_RESULT_MESSAGE_TYPE,
 	type AsyncProgressEntry,
+	type AsyncProgressIdentity,
 	type AsyncResultEntry,
 	asyncProgressCoalesceKey,
 	asyncProgressSourceKey,
@@ -1850,7 +1851,7 @@ export class AgentSession {
 					this.yieldQueue.take<AsyncProgressEntry>(ASYNC_PROGRESS_MESSAGE_TYPE, matchesJob);
 					this.yieldQueue.take<AsyncProgressEntry>(ASYNC_PROGRESS_WAKE_QUEUE_KIND, matchesJob);
 				},
-				retune: (jobId, delivery) => this.#moveQueuedAsyncProgress(jobId, delivery),
+				retune: (jobId, delivery) => this.#moveQueuedAsyncProgress({ jobId }, this.#asyncDeliveryEpoch, delivery),
 			});
 			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(this.#agentId, (jobId, text, job) =>
 				this.#deliverAsyncJobResult(manager, jobId, text, job),
@@ -2508,32 +2509,44 @@ export class AgentSession {
 	}
 
 	/**
-	 * Re-home one job's queued progress onto the kind `delivery` uses — the two
-	 * kinds differ only in whether a flush may spend a wake turn, so output
+	 * Re-home one source's queued progress onto the kind `delivery` uses — the
+	 * two kinds differ only in whether a flush may spend a wake turn, so output
 	 * sampled under the old mode must still be delivered under the new one
-	 * rather than sit in a queue the job no longer feeds.
+	 * rather than sit in a queue the source no longer feeds. Managed jobs and
+	 * hub monitors share this path: `identity` is matched through
+	 * `asyncProgressSourceKey`, which keys a monitor by `process:<daemonId>`.
 	 *
 	 * Entries are folded in `seq` order before enqueueing so the target kind's
 	 * coalescer cannot append older text behind newer text. `scope` decides
 	 * whether entries already in the target kind join that fold: completion
 	 * promotion must (after a retune it can face both kinds, and the inverted
-	 * merge would misorder the transcript), while a retune must not — that would
-	 * push the target kind's entries behind every other producer's queued
-	 * progress for no gain.
+	 * merge would misorder the transcript, misdate the entry, and drop the
+	 * newest bytes when the merged preview overflows), while a retune must not
+	 * — that would push the target kind's entries behind every other producer's
+	 * queued progress for no gain.
+	 *
+	 * `epoch` is part of the match, not a filter applied afterwards. A launch
+	 * boundary bumps the launch epoch WITHOUT clearing these queues (unlike the
+	 * job epoch, which clears both kinds), so a stale entry can sit beside a
+	 * live one for the same daemon. Folding across that line would either
+	 * resurrect text the boundary evicted or stamp the fold with the stale
+	 * epoch, whereupon `isStale` drops live progress at flush.
 	 */
 	#moveQueuedAsyncProgress(
-		jobId: string,
+		identity: AsyncProgressIdentity,
+		epoch: number,
 		delivery: AsyncJobProgressDelivery,
 		scope: "source-only" | "source-and-target" = "source-only",
 	): void {
 		const targetKind = delivery === "wake" ? ASYNC_PROGRESS_WAKE_QUEUE_KIND : ASYNC_PROGRESS_MESSAGE_TYPE;
 		const sourceKind = delivery === "wake" ? ASYNC_PROGRESS_MESSAGE_TYPE : ASYNC_PROGRESS_WAKE_QUEUE_KIND;
-		const sourceKey = asyncProgressSourceKey({ jobId });
-		const matchesJob = (entry: AsyncProgressEntry) => asyncProgressSourceKey(entry) === sourceKey;
-		const queued = this.yieldQueue.take<AsyncProgressEntry>(sourceKind, matchesJob);
+		const sourceKey = asyncProgressSourceKey(identity);
+		const matchesSource = (entry: AsyncProgressEntry) =>
+			entry.epoch === epoch && asyncProgressSourceKey(entry) === sourceKey;
+		const queued = this.yieldQueue.take<AsyncProgressEntry>(sourceKind, matchesSource);
 		if (queued.length === 0) return;
 		if (scope === "source-and-target") {
-			queued.push(...this.yieldQueue.take<AsyncProgressEntry>(targetKind, matchesJob));
+			queued.push(...this.yieldQueue.take<AsyncProgressEntry>(targetKind, matchesSource));
 		}
 		queued.sort((left, right) => left.seq - right.seq);
 		let merged = queued[0]!;
@@ -2586,7 +2599,7 @@ export class AgentSession {
 		// the output was already delivered. Promote it to the wake queue: that
 		// kind registers ahead of async-result, so the flush injects the
 		// remaining progress before the completion result.
-		this.#moveQueuedAsyncProgress(jobId, "wake", "source-and-target");
+		this.#moveQueuedAsyncProgress({ jobId }, epoch, "wake", "source-and-target");
 		await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
 			jobId,
 			result: formatted,
@@ -7620,15 +7633,17 @@ export class AgentSession {
 		// with `skipIdleFlush`) and would inject only on a later turn — after
 		// the terminal notification for the process it belongs to. Promote it
 		// to the wake queue, which registers ahead of launch-completion, so the
-		// flush injects the remaining output before the completion. Mirrors the
-		// async-job completion path in #deliverAsyncJobResult.
-		const queuedProgress = this.yieldQueue.take<AsyncProgressEntry>(
-			ASYNC_PROGRESS_MESSAGE_TYPE,
-			entry => entry.source?.type === "process" && entry.source.id === notification.daemon.id,
+		// flush injects the remaining output before the completion. The fold is
+		// `source-and-target` for the same reason as the async-job completion
+		// path in #deliverAsyncJobResult: a retuned monitor has entries in both
+		// kinds, and enqueueing the ambient ones on top of a newer wake entry
+		// would coalesce older text behind it.
+		this.#moveQueuedAsyncProgress(
+			{ jobId: notification.daemon.name, source: { id: notification.daemon.id, type: "process" } },
+			this.#launchProgressEpoch,
+			"wake",
+			"source-and-target",
 		);
-		for (const entry of queuedProgress) {
-			this.yieldQueue.enqueue<AsyncProgressEntry>(ASYNC_PROGRESS_WAKE_QUEUE_KIND, entry);
-		}
 		const delivered = this.yieldQueue.enqueueWithReceipt<SessionLaunchCompletionEntry>(
 			LAUNCH_COMPLETION_MESSAGE_TYPE,
 			{ ...notification, epoch: this.#launchProgressEpoch },
@@ -7638,6 +7653,18 @@ export class AgentSession {
 	}
 	captureLaunchProgressEpoch(): number {
 		return this.#launchProgressEpoch;
+	}
+
+	/**
+	 * A monitor retuned to `wake` takes its already-queued ambient output with
+	 * it, so the switch cannot leave that output in the kind an idle flush
+	 * skips — where it would land only on a later turn, behind newer wake
+	 * output. Promotion only: a `wake` → `ambient` retune deliberately leaves
+	 * queued wake entries alone, since demoting them would revoke a turn they
+	 * already hold and delay delivery for no gain.
+	 */
+	promoteLaunchProgress(daemonId: string, epoch: number): void {
+		this.#moveQueuedAsyncProgress({ jobId: daemonId, source: { id: daemonId, type: "process" } }, epoch, "wake");
 	}
 
 	queueLaunchProgress(
