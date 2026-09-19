@@ -3,7 +3,7 @@ Use `op: "list"` to discover live peers. Default is running+idle plus running/id
 
 # Messaging & Jobs
 
-Background jobs auto-deliver when they finish. Do not call `jobs`/`wait` merely to watch them; if either observes a settled job first, that snapshot is the delivery and suppresses duplicate `async-result`.
+Background jobs auto-deliver when they finish. You NEVER need to poll; if `jobs`/`wait` observes a settled job first, that snapshot is the delivery and suppresses duplicate `async-result`.
 
 - **The user is NOT a peer.** `Main` answers the user ONLY in a plain text block; a `send` shows them a tool-card preview (2 lines while collapsed). Thinking is not output either.
 - **`send`** (with `to`): fire-and-forget, NEVER blocks. Delivery receipts (`delivered`/`failed`) immediate; `failed` → peer gone, don't retry.
