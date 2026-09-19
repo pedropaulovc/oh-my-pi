@@ -180,10 +180,10 @@ describe("hub monitor — background job progress retune", () => {
 		expect(result.details.retuned).toEqual([{ id: job.id, status: "not_running", progress: "wake" }]);
 		expect(result.text).toContain(`\`${job.id}\` already settled; only a running job's progress can be retuned.`);
 
-		// The retune is not a result recovery: the completion text is still
-		// waiting for the first snapshot that consumes it.
-		const snapshot = await callHub(tool, { op: "jobs" });
-		expect(snapshot.details.jobs?.find(row => row.id === job.id)?.resultText).toBe("build succeeded");
-		expect(snapshot.text).toContain("build succeeded");
+		// Retuning is not result recovery; an explicit wait still receives the completion text.
+		expect(manager.isJobResultConsumed(job.id)).toBe(false);
+		const recovered = await callHub(tool, { op: "wait", ids: [job.id] });
+		expect(recovered.details.jobs?.find(row => row.id === job.id)?.resultText).toBe("build succeeded");
+		expect(recovered.text).toContain("build succeeded");
 	});
 });
