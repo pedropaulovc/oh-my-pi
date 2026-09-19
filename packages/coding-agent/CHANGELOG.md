@@ -830,6 +830,7 @@
 - Added Bash async: "auto": potentially slow finite commands run inline for a grace window and promote to a background job without restarting. At the background-job cap auto runs inline to completion with a notice (explicit `async: true` still errors), a command whose timeout cannot outlive the grace never promotes, and promotion waits at most one second for stalled output deliveries.
 - Backgrounded Bash and Eval results now name the command or cell in the notice (`Backgrounded as job bg_5 (uv run verify.py); …`), so parallel calls whose results return out of call order stay attributable to the right job instead of being paired positionally.
 - Added collapsible async progress in the transcript: progress blocks show the latest lines (bounded by rows and bytes) behind an "… N earlier lines" marker, expand with Ctrl+O, and completion rows report exit codes with failures in red that stay visible even while tool activity is hidden.
+- Startup against an auth broker that rejects the bearer token (401/403) now says the broker is reachable but rejected the token and points at `omp auth-broker token`, `OMP_AUTH_BROKER_TOKEN`, `auth.broker.token`, or the token file, instead of the generic "unreachable, start it with `omp auth-broker serve`" guidance.
 
 ## [18.1.12] - 2026-09-06
 
