@@ -1,7 +1,7 @@
 Runs commands in a persistent shell.
 
-Use ONLY for one binary or a short pipeline that computes a fact (`wc -l`, `sort | uniq -c`, `diff`).
-{{#if hasEval}}Inline scripts, heredocs, `$(…)`, complex control flow/quoting, and non-trivial pipelines → `eval`.{{else}}Inline scripts, heredocs, `$(…)`, and complex control flow → a purpose-built tool or checked-in script.{{/if}}
+Use ONLY for one binary or a short fact pipeline (`wc -l`, `sort | uniq -c`, `diff`).
+{{#if hasEval}}Scripts, heredocs, `$(…)`, complex flow/quoting, and non-trivial pipelines → `eval`.{{else}}Scripts, heredocs, `$(…)`, and complex flow → a purpose-built tool or checked-in script.{{/if}}
 
 <instruction>
 - Set `cwd` instead of `cd`.
@@ -20,9 +20,9 @@ Use ONLY for one binary or a short pipeline that computes a fact (`wc -l`, `sort
 {{#if hasGrep}}- NEVER use shell `grep`/`rg`; use built-in `grep`{{#if hasFind}} for literal patterns and `find` for locating behavior by description{{/if}}.{{/if}}
 {{#if hasRead}}{{#if hasGlob}}- List directories with `read` and find paths with `glob`; NEVER use `ls`/`find`.{{/if}}{{/if}}
 - Avoid `head`, `tail`, and redirection: captured, truncated output links to `artifact://<id>`.
-{{#if hasLaunch}}- Services, watchers, debuggers, and REPLs MUST use `hub` (`op:"start"`).{{/if}}
+{{#if hasLaunch}}- Services, watchers, debuggers, and REPLs MUST use `hub` (`op:"start"`); add `progress:"wake"` when pre-exit output may require action.{{/if}}
 </critical>
 
-{{#if autoBackgroundEnabled}}Long foreground calls may auto-background by the configured threshold; the result is injected as a follow-up when the job finishes. NEVER poll a backgrounded job (`sleep`/`ps`/`pgrep`/`top`) — do other work or end your reply and you will be woken with its output.
+{{#if autoBackgroundEnabled}}Long foreground calls may auto-background after the configured grace; the result is injected as a follow-up when the job finishes. NEVER poll a backgrounded job (`sleep`/`ps`/`pgrep`/`top`) — do other work or end your reply and you will be woken with its output.
 `timeout: 0` disables the job deadline; otherwise `timeout` sets it without extending foreground waiting.{{/if}}
 No truncation footer means the displayed output is complete.
