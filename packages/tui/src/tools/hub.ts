@@ -572,17 +572,13 @@ export function jobsRenderResult(
 					renderItem: (job, context) => {
 						const rowWidth = Math.max(0, width - (context.prefixWidth ?? 0));
 						const lines: string[] = [];
-						const icon = formatStatusIcon(
+						const icon = `${formatStatusIcon(
 							statusToIcon(job.status),
 							uiTheme,
 							job.status === "running" ? options.spinnerFrame : undefined,
-						);
+						)}${job.exitCode === undefined ? "" : `${uiTheme.sep.dot}${uiTheme.fg(job.exitCode === 0 ? "muted" : "error", `exit ${job.exitCode}`)}`}`;
 						const typeBadge = formatBadge(job.type, statusToColor(job.status), uiTheme);
-						const exitCodeSuffix =
-							job.exitCode === undefined
-								? ""
-								: `${uiTheme.sep.dot}${uiTheme.fg(job.exitCode === 0 ? "muted" : "error", `exit ${job.exitCode}`)}`;
-						const durationSuffix = `${exitCodeSuffix}${uiTheme.sep.dot}${uiTheme.fg("dim", formatDuration(job.durationMs))}`;
+						const durationSuffix = `${uiTheme.sep.dot}${uiTheme.fg("dim", formatDuration(job.durationMs))}`;
 						const displayId = truncateToWidth(
 							replaceTabs(job.id).replace(/\s+/g, " "),
 							Math.max(0, rowWidth - visibleWidth(`${icon} ${typeBadge} ${durationSuffix}`)),
