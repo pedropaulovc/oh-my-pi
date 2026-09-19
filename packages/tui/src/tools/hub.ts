@@ -104,6 +104,8 @@ export interface JobSnapshot {
 	durationMs: number;
 	/** Progress delivery mode currently in effect; absent when the job has no progress channel. */
 	progress?: JobProgressMode;
+	/** Process exit status when the job reports one. */
+	exitCode?: number;
 	/** Effective task model selector, including an explicit reasoning suffix when configured. */
 	resolvedModel?: string;
 	/** Provider/id including routing, with no added thinking suffix. */
@@ -714,7 +716,11 @@ export function jobsRenderResult(
 						const progressSuffix = job.progress
 							? ` ${formatBadge(replaceTabs(job.progress), "accent", uiTheme)}`
 							: "";
-						const durationSuffix = `${uiTheme.sep.dot}${uiTheme.fg("dim", formatDuration(job.durationMs))}`;
+						const exitCodeSuffix =
+							job.exitCode === undefined
+								? ""
+								: `${uiTheme.sep.dot}${uiTheme.fg(job.exitCode === 0 ? "muted" : "error", `exit ${job.exitCode}`)}`;
+						const durationSuffix = `${exitCodeSuffix}${uiTheme.sep.dot}${uiTheme.fg("dim", formatDuration(job.durationMs))}`;
 						const rowSuffix = `${progressSuffix}${durationSuffix}`;
 						const displayId = truncateToWidth(
 							replaceTabs(job.id).replace(/\s+/g, " "),
