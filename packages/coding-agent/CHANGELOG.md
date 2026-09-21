@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/context all` to show per-tool and per-skill context token estimates ([#12663](https://github.com/can1357/oh-my-pi/pull/12663) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
 ## [18.2.7] - 2026-09-21
 
 ### Breaking Changes
