@@ -3,9 +3,11 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import {
 	computeCompactionBoundaries,
 	computeContextBreakdown,
+	computeContextUsageDetails,
 	type CompactionBoundaries,
 	type ContextBreakdown,
 	type ContextSavingsEstimate,
+	type ContextUsageDetails,
 } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import type { Settings } from "../config/settings";
 import type { AgentSession } from "./agent-session";
@@ -56,5 +58,13 @@ export function computeSessionContextBreakdown(
 		sourceRevision: session.settings.revision,
 		skillful: session.settings.get("skillful"),
 		snapcompact,
+	});
+}
+
+/** Resolve the same active tool and skill roster used by the aggregate breakdown. */
+export function computeSessionContextUsageDetails(session: AgentSession): ContextUsageDetails {
+	return computeContextUsageDetails(session, {
+		sourceRevision: session.settings.revision,
+		skillful: session.settings.get("skillful"),
 	});
 }
