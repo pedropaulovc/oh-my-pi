@@ -1208,9 +1208,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				ctx?.toolCall?.steeringSignal,
 			);
 			if (waitResult.kind === "completed") {
+				autoBgManager.consumeJobResultWhenSettled(job.jobId);
 				return waitResult.result;
 			}
 			if (waitResult.kind === "failed") {
+				autoBgManager.consumeJobResultWhenSettled(job.jobId);
 				throw waitResult.error;
 			}
 			if (waitResult.kind === "aborted") {
