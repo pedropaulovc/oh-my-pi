@@ -134,7 +134,7 @@ describe("getLatestRelease configured registry", () => {
 				authorization: "Bearer s3cret",
 			},
 		]);
-		expect(release.registry).toBe("https://npm.corp.example/api/npm/feed/");
+		expect(release).toMatchObject({ registry: "https://npm.corp.example/api/npm/feed/" });
 	});
 
 	it("falls back to the full packument when the feed does not serve the dist-tag shortcut", async () => {
