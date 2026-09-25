@@ -13,7 +13,7 @@
  * the identical `dogfood` OID and therefore publishes nothing.
  *
  * Tracked branches:
- *   - `main`                       — rebased onto `upstream/main`
+ *   - `main`                       — retained if it contains upstream/main; otherwise rebased
  *   - every open upstream PR whose head repository is the fork
  *   - every open fork PR head/base branch (for fork-only stacks)
  *   - every branch listed in the `PRIVATE_REBASE_BRANCHES` repository variable
@@ -1019,26 +1019,31 @@ async function main(): Promise<void> {
 	// Fork main first: it is the dogfood base. Candidate branch deltas stay
 	// rooted on upstream main so fork-private maintenance commits never leak
 	// into upstream pull requests.
-	let mainSha: string | null = null;
-	const mainRebase = await gitTry("rebase", `refs/remotes/upstream/${MAIN_BRANCH}`, MAIN_BRANCH);
-	if (mainRebase.ok) {
-		mainSha = await revParse(`refs/heads/${MAIN_BRANCH}`);
-		const plan = planPush([{ branch: MAIN_BRANCH, expected: originMain, target: mainSha ?? originMain }]);
-		if (plan.args.length > 0) {
-			const pushed = await gitTry(...plan.args);
-			if (pushed.ok) notes.push(`pushed ${MAIN_BRANCH} at ${mainSha}`);
-			else {
-				failures.push({ stage: "push", branches: [MAIN_BRANCH], detail: failureDetail(pushed) });
-				mainSha = null;
+	const upstreamIsAncestor = (await gitTry("merge-base", "--is-ancestor", upstreamMain, originMain)).ok;
+	let mainSha: string | null = upstreamIsAncestor ? originMain : null;
+	if (upstreamIsAncestor) {
+		notes.push(`${MAIN_BRANCH} already integrates upstream at ${mainSha}`);
+	} else {
+		const mainRebase = await gitTry("rebase", `refs/remotes/upstream/${MAIN_BRANCH}`, MAIN_BRANCH);
+		if (mainRebase.ok) {
+			mainSha = await revParse(`refs/heads/${MAIN_BRANCH}`);
+			const plan = planPush([{ branch: MAIN_BRANCH, expected: originMain, target: mainSha ?? originMain }]);
+			if (plan.args.length > 0) {
+				const pushed = await gitTry(...plan.args);
+				if (pushed.ok) notes.push(`pushed ${MAIN_BRANCH} at ${mainSha}`);
+				else {
+					failures.push({ stage: "push", branches: [MAIN_BRANCH], detail: failureDetail(pushed) });
+					mainSha = null;
+				}
+			} else {
+				notes.push(`${MAIN_BRANCH} already up to date`);
 			}
 		} else {
-			notes.push(`${MAIN_BRANCH} already up to date`);
+			await gitTry("rebase", "--abort");
+			await gitTry("checkout", "--detach", upstreamMain);
+			await gitTry("branch", "-f", MAIN_BRANCH, originMain);
+			failures.push({ stage: "rebase", branches: [MAIN_BRANCH], detail: failureDetail(mainRebase) });
 		}
-	} else {
-		await gitTry("rebase", "--abort");
-		await gitTry("checkout", "--detach", upstreamMain);
-		await gitTry("branch", "-f", MAIN_BRANCH, originMain);
-		failures.push({ stage: "rebase", branches: [MAIN_BRANCH], detail: failureDetail(mainRebase) });
 	}
 
 	const tips: IntegrationTip[] = [];
