@@ -898,6 +898,7 @@
 - Fixed background task cards missing their final completion or failure after an early result or live-session focus replay.
 - Ranged reads on Windows no longer intermittently open the selector-suffixed path when filesystem probes return transient errors ([#11284](https://github.com/can1357/oh-my-pi/issues/11284)).
 - Fork dogfood binaries can now update independently with `omp-dogfood update` without modifying the official `omp` installation.
+- `/debug` now includes an opt-in prompt-cache view and includes bounded derived cache diagnostics plus dropped-record metadata in report bundles when `PI_PROMPT_CACHE_DEBUG=1` ([#11938](https://github.com/can1357/oh-my-pi/pull/11938) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
 ## [18.1.19] - 2026-09-12
 
