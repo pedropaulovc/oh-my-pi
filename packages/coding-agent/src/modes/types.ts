@@ -77,6 +77,8 @@ export type SubmittedUserInput = {
 	 *  it). Normal user Enter carries "steer" to match the streaming-branch Enter;
 	 *  background/continuation submits omit it and default to "followUp". */
 	streamingBehavior?: "steer" | "followUp";
+	/** Tied only to a user-typed editor submission, never an automatic continuation. */
+	onAccepted?: () => void;
 	cancelled: boolean;
 	started: boolean;
 };
@@ -104,6 +106,9 @@ export interface AgentHubOpenOptions {
 	armCloseTap?: boolean;
 	initialSection?: "agents" | "activity";
 }
+
+/** Mode command outcome: submitted agent prompt, rejected prompt, or consumed local action. */
+export type ModeCommandResult = boolean | "consumed";
 
 export interface InteractiveModeContext {
 	// UI access
@@ -334,6 +339,7 @@ export interface InteractiveModeContext {
 		customType?: string;
 		display?: boolean;
 		streamingBehavior?: "steer" | "followUp";
+		onAccepted?: () => void;
 	}): SubmittedUserInput;
 	cancelPendingSubmission(): boolean;
 	markPendingSubmissionStarted(input: SubmittedUserInput): boolean;
@@ -498,7 +504,10 @@ export interface InteractiveModeContext {
 	handleDequeue(): void;
 	handleImagePaste(): Promise<boolean>;
 	/** Queue a message for delivery only after the active agent turn would stop. */
-	handleQueueCommand(message: string): Promise<void>;
+	handleQueueCommand(
+		message: string,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks" | "onAccepted">,
+	): Promise<void>;
 	handleBtwCommand(question: string): Promise<void>;
 	handleTanCommand(work: string): Promise<void>;
 	hasActiveBtw(): boolean;
@@ -529,14 +538,20 @@ export interface InteractiveModeContext {
 	toggleThinkingBlockVisibility(): void;
 	handlePlanModeCommand(
 		initialPrompt?: string,
-		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
-	): Promise<boolean>;
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks" | "onAccepted">,
+	): Promise<ModeCommandResult>;
 	handleVibeModeCommand(
 		initialPrompt?: string,
-		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks" | "onAccepted">,
+	): Promise<ModeCommandResult>;
+	handleGoalModeCommand(
+		rest?: string,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks" | "onAccepted">,
+	): Promise<ModeCommandResult>;
+	handleGuidedGoalCommand(
+		rest?: string,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks" | "onAccepted">,
 	): Promise<boolean>;
-	handleGoalModeCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
-	handleGuidedGoalCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
 	handleLoopCommand(args?: string): Promise<string | undefined>;
 	setLoopPrompt(prompt: string): void;
 	armLoopAutoSubmit(): void;
