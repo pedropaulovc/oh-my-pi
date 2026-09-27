@@ -9,7 +9,7 @@ import {
 import type { Settings } from "../config/settings";
 import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
-import type { InteractiveModeContext } from "../modes/types";
+import type { InteractiveModeContext, ModeCommandResult } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
@@ -51,13 +51,20 @@ function resolveSessionModelSelector(
 async function runWithDetachedModeDraft(
 	command: ParsedSlashCommand,
 	runtime: TuiSlashCommandRuntime,
-	run: () => Promise<boolean>,
-): Promise<void> {
+	run: () => Promise<ModeCommandResult>,
+): Promise<boolean> {
 	const { editor } = runtime.ctx;
-	if (!runtime.draftDetached) editor.clearDraft();
+	// Clear the submitted command before the handler can accept its prompt.
+	// A new draft typed while an input hook awaited must not be detached.
+	if (!runtime.draftDetached || editor.getText() === command.text) editor.clearDraft();
 	try {
-		const submitted = await run();
-		if (!submitted && ((runtime.input?.images?.length ?? 0) > 0 || (runtime.input?.imageLinks?.length ?? 0) > 0)) {
+		const outcome = await run();
+		if (outcome === false && runtime.input?.onAccepted && !editor.getText() && editor.pendingImages.length === 0)
+			editor.setText(command.text);
+		if (
+			outcome === false &&
+			((runtime.input?.images?.length ?? 0) > 0 || (runtime.input?.imageLinks?.length ?? 0) > 0)
+		) {
 			editor.pendingImages = [...(runtime.input?.images ?? []), ...editor.pendingImages];
 			editor.pendingImageLinks = [
 				...(runtime.input?.imageLinks ?? runtime.input?.images?.map(() => undefined) ?? []),
@@ -65,6 +72,7 @@ async function runWithDetachedModeDraft(
 			];
 			editor.imageLinks = editor.pendingImageLinks.length > 0 ? editor.pendingImageLinks : undefined;
 		}
+		return outcome === true;
 	} catch (error) {
 		if (!editor.getText() && editor.pendingImages.length === 0) {
 			editor.setText(command.text);
@@ -73,6 +81,7 @@ async function runWithDetachedModeDraft(
 			editor.imageLinks = editor.pendingImageLinks.length > 0 ? editor.pendingImageLinks : undefined;
 		}
 		runtime.ctx.showError(error instanceof Error ? error.message : String(error));
+		return false;
 	}
 }
 
@@ -248,9 +257,10 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return "Plan: off";
 		},
 		handleTui: async (command, runtime) => {
-			await runWithDetachedModeDraft(command, runtime, () =>
+			const submitted = await runWithDetachedModeDraft(command, runtime, () =>
 				runtime.ctx.handlePlanModeCommand(command.args || undefined, runtime.input),
 			);
+			if (submitted) return commandConsumed({ agentInvoked: true });
 		},
 	},
 	{
@@ -277,9 +287,10 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return "Vibe: off";
 		},
 		handleTui: async (command, runtime) => {
-			await runWithDetachedModeDraft(command, runtime, () =>
+			const submitted = await runWithDetachedModeDraft(command, runtime, () =>
 				runtime.ctx.handleVibeModeCommand(command.args || undefined, runtime.input),
 			);
+			if (submitted) return commandConsumed({ agentInvoked: true });
 		},
 	},
 	{
@@ -303,9 +314,10 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return state ? `Goal: ${state.goal.status} (${shortDetail(state.goal.objective)})` : "Goal: off";
 		},
 		handleTui: async (command, runtime) => {
-			await runWithDetachedModeDraft(command, runtime, () =>
+			const submitted = await runWithDetachedModeDraft(command, runtime, () =>
 				runtime.ctx.handleGoalModeCommand(command.args || undefined, runtime.input),
 			);
+			if (submitted) return commandConsumed({ agentInvoked: true });
 		},
 	},
 	{
@@ -315,9 +327,10 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		inlineHint: "[rough objective]",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
-			await runWithDetachedModeDraft(command, runtime, () =>
+			const submitted = await runWithDetachedModeDraft(command, runtime, () =>
 				runtime.ctx.handleGuidedGoalCommand(command.args || undefined, runtime.input),
 			);
+			if (submitted) return commandConsumed({ agentInvoked: true });
 		},
 	},
 	{
@@ -354,7 +367,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		inlineHint: "<message>",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
-			await runtime.ctx.handleQueueCommand(command.args);
+			await runtime.ctx.handleQueueCommand(command.args, runtime.input);
+			if (command.args.trim() || runtime.input?.images?.length) return commandConsumed({ agentInvoked: true });
 		},
 	},
 	{

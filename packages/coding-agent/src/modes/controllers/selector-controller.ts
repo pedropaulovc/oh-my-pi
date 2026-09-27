@@ -2150,10 +2150,7 @@ export class SelectorController {
 	}
 
 	showAgentHub(observers: SessionObserverRegistry, options?: AgentHubOpenOptions): void {
-		const hubKeys = [
-			...this.ctx.keybindings.getKeys("app.agents.hub"),
-			...this.ctx.keybindings.getKeys("app.session.observe"),
-		];
+		const hubKeys = this.ctx.keybindings.getKeys("app.agents.hub");
 		let overlayHandle: OverlayHandle | undefined;
 		let closed = false;
 

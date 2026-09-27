@@ -15,7 +15,13 @@ function createPlanHarness(opts: { planModeEnabled: boolean; confirmExit: boolea
 	const clearDraft = mock((_historyText?: string) => {});
 
 	const ctx = {
-		editor: { addToHistory, clearDraft } as unknown as InteractiveModeContext["editor"],
+		editor: {
+			addToHistory,
+			clearDraft,
+			getText: () => "",
+			setText: mock(() => {}),
+			pendingImages: [],
+		} as unknown as InteractiveModeContext["editor"],
 		get planModeEnabled() {
 			return state.planModeEnabled;
 		},
@@ -43,7 +49,13 @@ function createGoalHarness(opts: { goalModeEnabled: boolean; dropOnCall: boolean
 	const clearDraft = mock((_historyText?: string) => {});
 
 	const ctx = {
-		editor: { addToHistory, clearDraft } as unknown as InteractiveModeContext["editor"],
+		editor: {
+			addToHistory,
+			clearDraft,
+			getText: () => "",
+			setText: mock(() => {}),
+			pendingImages: [],
+		} as unknown as InteractiveModeContext["editor"],
 		get goalModeEnabled() {
 			return state.goalModeEnabled;
 		},
