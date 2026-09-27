@@ -85,6 +85,8 @@ function createHarness(
 		compactionQueuedMessages: [],
 		updatePendingMessagesDisplay: vi.fn(),
 		showStatus: vi.fn(),
+		notifyComposerStash: vi.fn(),
+		cancelComposerStashNotice: vi.fn(),
 		showWarning: vi.fn(),
 		showError,
 		handlePlanModeCommand,
