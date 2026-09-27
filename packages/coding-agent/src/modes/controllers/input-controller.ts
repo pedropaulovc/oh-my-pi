@@ -17,7 +17,7 @@ import { isSettingsInitialized, settings } from "../../config/settings";
 import { InternalUrlRouter, resolveLocalRoot } from "../../internal-urls";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
-import { extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { type ComposerDraftSnapshot, extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { HistorySearchComponent } from "@oh-my-pi/pi-tui/overlays/history-search";
 import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
@@ -32,7 +32,7 @@ import { createModelMentionSource } from "@oh-my-pi/pi-tui/prompt/model-mention-
 import { createModelBrowserSource } from "../model-browser-source";
 import { parseQueueShorthand, splitQueuedMessages } from "@oh-my-pi/pi-tui/prompt/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
-import type { InteractiveModeContext } from "../../modes/types";
+import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { AgentRegistry } from "../../registry/agent-registry";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
@@ -239,6 +239,66 @@ export class InputController {
 
 	#enhancedPaste?: EnhancedPasteController;
 	#draftText: string | undefined;
+	#stashedDraft?: ComposerDraftSnapshot;
+	#restoredStashText?: string;
+	#restoredStashImages?: ImageContent[];
+
+	/** Only the untouched draft restored from this controller's stash may survive auto-submission. */
+	isRestoredStashDraft(): boolean {
+		if (this.#restoredStashText === undefined) return false;
+		const editor = this.ctx.editor;
+		const images = this.#restoredStashImages ?? [];
+		if (
+			editor.getText() !== this.#restoredStashText ||
+			editor.pendingImages.length !== images.length ||
+			editor.pendingImages.some((image, index) => image !== images[index])
+		) {
+			this.#restoredStashText = undefined;
+			this.#restoredStashImages = undefined;
+			return false;
+		}
+		return true;
+	}
+	/** Ctrl+S switches between an isolated rich draft and a fresh prompt. */
+	handleStash(): void {
+		const editor = this.ctx.editor;
+		this.#restoredStashText = undefined;
+		this.#restoredStashImages = undefined;
+		if (editor.getText().length > 0 || editor.pendingImages.length > 0) {
+			const currentDraft = editor.captureComposerDraft();
+			if (this.#stashedDraft) {
+				editor.restoreComposerDraft(this.#stashedDraft);
+			} else {
+				editor.clearDraft();
+			}
+			this.#stashedDraft = currentDraft;
+		} else if (this.#stashedDraft) {
+			this.#restoreStashIfEmpty();
+		}
+		this.ctx.ui.requestRender();
+	}
+
+	/** Capture the draft that belongs to this submission; later stashes must not be consumed by it. */
+	#restoreOnAccepted(): (() => void) | undefined {
+		const draft = this.#stashedDraft;
+		return draft
+			? () => {
+					if (this.#stashedDraft === draft) this.#restoreStashIfEmpty();
+				}
+			: undefined;
+	}
+
+	#restoreStashIfEmpty(): void {
+		if (!this.#stashedDraft || this.ctx.editor.getText().length > 0 || this.ctx.editor.pendingImages.length > 0)
+			return;
+		const draft = this.#stashedDraft;
+		this.#stashedDraft = undefined;
+		this.ctx.editor.restoreComposerDraft(draft);
+		this.#restoredStashText = this.ctx.editor.getText();
+		this.#restoredStashImages = [...this.ctx.editor.pendingImages];
+		this.ctx.ui.requestRender();
+	}
+
 	#focusedLeftTapListenerInstalled = false;
 	#focusedPasteListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
@@ -644,12 +704,11 @@ export class InputController {
 		for (const key of this.ctx.keybindings.getKeys("app.clipboard.copyLine")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.handleCopyCurrentLine());
 		}
-		const hubKeys = new Set([
-			...this.ctx.keybindings.getKeys("app.agents.hub"),
-			...this.ctx.keybindings.getKeys("app.session.observe"),
-		]);
-		for (const key of hubKeys) {
+		for (const key of this.ctx.keybindings.getKeys("app.agents.hub")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showAgentHub());
+		}
+		for (const key of this.ctx.keybindings.getKeys("app.editor.stash")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => this.handleStash());
 		}
 
 		// Double-tap left arrow on an empty editor: opens the agent hub from the
@@ -673,6 +732,10 @@ export class InputController {
 		this.#setupEnhancedPaste();
 
 		this.ctx.editor.onChange = (text: string) => {
+			if (this.#restoredStashText !== undefined && text !== this.#restoredStashText) {
+				this.#restoredStashText = undefined;
+				this.#restoredStashImages = undefined;
+			}
 			this.#draftText = text;
 			const wasBashMode = this.ctx.isBashMode;
 			const wasPythonMode = this.ctx.isPythonMode;
@@ -868,6 +931,7 @@ export class InputController {
 			text = this.#compactDraftImages(text.trim());
 			const hasPendingImages = this.ctx.editor.pendingImages.length > 0;
 			if ((!isSettingsInitialized() || cfgEmojiAutocomplete.get(settings)) && text) text = expandEmoticons(text);
+			const restoreOnAccepted = this.#restoreOnAccepted();
 
 			// Focused subagent session: the editor is a plain chat box for it.
 			// Everything below (continue shortcuts, slash/bash/python, loop,
@@ -904,6 +968,7 @@ export class InputController {
 						started: true,
 						synthetic: true,
 						userInitiated: true,
+						onAccepted: restoreOnAccepted,
 					});
 				}
 				return;
@@ -920,6 +985,7 @@ export class InputController {
 				const result = await runner.emitInput(text, inputImages, "interactive");
 				if (result?.handled) {
 					this.ctx.editor.clearDraft();
+					restoreOnAccepted?.();
 					return;
 				}
 				if (result?.text !== undefined) {
@@ -959,6 +1025,7 @@ export class InputController {
 					historyText: text,
 					images: inputImages,
 					imageLinks: inputImageLinks,
+					onAccepted: restoreOnAccepted,
 				});
 				return;
 			}
@@ -966,12 +1033,14 @@ export class InputController {
 			// Handle built-in slash commands
 			if (text) {
 				this.#recordSlashCommandUsage(text);
-				const input =
-					(inputImages?.length ?? 0) > 0 || (inputImageLinks?.length ?? 0) > 0
-						? { images: inputImages, imageLinks: inputImageLinks }
-						: undefined;
+				const input = { images: inputImages, imageLinks: inputImageLinks, onAccepted: restoreOnAccepted };
 				const slashResult = await executeBuiltinSlashCommand(text, { ctx: this.ctx, input, draftDetached });
 				if (slashResult === true) {
+					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
+					restoreOnAccepted?.();
+					return;
+				}
+				if (typeof slashResult === "object" && slashResult.pending) {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 					return;
 				}
@@ -1008,6 +1077,7 @@ export class InputController {
 				// No local render: the prompt comes back from the host as a
 				// collab-prompt event/entry and renders with the author badge.
 				this.ctx.collabGuest.sendPrompt(text, images);
+				restoreOnAccepted?.();
 				return;
 			}
 
@@ -1024,9 +1094,10 @@ export class InputController {
 				if (this.ctx.session.isCompacting) {
 					const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 					this.ctx.queueCompactionMessage(text, "steer", images);
+					restoreOnAccepted?.();
 					return;
 				}
-				if (await this.#invokeSkillCommand(text, "steer", inputImages, inputImageLinks)) {
+				if (await this.#invokeSkillCommand(text, "steer", inputImages, inputImageLinks, restoreOnAccepted)) {
 					// The dispatch above ran the turn inline without resolving the input
 					// callback, so nothing re-enters `getUserInput` to arm the next
 					// iteration. Arm it here, now that the turn has settled.
@@ -1049,7 +1120,8 @@ export class InputController {
 						this.ctx.editor.setText(text);
 						return;
 					}
-					this.ctx.editor.addToHistory(text);
+					this.ctx.editor.clearDraft(text);
+					restoreOnAccepted?.();
 					await this.ctx.handleBashCommand(command, isExcluded);
 					this.ctx.isBashMode = false;
 					this.ctx.updateEditorBorderColor();
@@ -1070,7 +1142,8 @@ export class InputController {
 						this.ctx.editor.setText(text);
 						return;
 					}
-					this.ctx.editor.addToHistory(text);
+					this.ctx.editor.clearDraft(text);
+					restoreOnAccepted?.();
 					await this.ctx.handlePythonCommand(code, isExcluded);
 					this.ctx.isPythonMode = false;
 					this.ctx.updateEditorBorderColor();
@@ -1088,6 +1161,7 @@ export class InputController {
 				// as loopPrompt while the drain executes it locally — and idle
 				// submissions never arm commands.
 				if (submittedMode === "loop" && !this.#isLocalExtensionCommand(text)) this.ctx.setLoopPrompt(text);
+				restoreOnAccepted?.();
 				return;
 			}
 
@@ -1097,7 +1171,11 @@ export class InputController {
 			if (this.#isLocalExtensionCommand(text)) {
 				this.ctx.editor.clearDraft(text);
 				try {
-					await this.ctx.session.prompt(text, { images: inputImages });
+					const forwarded = await this.ctx.session.prompt(text, {
+						images: inputImages,
+						onAccepted: restoreOnAccepted,
+					});
+					if (!forwarded) restoreOnAccepted?.();
 				} catch (error) {
 					if (inputImages && inputImages.length > 0) {
 						this.ctx.editor.pendingImages = [...inputImages];
@@ -1129,9 +1207,15 @@ export class InputController {
 				try {
 					const forwarded = await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() =>
+							this.ctx.session.prompt(text, {
+								streamingBehavior: "steer",
+								images,
+								onAccepted: restoreOnAccepted,
+							}),
 						{ imageCount: images?.length ?? 0 },
 					);
+					if (!forwarded) restoreOnAccepted?.();
 					// An inline `/loop` body arms the loop only after dispatch
 					// confirms it was forwarded: arming before the await would
 					// retain a body whose dispatch rejects, resubmitting a failed
@@ -1187,6 +1271,7 @@ export class InputController {
 						images,
 						imageLinks: inputImageLinks,
 						streamingBehavior: "steer",
+						onAccepted: restoreOnAccepted,
 					},
 					{ clearEditor: false },
 				);
@@ -1211,11 +1296,17 @@ export class InputController {
 				try {
 					const forwarded = await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() =>
+							this.ctx.session.prompt(text, {
+								streamingBehavior: "steer",
+								images,
+								onAccepted: restoreOnAccepted,
+							}),
 						{
 							imageCount: images?.length ?? 0,
 						},
 					);
+					if (!forwarded) restoreOnAccepted?.();
 					// The idle block above already armed this body synchronously.
 					// A locally-consumed dispatch starts no turn: park the armed
 					// loop instead of resubmitting a local action on next idle.
@@ -1269,6 +1360,7 @@ export class InputController {
 	/** Submit editor text to the focused subagent session (chat-only focus policy). */
 	async #submitToFocusedSession(text: string, streamingBehavior: "steer" | "followUp"): Promise<void> {
 		const target = this.ctx.viewSession;
+		const restoreOnAccepted = this.#restoreOnAccepted();
 		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
 		const imageLinks =
 			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
@@ -1289,6 +1381,7 @@ export class InputController {
 				this.#recordSlashCommandUsage(text);
 				if ((await executeBuiltinSlashCommand(text, { ctx: this.ctx })) === true) {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
+					restoreOnAccepted?.();
 					return;
 				}
 			}
@@ -1302,9 +1395,14 @@ export class InputController {
 		this.ctx.editor.clearDraft(text);
 		try {
 			// prompt() handles idle (new turn) and streaming (queues per streamingBehavior).
-			await this.ctx.withLocalSubmission(text, () => target.prompt(text, { streamingBehavior, images }), {
-				imageCount: images?.length ?? 0,
-			});
+			const forwarded = await this.ctx.withLocalSubmission(
+				text,
+				() => target.prompt(text, { streamingBehavior, images, onAccepted: restoreOnAccepted }),
+				{
+					imageCount: images?.length ?? 0,
+				},
+			);
+			if (!forwarded) restoreOnAccepted?.();
 		} catch (error) {
 			// Hand the message back, mirroring the main submit error path: restore
 			// pasted images so the user can retry an image-only or text+image draft.
@@ -1493,11 +1591,19 @@ export class InputController {
 		streamingBehavior: "steer" | "followUp",
 		images?: ImageContent[],
 		imageLinks?: (string | undefined)[],
+		onAccepted?: () => void,
 	): Promise<boolean> {
 		if (!isKnownSkillCommand(this.ctx, text)) return false;
 		const draftImages = images && images.length > 0 ? [...images] : undefined;
 		const draftImageLinks = draftImages && imageLinks && imageLinks.length > 0 ? [...imageLinks] : undefined;
+		let accepted = false;
+		const acceptedSubmission = () => {
+			accepted = true;
+			onAccepted?.();
+		};
 		const restoreDraft = () => {
+			// Dispatch may reject during post-turn recovery after accepting the skill.
+			if (accepted) return;
 			if (draftImages && draftImages.length > 0) {
 				this.ctx.editor.pendingImages = [...draftImages];
 				this.ctx.editor.pendingImageLinks = draftImageLinks
@@ -1516,6 +1622,7 @@ export class InputController {
 				imageLinks: draftImageLinks,
 				optimistic: true,
 				propagateErrors: true,
+				...(onAccepted ? { onAccepted: acceptedSubmission } : {}),
 			});
 			if (!dispatched) restoreDraft();
 			return dispatched;
@@ -1545,11 +1652,16 @@ export class InputController {
 	}
 
 	/** Queue `/queue` input behind an active turn, or start it immediately when idle. */
-	async handleQueueCommand(text: string): Promise<void> {
-		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
+	async handleQueueCommand(
+		text: string,
+		input?: Pick<SubmittedUserInput, "images" | "imageLinks" | "onAccepted">,
+	): Promise<void> {
+		const images =
+			input?.images ?? (this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined);
 		const imageLinks =
-			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
-		await this.#queueForYield(text, { images, imageLinks });
+			input?.imageLinks ??
+			(images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined);
+		await this.#queueForYield(text, { images, imageLinks, onAccepted: input?.onAccepted });
 	}
 
 	async #queueForYield(
@@ -1558,6 +1670,7 @@ export class InputController {
 			historyText?: string;
 			images?: ImageContent[];
 			imageLinks?: (string | undefined)[];
+			onAccepted?: () => void;
 		},
 	): Promise<void> {
 		const splitMessages = splitQueuedMessages(text);
@@ -1575,6 +1688,42 @@ export class InputController {
 			: images
 				? images.map(() => undefined)
 				: undefined;
+		let firstAccepted = false;
+		let failedQueueText: string | undefined;
+		let failedQueueAfterAcceptance: string | undefined;
+		const awaitingStash = this.#stashedDraft;
+		const restoreOnAccepted = options.onAccepted ?? this.#restoreOnAccepted();
+		const formatQueueText = (remaining: string[]) =>
+			remaining.length === 1
+				? `=> ${remaining[0]}`
+				: `=>\n${remaining.map((message, index) => `${index + 1}. ${message.replaceAll("\n", "\n   ")}`).join("\n")}`;
+		const appendQueueText = (text: string) => {
+			const draft = this.ctx.editor.captureComposerDraft();
+			this.ctx.editor.restoreComposerDraft({
+				...draft,
+				editor: { ...draft.editor, text: [draft.editor.text, text].filter(Boolean).join("\n\n") },
+			});
+		};
+		const acceptedFirst = () => {
+			firstAccepted = true;
+			if (
+				awaitingStash &&
+				this.#stashedDraft === awaitingStash &&
+				failedQueueText &&
+				this.ctx.editor.getText() === failedQueueText &&
+				(this.ctx.editor.pendingImages.length === 0 ||
+					(this.ctx.editor.pendingImages.length === images?.length &&
+						this.ctx.editor.pendingImages.every((image, index) => image === images?.[index])))
+			) {
+				// The next queue entry failed before the first was accepted.
+				// Restore the rich stash without dropping the unsent entry.
+				this.ctx.editor.clearDraft();
+				restoreOnAccepted?.();
+				if (failedQueueAfterAcceptance) appendQueueText(failedQueueAfterAcceptance);
+			} else {
+				restoreOnAccepted?.();
+			}
+		};
 		this.ctx.editor.clearDraft(options.historyText);
 
 		if (this.ctx.session.isCompacting) {
@@ -1585,6 +1734,7 @@ export class InputController {
 					images: index === 0 ? images : undefined,
 				});
 			}
+			acceptedFirst();
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.showStatus(
 				messages.length === 1
@@ -1597,6 +1747,7 @@ export class InputController {
 
 		const startImmediately = !this.ctx.session.isStreaming && this.ctx.session.queuedMessageCount === 0;
 		let queuedCount = 0;
+		let firstScheduled = false;
 		try {
 			if (startImmediately && this.ctx.onInputCallback) {
 				const first = messages[0] ?? "";
@@ -1605,8 +1756,10 @@ export class InputController {
 					images,
 					imageLinks,
 					streamingBehavior: "followUp",
+					onAccepted: acceptedFirst,
 				});
 				this.ctx.onInputCallback(submission);
+				firstScheduled = true;
 				queuedCount = 1;
 			}
 			while (queuedCount < messages.length) {
@@ -1619,9 +1772,11 @@ export class InputController {
 							await this.ctx.session.prompt(message, {
 								images: queuedImages,
 								streamingBehavior: "followUp",
+								onAccepted: acceptedFirst,
 							});
 						} else {
 							await this.ctx.session.followUp(message, queuedImages);
+							if (queuedCount === 0) acceptedFirst();
 						}
 					},
 					{ imageCount: queuedImages?.length ?? 0 },
@@ -1629,7 +1784,8 @@ export class InputController {
 				queuedCount++;
 			}
 		} catch (error) {
-			if (queuedCount === 0) {
+			const acceptedCount = Math.max(queuedCount, firstAccepted ? 1 : 0);
+			if (acceptedCount === 0) {
 				this.ctx.editor.setText(originalDraft);
 				if (images) {
 					this.ctx.editor.pendingImages = images;
@@ -1637,14 +1793,31 @@ export class InputController {
 					this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
 				}
 			} else {
-				const remaining = messages.slice(queuedCount);
-				const restored =
-					remaining.length === 1
-						? `=> ${remaining[0]}`
-						: `=>\n${remaining
-								.map((message, index) => `${index + 1}. ${message.replaceAll("\n", "\n   ")}`)
-								.join("\n")}`;
-				this.ctx.editor.setText(restored);
+				const remaining = messages.slice(acceptedCount);
+				const pendingFirst = firstScheduled && !firstAccepted;
+				const toRestore = pendingFirst ? [messages[0] ?? "", ...remaining] : remaining;
+				if (toRestore.length > 0) {
+					const restored = formatQueueText(toRestore);
+					// Until the first message is accepted, show it with the failed
+					// entries so an aborted pending turn cannot strand its draft.
+					if (pendingFirst && !this.ctx.editor.getText() && this.ctx.editor.pendingImages.length === 0) {
+						failedQueueText = restored;
+						failedQueueAfterAcceptance = remaining.length > 0 ? formatQueueText(remaining) : undefined;
+					}
+					if (awaitingStash && firstAccepted) {
+						// The accepted first entry may already have restored a rich draft.
+						appendQueueText(restored);
+					} else {
+						// Preserve the pre-stash queue recovery behavior when no rich
+						// draft was restored (including an unaccepted first entry).
+						this.ctx.editor.setText(restored);
+					}
+					if (pendingFirst && images && failedQueueText === restored) {
+						this.ctx.editor.pendingImages = [...images];
+						this.ctx.editor.pendingImageLinks = imageLinks ? [...imageLinks] : images.map(() => undefined);
+						this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+					}
+				}
 			}
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
@@ -1671,6 +1844,7 @@ export class InputController {
 		const imageLinks =
 			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
 		if (!text && !images) return;
+		const restoreOnAccepted = this.#restoreOnAccepted();
 
 		// Focused subagent session: follow-ups go to it; non-chat input is gated.
 		if (this.ctx.focusedAgentId) {
@@ -1686,13 +1860,19 @@ export class InputController {
 		if (this.ctx.session.isCompacting) {
 			const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
 			this.ctx.queueCompactionMessage(text, "followUp", images);
+			restoreOnAccepted?.();
 			return;
 		}
 
 		if (text) {
-			const input = (images?.length ?? 0) > 0 || (imageLinks?.length ?? 0) > 0 ? { images, imageLinks } : undefined;
+			const input = { images, imageLinks, onAccepted: restoreOnAccepted };
 			const slashResult = await executeBuiltinSlashCommand(text, { ctx: this.ctx, input });
 			if (slashResult === true) {
+				if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
+				restoreOnAccepted?.();
+				return;
+			}
+			if (typeof slashResult === "object" && slashResult.pending) {
 				if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 				return;
 			}
@@ -1707,7 +1887,7 @@ export class InputController {
 		// Skill commands invoke through the custom-message path regardless of
 		// which keybinding submitted them. Enter routes them as `steer`;
 		// Ctrl+Enter (this handler) routes them as `followUp`.
-		if (text && (await this.#invokeSkillCommand(text, "followUp", images, imageLinks))) {
+		if (text && (await this.#invokeSkillCommand(text, "followUp", images, imageLinks, restoreOnAccepted))) {
 			return;
 		}
 
@@ -1728,11 +1908,17 @@ export class InputController {
 		if (this.ctx.session.isStreaming) {
 			this.ctx.editor.clearDraft(text);
 			try {
-				await this.ctx.withLocalSubmission(
+				const forwarded = await this.ctx.withLocalSubmission(
 					text,
-					() => this.ctx.session.prompt(text, { streamingBehavior: "followUp", images }),
+					() =>
+						this.ctx.session.prompt(text, {
+							streamingBehavior: "followUp",
+							images,
+							onAccepted: restoreOnAccepted,
+						}),
 					{ imageCount: images?.length ?? 0 },
 				);
+				if (!forwarded) restoreOnAccepted?.();
 			} catch (error) {
 				restoreOnError(error);
 			}
@@ -1744,9 +1930,14 @@ export class InputController {
 		// Not streaming — just submit normally
 		this.ctx.editor.clearDraft(text);
 		try {
-			await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text, { images }), {
-				imageCount: images?.length ?? 0,
-			});
+			const forwarded = await this.ctx.withLocalSubmission(
+				text,
+				() => this.ctx.session.prompt(text, { images, onAccepted: restoreOnAccepted }),
+				{
+					imageCount: images?.length ?? 0,
+				},
+			);
+			if (!forwarded) restoreOnAccepted?.();
 		} catch (error) {
 			restoreOnError(error);
 		}
