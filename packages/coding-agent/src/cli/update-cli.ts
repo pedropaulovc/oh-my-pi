@@ -21,7 +21,6 @@ import {
 	unsupportedProxyMessage,
 	withTimeoutSignal,
 } from "../utils/fetch-timeout";
-import { CliUsageError } from "./usage-error";
 import {
 	DEFAULT_NPM_REGISTRY,
 	loadNpmRegistryResolver,
@@ -29,6 +28,7 @@ import {
 	type NpmRegistryResolver,
 	npmRegistryPackageUrl,
 } from "./npm-registry";
+import { CliUsageError } from "./usage-error";
 
 import { cfgUpdateChannel } from "../modes/settings";
 

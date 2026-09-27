@@ -60,8 +60,7 @@ export type { AssistantMessageEventStream } from "./utils/event-stream";
 
 /**
  * Ceiling on the output-token count omp requests from any OpenAI-family endpoint
- * (openai-responses, azure/xai responses, and openai-completions). Mirrors
- * Anthropic's {@link CLAUDE_CODE_MAX_OUTPUT_TOKENS}.
+ * (openai-responses, azure/xai responses, and openai-completions).
  *
  * Catalog `maxTokens` frequently reflects a model's context window rather than a
  * given upstream's real per-request output cap. OpenRouter, for instance,
@@ -639,9 +638,10 @@ export interface StreamOptions {
 	 */
 	fallbackCreditRedemption?: AnthropicFallbackCreditHandle;
 	/**
-	 * Anthropic subscription slow-mode state machine (Claude Code `/low-priority`).
-	 * Consulted only for first-party OAuth `anthropic` requests: stamps
-	 * `anthropic-usage-limit: slow` while active and decides capacity waits.
+	 * Anthropic subscription usage-limit state machine (wrap-up allowance and
+	 * Claude Code's `/low-priority`). Consulted only for first-party OAuth
+	 * `anthropic` requests: stamps `anthropic-usage-limit: slow` while active,
+	 * observes limit headers, and decides capacity waits.
 	 */
 	anthropicSlowMode?: AnthropicSlowModeHooks;
 }

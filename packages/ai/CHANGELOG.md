@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [18.3.4] - 2026-09-27
+
+### Fixed
+
+- Fixed Anthropic OAuth requests capping output at 64k tokens; they now request the model's full ceiling (128k on Opus 5.5), matching Claude Code and API-key requests
+
+## [18.3.2] - 2026-09-25
+
+### Fixed
+
+- Fixed capped Anthropic and Bedrock Claude requests with thinking enabled, including on-demand compaction, ending at `max_tokens` with no answer; every capped request now gets its effort's thinking budget on top of the requested output ([#13300](https://github.com/can1357/oh-my-pi/pull/13300) by [@alphastorm](https://github.com/alphastorm))
+
 ## [18.3.1] - 2026-09-25
 
 ### Added
