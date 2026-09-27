@@ -914,6 +914,8 @@ export function describeSubagentHud(sessions: ObservableSession[]): NativeNode {
 }
 
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
+/** How long the empty composer reports a successfully stashed prompt. */
+const COMPOSER_STASH_NOTICE_MS = 1_500;
 
 /** Item rows a collapsed jump list shows before the expander. */
 const SUBAGENT_HUD_COLLAPSED_LIMIT = 3;
@@ -1107,6 +1109,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#todoAutoClearTimer: NodeJS.Timeout | undefined;
 	#todoAutoClearGeneration = 0;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
+	#composerStashNoticeTimer: NodeJS.Timeout | undefined;
 	readonly #judgmentBatchProgressHud = new JudgmentBatchProgressHud();
 	readonly #downloadActivityHud = new DownloadActivityHud(() => this.ui.requestRender());
 	readonly #judgmentBatchProgressClearTimers = new Map<string, NodeJS.Timeout>();
@@ -1512,6 +1515,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.pendingMessagesContainer.disposeChildren();
 		this.#clearJudgmentBatchProgress();
 		this.#cancelModelCycleClearTimer();
+		this.#clearComposerStashNoticeTimer();
 		this.modelCycleContainer.disposeChildren();
 		this.deferredCommandContainer.disposeChildren();
 		this.#pendingCommandOutput = [];
@@ -3538,8 +3542,33 @@ export class InteractiveMode implements InteractiveModeContext {
 		};
 	}
 
+	/** Show a transient confirmation in the empty composer's right-aligned placeholder. */
+	notifyComposerStash(): void {
+		this.#clearComposerStashNoticeTimer();
+		this.#composerStashNoticeTimer = setTimeout(() => {
+			this.#composerStashNoticeTimer = undefined;
+			this.ui.requestRender();
+		}, COMPOSER_STASH_NOTICE_MS);
+		this.#composerStashNoticeTimer.unref?.();
+		this.ui.requestRender();
+	}
+
+	/** Cancel stash feedback when the saved draft is restored to the composer. */
+	cancelComposerStashNotice(): void {
+		if (!this.#composerStashNoticeTimer) return;
+		this.#clearComposerStashNoticeTimer();
+		this.ui.requestRender();
+	}
+
+	#clearComposerStashNoticeTimer(): void {
+		if (!this.#composerStashNoticeTimer) return;
+		clearTimeout(this.#composerStashNoticeTimer);
+		this.#composerStashNoticeTimer = undefined;
+	}
+
 	/** Placeholder for the empty composer; see `COMPOSER_HINTS` for the registered hints. */
 	#composerHint(): string | undefined {
+		if (this.#composerStashNoticeTimer) return theme.fg("success", "Prompt stashed");
 		return resolveComposerHint({
 			runningAgents: this.#runningSubagentCount,
 			focusedOnAgent: this.focusedAgentId !== undefined,
@@ -6473,6 +6502,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#clearJudgmentBatchProgress();
 		this.#downloadActivityHud.dispose();
 		this.#cancelTodoAutoClearTimer();
+		this.#clearComposerStashNoticeTimer();
 		this.#cancelObserverUiSyncTimer();
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
