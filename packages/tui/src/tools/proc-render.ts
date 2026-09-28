@@ -12,7 +12,13 @@ import {
 } from "../render/render-utils";
 import type { Theme } from "../theme/theme";
 import type { RenderResultOptions } from "./renderer";
-import type { AgentActivitySnapshot, CoordinationDetails, JobRetuneOutcome, JobRetuneStatus, JobSnapshot } from "./wait";
+import type {
+	AgentActivitySnapshot,
+	CoordinationDetails,
+	JobRetuneOutcome,
+	JobRetuneStatus,
+	JobSnapshot,
+} from "./wait";
 import type { IrcDeliveryReceipt } from "./irc";
 import type { DaemonMonitorWatcher, DaemonSnapshot } from "./daemon";
 import { styleTerminalRow } from "./terminal-output";
@@ -216,7 +222,11 @@ export function renderProcWrite(
 		const title = `Proc ${action} ${safe(id || "…")}`;
 		const daemon = details && "daemon" in details ? details.daemon : undefined;
 		const retuned = details && "op" in details && details.op === "monitor" ? (details.retuned ?? []) : [];
-		const meta = daemon ? daemonMeta(daemon, theme) : (action === "mode" || action === "progress") && content ? [safe(content)] : [];
+		const meta = daemon
+			? daemonMeta(daemon, theme)
+			: (action === "mode" || action === "progress") && content
+				? [safe(content)]
+				: [];
 		if (daemon && details && "action" in details && details.action === "progress") {
 			// wake/ambient/off/no-op must be distinguishable at a glance; details carry the authoritative state.
 			meta.unshift(
