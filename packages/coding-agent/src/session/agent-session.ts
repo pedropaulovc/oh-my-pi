@@ -7149,6 +7149,7 @@ export class AgentSession implements SettingsScope {
 				attribution: promptAttribution,
 			});
 			outcome.sessionClaimed = true;
+			options?.onAccepted?.();
 			return true;
 		}
 
@@ -7206,6 +7207,7 @@ export class AgentSession implements SettingsScope {
 				},
 			});
 			outcome.sessionClaimed = true;
+			options?.onAccepted?.();
 			return true;
 		}
 
@@ -7289,7 +7291,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	async promptCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
-		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice"> & {
+		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onAccepted"> & {
 			queueChipText?: string;
 			queueOnly?: boolean;
 		},
@@ -7299,7 +7301,7 @@ export class AgentSession implements SettingsScope {
 
 	async #promptCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
-		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice"> & {
+		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onAccepted"> & {
 			queueChipText?: string;
 			queueOnly?: boolean;
 		},
@@ -7321,7 +7323,7 @@ export class AgentSession implements SettingsScope {
 	async #dispatchCustomPrompt<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
 		options:
-			| (Pick<PromptOptions, "streamingBehavior" | "toolChoice"> & {
+			| (Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onAccepted"> & {
 					queueChipText?: string;
 					queueOnly?: boolean;
 			  })
@@ -7364,6 +7366,7 @@ export class AgentSession implements SettingsScope {
 			}
 			await this.#queueCustomMessage(message, streamingBehavior, options.queueChipText);
 			outcome.sessionClaimed = true;
+			options.onAccepted?.();
 			return true;
 		}
 		if (this.isStreaming) {
@@ -7380,6 +7383,7 @@ export class AgentSession implements SettingsScope {
 			}
 			await this.#queueCustomMessage(message, streamingBehavior, options?.queueChipText);
 			outcome.sessionClaimed = true;
+			options.onAccepted?.();
 			return true;
 		}
 
@@ -7531,7 +7535,10 @@ export class AgentSession implements SettingsScope {
 	async #promptWithMessage(
 		message: AgentMessage,
 		expandedText: string,
-		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace"> & {
+		options?: Pick<
+			PromptOptions,
+			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onAccepted"
+		> & {
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 			acceptTerminalEmptyStop?: boolean;
@@ -7745,9 +7752,17 @@ export class AgentSession implements SettingsScope {
 			if (planReferenceMessage) {
 				this.#planReferenceSent = true;
 			}
+			const unsubscribeAccepted = options?.onAccepted
+				? this.agent.subscribe(event => {
+						if (event.type !== "message_start" || event.message !== message) return;
+						unsubscribeAccepted?.();
+						options?.onAccepted?.();
+					})
+				: undefined;
 			try {
 				await this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions);
 			} finally {
+				unsubscribeAccepted?.();
 				this.#stats.setPendingSnapshot(undefined);
 			}
 			if (!options?.skipPostPromptRecoveryWait) {
@@ -7962,6 +7977,7 @@ export class AgentSession implements SettingsScope {
 				timestamp: submittedAt,
 				attribution: options?.attribution,
 			});
+			options?.onAccepted?.();
 			return;
 		}
 		// Synthetic branch: agent-initiated hidden developer message. Bypass
@@ -7988,6 +8004,7 @@ export class AgentSession implements SettingsScope {
 			// user's prompt anchor, matching the live agent_start clear.
 			synthetic: true,
 		});
+		options.onAccepted?.();
 		this.#scheduleIdleQueueDrain();
 	}
 
