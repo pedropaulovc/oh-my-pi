@@ -1,9 +1,15 @@
+import { $ } from "bun";
 import { describe, expect, it } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import {
 	type ForkReleaseSummary,
+	type MaintenanceFailure,
 	dogfoodTagFor,
 	findEquivalentMainBoundary,
 	hasActiveDogfoodRun,
+	integrateForkMain,
 	latestDogfoodRelease,
 	orderIntegrationTips,
 	parsePrivateBranches,
@@ -13,6 +19,68 @@ import {
 } from "./fork-maintenance";
 
 const BASE = "refs/remotes/upstream/main";
+
+describe("integrateForkMain", () => {
+	it("keeps a fork-private merge of upstream as the unchanged dogfood base", async () => {
+		const dir = await mkdtemp(path.join(tmpdir(), "omp-fork-main-"));
+		const repo = path.join(dir, "repo");
+		const origin = path.join(dir, "origin.git");
+		await mkdir(repo);
+		const git = (...args: string[]) =>
+			$`git ${args}`
+				.cwd(repo)
+				.quiet()
+				.env({
+					...process.env,
+					GIT_CONFIG_GLOBAL: "/dev/null",
+					GIT_CONFIG_SYSTEM: "/dev/null",
+					GIT_AUTHOR_NAME: "maintenance test",
+					GIT_AUTHOR_EMAIL: "maintenance@test.invalid",
+					GIT_COMMITTER_NAME: "maintenance test",
+					GIT_COMMITTER_EMAIL: "maintenance@test.invalid",
+				});
+		try {
+			await git("init", "-b", "main");
+			await git("init", "--bare", origin);
+			await Bun.write(path.join(repo, "base.txt"), "shared\n");
+			await git("add", "base.txt");
+			await git("commit", "-m", "shared base");
+			await git("checkout", "-b", "upstream");
+			await Bun.write(path.join(repo, "upstream.txt"), "upstream change\n");
+			await git("add", "upstream.txt");
+			await git("commit", "-m", "upstream change");
+			const upstreamSha = (await git("rev-parse", "HEAD").text()).trim();
+			await git("checkout", "main");
+			await Bun.write(path.join(repo, "fork.txt"), "fork-only updater identity\n");
+			await git("add", "fork.txt");
+			await git("commit", "-m", "fork-only updater");
+			const forkSha = (await git("rev-parse", "HEAD").text()).trim();
+			await git("merge", "--no-ff", "-m", "integrate upstream", "upstream");
+			const mergedSha = (await git("rev-parse", "HEAD").text()).trim();
+			await git("update-ref", "refs/remotes/upstream/main", upstreamSha);
+			await git("remote", "add", "origin", origin);
+			await git("push", "origin", "main");
+			await git("update-ref", "refs/remotes/origin/main", mergedSha);
+
+			const failures: MaintenanceFailure[] = [];
+			const notes: string[] = [];
+			const base = await integrateForkMain(repo, upstreamSha, mergedSha, failures, notes);
+			expect(base).toBe(mergedSha);
+			expect(failures).toEqual([]);
+			expect(notes).toEqual([`main already integrates upstream at ${mergedSha}`]);
+			expect((await git("rev-parse", "main").text()).trim()).toBe(mergedSha);
+			expect((await git("ls-remote", "origin", "refs/heads/main").text()).trim()).toBe(
+				`${mergedSha}\trefs/heads/main`,
+			);
+			await git("merge-base", "--is-ancestor", upstreamSha, base ?? "");
+			await git("merge-base", "--is-ancestor", forkSha, base ?? "");
+			expect((await git("show", `${base}:fork.txt`).text()).trim()).toBe("fork-only updater identity");
+			expect((await git("show", `${base}:upstream.txt`).text()).trim()).toBe("upstream change");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("parsePrivateBranches", () => {
 	it("splits on commas, newlines and spaces, strips refs/heads/, and de-duplicates", () => {

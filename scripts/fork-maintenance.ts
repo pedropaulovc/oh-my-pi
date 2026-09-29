@@ -962,6 +962,51 @@ async function emitOutputs(entries: Record<string, string>): Promise<void> {
 	await fs.appendFile(outputFile, body);
 }
 
+/**
+ * Keep a fork main that already contains upstream (including through a merge)
+ * byte-for-byte intact; only the divergent case uses the existing rebase path.
+ * `repo` permits exercising the same Git operations against an isolated repo.
+ */
+export async function integrateForkMain(
+	repo: string,
+	upstreamMain: string,
+	originMain: string,
+	failures: MaintenanceFailure[],
+	notes: string[],
+): Promise<string | null> {
+	const gitHere = (...args: string[]) => gitTry("-C", repo, ...args);
+	const ancestry = await gitHere("merge-base", "--is-ancestor", upstreamMain, originMain);
+	if (ancestry.ok) {
+		notes.push(`${MAIN_BRANCH} already integrates upstream at ${originMain}`);
+		return originMain;
+	}
+	if (ancestry.code !== 1) throw new Error(`could not inspect fork main ancestry: ${failureDetail(ancestry)}`);
+
+	const mainRebase = await gitHere("rebase", `refs/remotes/upstream/${MAIN_BRANCH}`, MAIN_BRANCH);
+	if (mainRebase.ok) {
+		const resolved = await gitHere("rev-parse", "--verify", "--quiet", `refs/heads/${MAIN_BRANCH}^{commit}`);
+		const mainSha = resolved.ok ? resolved.stdout.trim() : null;
+		const plan = planPush([{ branch: MAIN_BRANCH, expected: originMain, target: mainSha ?? originMain }]);
+		if (plan.args.length > 0) {
+			const pushed = await gitHere(...plan.args);
+			if (pushed.ok) {
+				notes.push(`pushed ${MAIN_BRANCH} at ${mainSha}`);
+				return mainSha;
+			}
+			failures.push({ stage: "push", branches: [MAIN_BRANCH], detail: failureDetail(pushed) });
+			return null;
+		}
+		notes.push(`${MAIN_BRANCH} already up to date`);
+		return mainSha;
+	}
+
+	await gitHere("rebase", "--abort");
+	await gitHere("checkout", "--detach", upstreamMain);
+	await gitHere("branch", "-f", MAIN_BRANCH, originMain);
+	failures.push({ stage: "rebase", branches: [MAIN_BRANCH], detail: failureDetail(mainRebase) });
+	return null;
+}
+
 async function main(): Promise<void> {
 	const options = parseArgs(process.argv.slice(2));
 	const failures: MaintenanceFailure[] = [];
@@ -1019,32 +1064,7 @@ async function main(): Promise<void> {
 	// Fork main first: it is the dogfood base. Candidate branch deltas stay
 	// rooted on upstream main so fork-private maintenance commits never leak
 	// into upstream pull requests.
-	const upstreamIsAncestor = (await gitTry("merge-base", "--is-ancestor", upstreamMain, originMain)).ok;
-	let mainSha: string | null = upstreamIsAncestor ? originMain : null;
-	if (upstreamIsAncestor) {
-		notes.push(`${MAIN_BRANCH} already integrates upstream at ${mainSha}`);
-	} else {
-		const mainRebase = await gitTry("rebase", `refs/remotes/upstream/${MAIN_BRANCH}`, MAIN_BRANCH);
-		if (mainRebase.ok) {
-			mainSha = await revParse(`refs/heads/${MAIN_BRANCH}`);
-			const plan = planPush([{ branch: MAIN_BRANCH, expected: originMain, target: mainSha ?? originMain }]);
-			if (plan.args.length > 0) {
-				const pushed = await gitTry(...plan.args);
-				if (pushed.ok) notes.push(`pushed ${MAIN_BRANCH} at ${mainSha}`);
-				else {
-					failures.push({ stage: "push", branches: [MAIN_BRANCH], detail: failureDetail(pushed) });
-					mainSha = null;
-				}
-			} else {
-				notes.push(`${MAIN_BRANCH} already up to date`);
-			}
-		} else {
-			await gitTry("rebase", "--abort");
-			await gitTry("checkout", "--detach", upstreamMain);
-			await gitTry("branch", "-f", MAIN_BRANCH, originMain);
-			failures.push({ stage: "rebase", branches: [MAIN_BRANCH], detail: failureDetail(mainRebase) });
-		}
-	}
+	const mainSha = await integrateForkMain(process.cwd(), upstreamMain, originMain, failures, notes);
 
 	const tips: IntegrationTip[] = [];
 	for (const group of groups) {
