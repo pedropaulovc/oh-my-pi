@@ -123,6 +123,7 @@ async function createContext() {
 	const retry = vi.fn(async () => true);
 	const abort = vi.fn(async () => {});
 	const session = {
+		messages: [],
 		isStreaming: false,
 		isCompacting: false,
 		isGeneratingHandoff: false,
