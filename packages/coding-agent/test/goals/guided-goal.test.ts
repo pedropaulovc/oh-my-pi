@@ -201,6 +201,7 @@ describe("guided goal setup", () => {
 				await turn.promise;
 				return true;
 			});
+			harness.mode.editor.setText(""); // Enter detaches submitted text before invoking onSubmit.
 			const submission = harness.mode.editor.onSubmit?.("/guided-goal ship [Image #1]");
 			await accepted.promise;
 			expect(harness.mode.editor.getText()).toBe("saved [Image #1]");
@@ -224,6 +225,7 @@ describe("guided goal setup", () => {
 			harness.mode.editor.setText("/guided-goal ship");
 			const pending = Promise.withResolvers<boolean>();
 			vi.spyOn(harness.session, "prompt").mockImplementation(() => pending.promise);
+			harness.mode.editor.setText("");
 			const submission = harness.mode.editor.onSubmit?.("/guided-goal ship");
 			expect(harness.mode.editor.getText()).toBe("");
 			pending.resolve(false);
@@ -245,6 +247,7 @@ describe("guided goal setup", () => {
 			harness.mode.editor.setText("saved draft");
 			harness.mode.editor.handleInput("\x13");
 			harness.mode.editor.setText("/guided-goal ship");
+			harness.mode.editor.setText("");
 			await harness.mode.editor.onSubmit?.("/guided-goal ship");
 			expect(harness.session.agent.peekFollowUpQueue()).toHaveLength(1);
 			expect(harness.mode.editor.getText()).toBe("saved draft");
@@ -264,6 +267,7 @@ describe("guided goal setup", () => {
 			vi.spyOn(harness.session.agent, "followUp").mockImplementationOnce(() => {
 				throw new Error("enqueue failed");
 			});
+			harness.mode.editor.setText("");
 			await harness.mode.editor.onSubmit?.("/guided-goal ship");
 			expect(harness.session.agent.peekFollowUpQueue()).toHaveLength(0);
 			expect(harness.mode.editor.getText()).toBe("/guided-goal ship");
@@ -282,6 +286,7 @@ describe("guided goal setup", () => {
 			harness.mode.editor.setText("saved draft");
 			harness.mode.editor.handleInput("\x13");
 			harness.mode.editor.setText("/guided-goal");
+			harness.mode.editor.setText("");
 			await harness.mode.editor.onSubmit?.("/guided-goal");
 			expect(harness.mode.editor.getText()).toBe("/guided-goal");
 			harness.mode.editor.clearDraft();
