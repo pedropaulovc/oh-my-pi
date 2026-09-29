@@ -812,7 +812,9 @@ function buildContextDetailParts(details: ContextUsageDetails): LegendPart[][] {
 
 function renderContextDetails(details: ContextUsageDetails, theme: Theme): string[] {
 	return buildContextDetailParts(details).map(line =>
-		line.map(part => (part.s === "strong" ? theme.bold(part.t) : part.s ? theme.fg(part.s, part.t) : part.t)).join(""),
+		line
+			.map(part => (part.s === "strong" ? theme.bold(part.t) : part.s ? theme.fg(part.s, part.t) : part.t))
+			.join(""),
 	);
 }
 
