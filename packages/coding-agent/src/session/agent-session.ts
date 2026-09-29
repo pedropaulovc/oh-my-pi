@@ -7209,6 +7209,7 @@ export class AgentSession implements SettingsScope {
 				prependMessages: keywordNotices,
 			});
 			outcome.sessionClaimed = true;
+			options?.onAccepted?.();
 			return true;
 		}
 		outcome.sessionClaimed = await this.#promptWithMessage(preparedMessage, textContent, {
