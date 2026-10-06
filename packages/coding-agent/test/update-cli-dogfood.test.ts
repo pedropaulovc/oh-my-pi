@@ -175,6 +175,7 @@ describe("dogfood asset validation", () => {
 
 	it("pins the download to the fork's own release asset", () => {
 		expect(resolveReleaseBinaryAsset(assetRelease(FORK), TAG, binaryName, { repository: FORK })).toEqual({
+			version: VERSION,
 			url: `https://github.com/${FORK}/releases/download/${TAG}/${binaryName}`,
 			size: Buffer.byteLength(content),
 			digest,
@@ -387,6 +388,31 @@ describe("dogfood update command", () => {
 				fetchImpl: makeFetch(getBinaryName("omp-dogfood"), urls),
 			}),
 		).rejects.toThrow(`has 0 assets named ${getBinaryName()}`);
+		expect(await Bun.file(targetPath).text()).toBe("old dogfood binary");
+	});
+
+	it("fails on a missing dogfood tag instead of falling back to another release", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, "omp-dogfood");
+		await Bun.write(targetPath, "old dogfood binary");
+		const urls: string[] = [];
+		const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+			urls.push(String(input));
+			return new Response("Not Found", { status: 404, statusText: "Not Found" });
+		};
+
+		// The official updater lists releases when npm advertises a version
+		// GitHub has not published; a dogfood version comes from the fork's own
+		// release listing, so a vanished tag must not pick an unvalidated release.
+		await expect(
+			updateViaBinaryAt(targetPath, VERSION, {
+				appName: "omp-dogfood",
+				repository: FORK,
+				githubToken: "",
+				fetchImpl,
+			}),
+		).rejects.toThrow("Failed to fetch GitHub release metadata: Not Found");
+		expect(urls).toEqual([`https://api.github.com/repos/${FORK}/releases/tags/${encodeURIComponent(TAG)}`]);
 		expect(await Bun.file(targetPath).text()).toBe("old dogfood binary");
 	});
 });

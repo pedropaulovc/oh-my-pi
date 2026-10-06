@@ -174,7 +174,10 @@ export interface DogfoodReleaseInfo {
 /** Release description for either update product. */
 export type AnyReleaseInfo = ReleaseInfo | DogfoodReleaseInfo;
 
+/** A release binary the updater can download, resolved from published GitHub release metadata. */
 export interface ReleaseBinaryAsset {
+	/** Release version the asset installs, without the `v` tag prefix. */
+	version: string;
 	url: string;
 	size: number;
 	digest: string;
@@ -356,10 +359,53 @@ export function resolveReleaseBinaryAsset(
 	}
 
 	return {
+		version: expectedTag.replace(/^v/, ""),
 		url: expectedUrl,
 		size: asset.size,
 		digest: `sha256:${digest.toLowerCase()}`,
 	};
+}
+
+/**
+ * Newest published release that is installable on this platform and newer than
+ * `minVersion`, or undefined when the listing holds none.
+ *
+ * The npm dist-tag and the GitHub release channel disagree in both directions.
+ * The pipeline publishes the GitHub release first (`release_npm` needs
+ * `release_github_verify` in `.github/workflows/ci.yml`), so GitHub leads
+ * during a release; and a publish that only half-completes leaves the gap
+ * permanent — 18.2.9 reached npm `latest` with no `v18.2.9` GitHub release at
+ * all (issue #12913). Binary installs therefore install what GitHub actually
+ * published rather than failing on a tag derived from an npm version number.
+ *
+ * Releases whose asset is missing, still uploading, draft, or off-channel are
+ * skipped in favor of an older published one.
+ */
+export function selectFallbackBinaryAsset(
+	releases: unknown,
+	binaryName: string,
+	minVersion: string,
+	options: { allowPrerelease?: boolean } = {},
+): ReleaseBinaryAsset | undefined {
+	if (!Array.isArray(releases)) return undefined;
+	const candidates: Array<{ tag: string; release: unknown }> = [];
+	for (const release of releases) {
+		if (!isRecord(release)) continue;
+		const tag = release.tag_name;
+		if (typeof tag !== "string" || !/^v\d/.test(tag)) continue;
+		if (compareVersions(tag.slice(1), minVersion) <= 0) continue;
+		candidates.push({ tag, release });
+	}
+	candidates.sort((a, b) => compareVersions(b.tag.slice(1), a.tag.slice(1)));
+	for (const { tag, release } of candidates) {
+		try {
+			return resolveReleaseBinaryAsset(release, tag, binaryName, options);
+		} catch {
+			// Draft, off-channel prerelease, or an asset that is missing or still
+			// uploading: keep walking down to an older published release.
+		}
+	}
+	return undefined;
 }
 
 /** GitHub release metadata request; the token is optional and metadata-only. */
@@ -372,27 +418,26 @@ interface GithubMetadataRequest {
 }
 
 /**
- * Fetch and decode GitHub release metadata.
+ * Release metadata request with the shared headers, timeout, and rate-limit mapping.
  *
  * Both products read release metadata the same way — the fork is public, so
  * the token (when present) only buys a higher rate limit, never access.
  */
-async function fetchGithubReleaseMetadata(url: string, request: GithubMetadataRequest): Promise<unknown> {
-	const fetchImpl = request.fetchImpl ?? fetch;
-	const resolvedGitHubToken = request.githubToken ?? (await resolveGitHubToken());
-	const timeoutMs = request.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
+async function fetchReleaseMetadata(
+	url: string,
+	fetchImpl: Fetch,
+	token: string | undefined,
+	timeoutMs: number = RELEASE_METADATA_TIMEOUT_MS,
+): Promise<Response> {
 	const headers: Record<string, string> = {
 		Accept: "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28",
 	};
-	if (resolvedGitHubToken) headers.Authorization = `Bearer ${resolvedGitHubToken}`;
+	if (token) headers.Authorization = `Bearer ${token}`;
 
 	let response: Response;
 	try {
-		response = await fetchImpl(url, {
-			headers,
-			signal: withTimeoutSignal(timeoutMs),
-		});
+		response = await fetchImpl(url, { headers, signal: withTimeoutSignal(timeoutMs) });
 	} catch (err) {
 		if (isTimeoutError(err)) {
 			throw new Error(`Timed out fetching GitHub release metadata after ${Math.round(timeoutMs / 1000)}s`, {
@@ -402,16 +447,26 @@ async function fetchGithubReleaseMetadata(url: string, request: GithubMetadataRe
 		if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
 		throw err;
 	}
-	if ((response.status === 403 && !resolvedGitHubToken) || response.status === 429) {
+	if ((response.status === 403 && !token) || response.status === 429) {
 		throw new Error(
 			"GitHub API rate limit exceeded while fetching release metadata; retry later or set GITHUB_TOKEN or GH_TOKEN",
 		);
 	}
+	return response;
+}
+
+/** Fetch and decode GitHub release metadata that must exist. */
+async function fetchGithubReleaseMetadata(url: string, request: GithubMetadataRequest): Promise<unknown> {
+	const token = request.githubToken ?? (await resolveGitHubToken());
+	const response = await fetchReleaseMetadata(url, request.fetchImpl ?? fetch, token, request.timeoutMs);
 	if (!response.ok) {
 		throw new Error(`Failed to fetch GitHub release metadata: ${response.statusText}`);
 	}
 	return await response.json();
 }
+
+/** Releases scanned when the requested tag has no GitHub release; one page spans months of releases. */
+const RELEASE_LISTING_PAGE_SIZE = 30;
 
 /** Release-asset lookup for a specific published version. */
 interface ReleaseAssetRequest extends GithubMetadataRequest {
@@ -422,17 +477,61 @@ interface ReleaseAssetRequest extends GithubMetadataRequest {
 	allowPrerelease?: boolean;
 }
 
+/**
+ * Resolve the release asset for `expectedVersion`.
+ *
+ * Only the official repository falls back to the newest published release when
+ * the tag is missing ({@link selectFallbackBinaryAsset}): that gap exists because
+ * npm advertises the version. A dogfood version is read from the fork's own
+ * published releases, so a missing tag there fails instead of substituting a
+ * release {@link resolveDogfoodRelease} never validated.
+ */
 async function getReleaseBinaryAsset(request: ReleaseAssetRequest): Promise<ReleaseBinaryAsset> {
 	const repository = request.repository ?? REPO;
+	const fetchImpl = request.fetchImpl ?? fetch;
 	const tag = `v${request.expectedVersion}`;
-	const metadata = await fetchGithubReleaseMetadata(
+	const token = request.githubToken ?? (await resolveGitHubToken());
+	const response = await fetchReleaseMetadata(
 		`${GITHUB_API}/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`,
-		request,
+		fetchImpl,
+		token,
+		request.timeoutMs,
 	);
-	return resolveReleaseBinaryAsset(metadata, tag, request.binaryName, {
+	if (response.ok) {
+		return resolveReleaseBinaryAsset(await response.json(), tag, request.binaryName, {
+			allowPrerelease: request.allowPrerelease,
+			repository,
+		});
+	}
+	if (response.status !== 404 || repository !== REPO) {
+		throw new Error(`Failed to fetch GitHub release metadata: ${response.statusText}`);
+	}
+
+	const listing = await fetchReleaseMetadata(
+		`${GITHUB_API}/repos/${REPO}/releases?per_page=${RELEASE_LISTING_PAGE_SIZE}`,
+		fetchImpl,
+		token,
+		request.timeoutMs,
+	);
+	if (!listing.ok) {
+		throw new Error(
+			`GitHub release ${tag} is not published and listing published releases failed: ${listing.statusText}`,
+		);
+	}
+	const fallback = selectFallbackBinaryAsset(await listing.json(), request.binaryName, VERSION, {
 		allowPrerelease: request.allowPrerelease,
-		repository,
 	});
+	if (!fallback) {
+		throw new Error(
+			`npm advertises ${request.expectedVersion} but GitHub release ${tag} is not published, and no newer published release ships ${request.binaryName}; retry once the release finishes publishing, or reinstall with: ${installerHint()}`,
+		);
+	}
+	console.log(
+		chalk.yellow(
+			`GitHub release ${tag} is not published; installing the newest published binary release v${fallback.version} instead.`,
+		),
+	);
+	return fallback;
 }
 
 /**
@@ -1020,26 +1119,48 @@ async function fetchLatestManifest(
 	const noCanary = () =>
 		new Error(`No canary release has been published for ${pkg} yet. Try \`${APP_NAME} update --stable\`.`);
 
+	const fromPackument = (packument: unknown): Record<string, unknown> => {
+		const distTags = isRecord(packument) ? packument["dist-tags"] : undefined;
+		const version = isRecord(distTags) ? distTags[tag] : undefined;
+		if (typeof version !== "string") {
+			if (channel === "canary") throw noCanary();
+			throw new Error(`Malformed npm registry response for ${pkg}${origin}: missing dist-tags.${tag}`);
+		}
+		const versions = isRecord(packument) ? packument.versions : undefined;
+		const manifest = isRecord(versions) ? versions[version] : undefined;
+		if (!isRecord(manifest)) {
+			throw new Error(`Malformed npm registry response for ${pkg}${origin}: missing versions.${version}`);
+		}
+		return manifest;
+	};
+	const isPackument = (body: unknown): boolean => isRecord(body) && isRecord(body["dist-tags"]);
+
 	let response = await get(npmRegistryPackageUrl(registry, pkg, tag));
 	let data: unknown;
-	if (!response.ok && origin && [400, 404, 405].includes(response.status)) {
+	let useFullPackument = false;
+	if (response.ok) {
+		try {
+			data = await response.json();
+		} catch (err) {
+			// Only a malformed body falls back; body-read timeouts and resets must surface.
+			if (!origin || !(err instanceof SyntaxError)) throw err;
+			useFullPackument = true;
+		}
+		if (isPackument(data)) {
+			// Some registries (e.g. Sonatype Nexus) answer the dist-tag shortcut
+			// with the full packument instead of the tagged version manifest.
+			data = fromPackument(data);
+		} else if (origin && !(isRecord(data) && typeof data.version === "string")) {
+			useFullPackument = true;
+		}
+	} else if (origin && [400, 404, 405].includes(response.status)) {
+		useFullPackument = true;
+	}
+	if (useFullPackument) {
 		// Not every registry implementation serves npmjs's `/<pkg>/<dist-tag>`
 		// shortcut; the full packument is the one endpoint all of them share.
 		response = await get(npmRegistryPackageUrl(registry, pkg));
-		if (response.ok) {
-			const packument: unknown = await response.json();
-			const distTags = isRecord(packument) ? packument["dist-tags"] : undefined;
-			const version = isRecord(distTags) ? distTags[tag] : undefined;
-			if (typeof version !== "string") {
-				if (channel === "canary") throw noCanary();
-				throw new Error(`Malformed npm registry response for ${pkg}${origin}: missing dist-tags.${tag}`);
-			}
-			const versions = isRecord(packument) ? packument.versions : undefined;
-			data = isRecord(versions) ? versions[version] : undefined;
-			if (!isRecord(data)) {
-				throw new Error(`Malformed npm registry response for ${pkg}${origin}: missing versions.${version}`);
-			}
-		}
+		data = response.ok ? fromPackument(await response.json()) : undefined;
 	}
 	if (!response.ok) {
 		if (response.status === 404 && channel === "canary") throw noCanary();
@@ -1050,7 +1171,6 @@ async function fetchLatestManifest(
 		);
 	}
 
-	data ??= await response.json();
 	if (!isRecord(data) || typeof data.version !== "string") {
 		throw new Error(`Malformed npm registry response for ${pkg}${origin}: missing version`);
 	}
@@ -2156,6 +2276,10 @@ let updateAttemptSeq = 0;
 /**
  * Download a release binary to a target path, replacing an existing file.
  *
+ * `expectedVersion` is the npm-advertised version; the installed version is the
+ * one {@link selectFallbackBinaryAsset} resolves when GitHub has no release for
+ * that tag, so verification and reporting both use the resolved version.
+ *
  * `options.repository` and `options.appName` select the product: they default
  * to the official repository and `omp`, and a dogfood update passes its fork
  * and `omp-dogfood`. Everything below — download, digest verification, the
@@ -2221,7 +2345,7 @@ export async function updateViaBinaryAt(
 			targetPath,
 			tempPath,
 			backupPath,
-			expectedVersion,
+			expectedVersion: asset.version,
 			appName,
 			verifyInstalledVersion: options.verifyInstalledVersion ?? (version => verifyBinaryAtPath(targetPath, version)),
 		});
@@ -2239,7 +2363,7 @@ export async function updateViaBinaryAt(
 		await sweepStaleUpdateArtifacts(targetPath);
 		return result;
 	});
-	printVerifiedVersion(expectedVersion, verification.path ?? targetPath);
+	printVerifiedVersion(asset.version, verification.path ?? targetPath);
 	console.log(chalk.dim(`Restart ${appName} to use the new version`));
 }
 
@@ -2342,7 +2466,7 @@ export async function updateViaShimTakeover(
 		// the update target was resolved, and the shim was just renamed away, so
 		// a PATH re-resolution here would test a file that no longer exists.
 		const verify = options.verifyBinary ?? verifyBinaryAtPath;
-		const verification = await verify(exePath, expectedVersion);
+		const verification = await verify(exePath, asset.version);
 		if (!verification.ok) {
 			for (const { launcher, backup } of retired) {
 				try {
@@ -2356,7 +2480,7 @@ export async function updateViaShimTakeover(
 			}
 			await unlinkIfExists(exePath);
 			throw new Error(
-				`${formatVerificationFailure(verification, expectedVersion)}; restored previous ${APP_NAME} launcher`,
+				`${formatVerificationFailure(verification, asset.version)}; restored previous ${APP_NAME} launcher`,
 			);
 		}
 		for (const { backup } of retired) {
@@ -2377,7 +2501,7 @@ export async function updateViaShimTakeover(
 			),
 		);
 	}
-	printVerifiedVersion(expectedVersion);
+	printVerifiedVersion(asset.version);
 	console.log(chalk.dim(`Restart ${APP_NAME} to use the new version`));
 }
 

@@ -1,3 +1,4 @@
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	type Component,
 	Ellipsis,
@@ -33,6 +34,12 @@ export interface ExtensionAskDialogQuestion {
 	recommended?: number;
 }
 
+/** Prompt text and the images pasted into it (custom answers and notes). */
+export interface AskDialogPromptValue {
+	text: string;
+	images?: ImageContent[];
+}
+
 /** Submitted answer to one dialog question. */
 export interface ExtensionAskDialogResultItem {
 	id: string;
@@ -41,7 +48,9 @@ export interface ExtensionAskDialogResultItem {
 	multi: boolean;
 	selectedOptions: string[];
 	customInput?: string;
+	customInputImages?: ImageContent[];
 	note?: string;
+	noteImages?: ImageContent[];
 	timedOut?: boolean;
 }
 
@@ -108,43 +117,32 @@ const DIALOG_HEIGHT_RATIO = 0.7;
 const MIN_DIALOG_ROWS = 12;
 const MIN_BODY_ROWS = 5;
 const MAX_HEADER_CHIP_WIDTH = 16;
-/** Maximum number of title lines shown in the prompt editor overlay, so a
- *  long or multi-line question cannot push the input row off-screen. Mirrors
- *  the bounded-title pattern from the legacy ask path without its option-window
- *  coupling. */
-const MAX_PROMPT_TITLE_ROWS = 3;
-/** Border (2) + padX (2) columns consumed by the HookEditor chrome. */
-const PROMPT_TITLE_CHROME_COLUMNS = 4;
 /** Maximum number of wrapped lines for an in-body question header, so a long
  *  or multi-line question cannot push the option list off-screen. Mirrors the
- *  row-cap pattern used by boundPromptTitle for the prompt editor overlay. */
+ *  row-cap pattern of the prompt editor's title (`boundPromptTitle`). */
 const MAX_HEADER_ROWS = 4;
 /** Maximum number of wrapped lines shown for an option description before
  *  Ctrl+O expansion. Mirrors the header row-cap above so long descriptions
  *  cannot push later options off-screen. */
 const MAX_DESC_ROWS = 2;
 
-function promptTitleContentWidth(): number {
-	const cols = process.stdout.columns ?? 80;
-	return Math.max(1, cols - PROMPT_TITLE_CHROME_COLUMNS);
-}
-
-/** Bound a prompt editor title to a fixed row/width budget so long or
- *  multi-line questions stay usable inside the small prompt overlay. */
-export function boundPromptTitle(prefix: string, question: string): string {
-	const width = promptTitleContentWidth();
-	const flat = normalizedInlineInput(`${prefix}${question}`);
-	const wrapped = wrapTextWithAnsi(flat, width);
-	if (wrapped.length <= MAX_PROMPT_TITLE_ROWS) return wrapped.join("\n");
-	const kept = wrapped.slice(0, MAX_PROMPT_TITLE_ROWS - 1);
-	const last = truncateToWidth(wrapped[MAX_PROMPT_TITLE_ROWS - 1] ?? "", width, Ellipsis.Unicode);
-	return [...kept, last].join("\n");
+/** What a custom-answer or note prompt asks: the host shows `title` over `question` (`HookEditorOptions.question`). */
+export interface AskDialogPrompt {
+	/** `Custom answer`, `Note for <option>`. */
+	title: string;
+	/** The question being answered, verbatim. */
+	question: string;
 }
 
 interface AskDialogCallbacks {
 	onSubmit(result: ExtensionAskDialogSubmitResult): void;
 	onCancel(): void;
-	onPrompt(title: string, prefill?: string): Promise<string | undefined>;
+	onPrompt(prompt: AskDialogPrompt, prefill?: string): Promise<string | undefined>;
+	/** Prompt that accepts pasted images; without it, prompts use `onPrompt`. */
+	onImagePrompt?(
+		prompt: AskDialogPrompt,
+		prefill: AskDialogPromptValue | undefined,
+	): Promise<AskDialogPromptValue | undefined>;
 }
 
 interface AskDialogInputGuard {
@@ -167,7 +165,9 @@ interface AskDialogOptions {
 interface QuestionState {
 	selectedOptions: Set<string>;
 	customInput: string | undefined;
+	customInputImages: ImageContent[] | undefined;
 	note: string | undefined;
+	noteImages: ImageContent[] | undefined;
 	noteRowKey: string | undefined;
 	cursorIndex: number;
 	scrollOffset: number;
@@ -212,11 +212,7 @@ function questionTabLabel(question: ExtensionAskDialogQuestion, index: number): 
 }
 
 function wrapQuestionTitle(question: ExtensionAskDialogQuestion, width: number): string[] {
-	const mdTheme = getMarkdownTheme();
-	const questionText = renderInlineMarkdown(replaceTabs(sanitizeCarriageReturns(question.question)), mdTheme, t =>
-		theme.fg("text", t),
-	);
-	return wrapTextWithAnsi(questionText, Math.max(1, width));
+	return renderPreviewContent(sanitizeCarriageReturns(question.question), Math.max(1, width), "text");
 }
 
 function renderQuestionTitle(question: ExtensionAskDialogQuestion, width: number, maxRows = MAX_HEADER_ROWS): string[] {
@@ -299,10 +295,10 @@ function splitPreviewSegments(preview: string): PreviewSegment[] {
 	return segments;
 }
 
-function renderPreviewContent(preview: string, width: number): string[] {
+function renderPreviewContent(preview: string, width: number, textColor: "muted" | "text" = "muted"): string[] {
 	const out: string[] = [];
 	const mdTheme = getMarkdownTheme();
-	const accentStyle = { color: (text: string) => theme.fg("muted", text) };
+	const accentStyle = { color: (text: string) => theme.fg(textColor, text) };
 	for (const segment of splitPreviewSegments(preview)) {
 		if (segment.kind === "code") {
 			const highlighted = highlightCode(segment.text, segment.language);
@@ -399,8 +395,15 @@ function describeRowDetail(
 	return spans.length > 0 ? spans : undefined;
 }
 
+/** Normalize the result of either prompt callback. */
+function splitPromptInput(input: string | AskDialogPromptValue): { text: string; images: ImageContent[] | undefined } {
+	if (typeof input === "string") return { text: input, images: undefined };
+	return { text: input.text, images: input.images?.length ? input.images : undefined };
+}
+
 function clearNote(state: QuestionState): void {
 	state.note = undefined;
+	state.noteImages = undefined;
 	state.noteRowKey = undefined;
 }
 
@@ -521,6 +524,7 @@ export function normalizeDialogQuestions(questions: ExtensionAskDialogQuestion[]
 }
 
 export class AskDialogComponent implements Component {
+	readonly retireDisplacedTranscript = true;
 	#states: QuestionState[];
 	#activeTabIndex = 0;
 	#submitScrollOffset = 0;
@@ -565,7 +569,9 @@ export class AskDialogComponent implements Component {
 			return {
 				selectedOptions: new Set<string>(),
 				customInput: undefined,
+				customInputImages: undefined,
 				note: undefined,
+				noteImages: undefined,
 				noteRowKey: undefined,
 				cursorIndex: clamp(recommended ?? 0, 0, maxIndex),
 				scrollOffset: 0,
@@ -1231,6 +1237,7 @@ export class AskDialogComponent implements Component {
 		}
 		state.selectedOptions = new Set([option.label]);
 		state.customInput = undefined;
+		state.customInputImages = undefined;
 		clearNoteUnlessRow(state, rowItem.key);
 		this.#advanceAfterQuestion();
 	}
@@ -1268,6 +1275,19 @@ export class AskDialogComponent implements Component {
 		this.#requestRender();
 	}
 
+	/**
+	 * Open the host prompt, image-capable when available. Returns the callback's promise so each
+	 * caller keeps one `await` before clearing `#promptActive`, which the host's restore relies on.
+	 */
+	#openPrompt(
+		prompt: AskDialogPrompt,
+		prefill: AskDialogPromptValue | undefined,
+	): Promise<string | AskDialogPromptValue | undefined> {
+		return this.callbacks.onImagePrompt
+			? this.callbacks.onImagePrompt(prompt, prefill)
+			: this.callbacks.onPrompt(prompt, prefill?.text);
+	}
+
 	async #promptForCustomInput(
 		question: ExtensionAskDialogQuestion,
 		state: QuestionState,
@@ -1275,18 +1295,20 @@ export class AskDialogComponent implements Component {
 	): Promise<void> {
 		this.#promptActive = true;
 		try {
-			const input = await this.callbacks.onPrompt(
-				boundPromptTitle("Custom answer: ", question.question),
-				state.customInput,
-			);
-			if (input === undefined || this.#closed) return;
-			if (input.trim() === "") {
+			const prefill =
+				state.customInput === undefined ? undefined : { text: state.customInput, images: state.customInputImages };
+			const result = await this.#openPrompt({ title: "Custom answer", question: question.question }, prefill);
+			if (result === undefined || this.#closed) return;
+			const input = splitPromptInput(result);
+			if (input.text.trim() === "") {
 				// Submitting an empty value unselects the custom answer.
 				state.customInput = undefined;
+				state.customInputImages = undefined;
 				clearNoteIfRow(state, rowItem.key);
 				return;
 			}
-			state.customInput = input;
+			state.customInput = input.text;
+			state.customInputImages = input.images;
 			if (!question.multi) {
 				state.selectedOptions.clear();
 				clearNoteUnlessRow(state, rowItem.key);
@@ -1311,12 +1333,17 @@ export class AskDialogComponent implements Component {
 	): Promise<void> {
 		this.#promptActive = true;
 		try {
-			const input = await this.callbacks.onPrompt(
-				boundPromptTitle(`Note for ${rowItem.label}: `, question.question),
-				state.noteRowKey === rowItem.key ? state.note : undefined,
+			const isReedit = state.noteRowKey === rowItem.key;
+			const prefill =
+				isReedit && state.note !== undefined ? { text: state.note, images: state.noteImages } : undefined;
+			const result = await this.#openPrompt(
+				{ title: `Note for ${rowItem.label}`, question: question.question },
+				prefill,
 			);
-			if (input === undefined || this.#closed) return;
-			state.note = input;
+			if (result === undefined || this.#closed) return;
+			const note = splitPromptInput(result);
+			state.note = note.text;
+			state.noteImages = note.images;
 			state.noteRowKey = rowItem.key;
 		} finally {
 			this.#promptActive = false;
@@ -1547,6 +1574,7 @@ export class AskDialogComponent implements Component {
 			const selectedOptions = question.options
 				.map(option => option.label)
 				.filter(label => state.selectedOptions.has(label));
+			const note = noteForSubmittedAnswer(question, state);
 			results.push({
 				id: question.id,
 				question: question.question,
@@ -1554,7 +1582,9 @@ export class AskDialogComponent implements Component {
 				multi: question.multi ?? false,
 				selectedOptions,
 				customInput: state.customInput,
-				note: noteForSubmittedAnswer(question, state),
+				customInputImages: state.customInputImages,
+				note,
+				noteImages: note === undefined ? undefined : state.noteImages,
 				timedOut: state.timedOut || undefined,
 			});
 		}
