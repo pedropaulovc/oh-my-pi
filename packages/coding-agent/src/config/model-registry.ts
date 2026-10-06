@@ -268,8 +268,7 @@ export class ModelRegistry {
 	#catalogMetrics = new CatalogMetricsIndex();
 	#internedStaticModels: Map<string, Model<Api>> = new Map();
 	#providerLookupSnapshots: Map<string, Model<Api>[]> = new Map();
-	#fullKindSnapshotSource: Model<Api>[] | undefined;
-	#fullKindSnapshots: Partial<Record<ModelKind, Model<Api>[]>> = {};
+	#fullKindSnapshots = new WeakMap<Model<Api>[], Partial<Record<ModelKind, Model<Api>[]>>>();
 	#customProviderApiKeys: Map<string, string> = new Map();
 	// Every command-backed (`!cmd`) config value a provider carries — apiKey plus
 	// provider/model-override header values — keyed by provider. The 401 auth
@@ -2668,14 +2667,15 @@ export class ModelRegistry {
 	getAll(kind: ModelKind | "all" = "chat"): Model<Api>[] {
 		const models = this.#ensureFullSnapshot();
 		if (kind === "all") return models;
-		if (this.#fullKindSnapshotSource !== models) {
-			this.#fullKindSnapshotSource = models;
-			this.#fullKindSnapshots = {};
+		let snapshots = this.#fullKindSnapshots.get(models);
+		if (!snapshots) {
+			snapshots = {};
+			this.#fullKindSnapshots.set(models, snapshots);
 		}
-		const cached = this.#fullKindSnapshots[kind];
+		const cached = snapshots[kind];
 		if (cached) return cached;
 		const filtered = models.filter(model => modelKind(model) === kind);
-		this.#fullKindSnapshots[kind] = filtered;
+		snapshots[kind] = filtered;
 		return filtered;
 	}
 
