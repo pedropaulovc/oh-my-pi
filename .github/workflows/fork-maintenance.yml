@@ -24,10 +24,7 @@ concurrency:
   group: fork-dogfood-automation
   cancel-in-progress: false
 
-permissions:
-  contents: write # rebase/force-with-lease push of main, PR heads, dogfood
-  issues: write # maintain the single conflict alert issue
-  pull-requests: read # discover open upstream PRs headed by this fork
+permissions: {}
 
 jobs:
   maintain:
@@ -38,10 +35,26 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
+      # GITHUB_TOKEN cannot push workflow changes; use a short-lived,
+      # repository-scoped App credential for both git and GitHub API calls.
+      - name: Create fork maintenance App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.FORK_MAINTENANCE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.FORK_MAINTENANCE_APP_PRIVATE_KEY }}
+          owner: pedropaulovc
+          repositories: oh-my-pi
+          permission-actions: read
+          permission-contents: write
+          permission-workflows: write
+          permission-issues: write
+          permission-pull-requests: read
       # Full history: rebasing stacks onto upstream main needs real merge
       # bases, and `--update-refs` needs the whole stack present.
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
           # The pushes below reuse this credential.
           persist-credentials: true
@@ -51,7 +64,7 @@ jobs:
       # The script is dependency-free (bun + git + gh only), so no install.
       - name: Rebase branches, rebuild dogfood, dispatch release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Comma/newline/space separated fork-only branches with no open PR,
           # in addition to open upstream and fork PR branches.
           PRIVATE_REBASE_BRANCHES: ${{ vars.PRIVATE_REBASE_BRANCHES }}
