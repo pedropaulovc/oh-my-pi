@@ -18,6 +18,8 @@ import { expandWindowsLongPath } from "@oh-my-pi/pi-natives/path";
 import { engines, version } from "../package.json" with { type: "json" };
 import { isEnoent, isEnotdir } from "./fs-error";
 
+declare const __OMP_BUILD_VERSION__: string | undefined;
+
 /** App name (e.g. "omp") */
 export const APP_NAME: string = "omp";
 
@@ -31,7 +33,7 @@ export const CONFIG_DIR_NAME: string = ".omp";
 export const MAIN_CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
 
 /** Version (e.g. "1.0.0") */
-export const VERSION: string = version;
+export const VERSION: string = typeof __OMP_BUILD_VERSION__ === "string" ? __OMP_BUILD_VERSION__ : version;
 
 /** Default User-Agent header string (e.g. "omp/17.2.12") */
 export const USER_AGENT = `omp/${VERSION}`;
