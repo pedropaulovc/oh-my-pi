@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Kept fork dogfood updates pinned to verified `omp-dogfood` GitHub release assets while official binary updates use the build service and binary patches; dogfood updates leave official installations and update-channel settings untouched, and startup notices recommend `omp-dogfood update`.
+- Dogfood builds never run the background auto-update (`update.auto`); they update only through `omp-dogfood update`.
+
 ## [18.20.2] - 2026-11-14
 
 ### Added
