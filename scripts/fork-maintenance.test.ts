@@ -1,0 +1,388 @@
+import { $ } from "bun";
+import { describe, expect, it } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import {
+	type ForkReleaseSummary,
+	type MaintenanceFailure,
+	dogfoodTagFor,
+	findEquivalentMainBoundary,
+	hasActiveDogfoodRun,
+	integrateForkMain,
+	latestDogfoodRelease,
+	orderIntegrationTips,
+	parsePrivateBranches,
+	planDogfoodRelease,
+	planPush,
+	planRebaseGroups,
+} from "./fork-maintenance";
+
+const BASE = "refs/remotes/upstream/main";
+
+describe("integrateForkMain", () => {
+	it("keeps a fork-private merge of upstream as the unchanged dogfood base", async () => {
+		const dir = await mkdtemp(path.join(tmpdir(), "omp-fork-main-"));
+		const repo = path.join(dir, "repo");
+		const origin = path.join(dir, "origin.git");
+		await mkdir(repo);
+		const git = (...args: string[]) =>
+			$`git ${args}`
+				.cwd(repo)
+				.quiet()
+				.env({
+					...process.env,
+					GIT_CONFIG_GLOBAL: "/dev/null",
+					GIT_CONFIG_SYSTEM: "/dev/null",
+					GIT_AUTHOR_NAME: "maintenance test",
+					GIT_AUTHOR_EMAIL: "maintenance@test.invalid",
+					GIT_COMMITTER_NAME: "maintenance test",
+					GIT_COMMITTER_EMAIL: "maintenance@test.invalid",
+				});
+		try {
+			await git("init", "-b", "main");
+			await git("init", "--bare", origin);
+			await Bun.write(path.join(repo, "base.txt"), "shared\n");
+			await git("add", "base.txt");
+			await git("commit", "-m", "shared base");
+			await git("checkout", "-b", "upstream");
+			await Bun.write(path.join(repo, "upstream.txt"), "upstream change\n");
+			await git("add", "upstream.txt");
+			await git("commit", "-m", "upstream change");
+			const upstreamSha = (await git("rev-parse", "HEAD").text()).trim();
+			await git("checkout", "main");
+			await Bun.write(path.join(repo, "fork.txt"), "fork-only updater identity\n");
+			await git("add", "fork.txt");
+			await git("commit", "-m", "fork-only updater");
+			const forkSha = (await git("rev-parse", "HEAD").text()).trim();
+			await git("merge", "--no-ff", "-m", "integrate upstream", "upstream");
+			const mergedSha = (await git("rev-parse", "HEAD").text()).trim();
+			await git("update-ref", "refs/remotes/upstream/main", upstreamSha);
+			await git("remote", "add", "origin", origin);
+			await git("push", "origin", "main");
+			await git("update-ref", "refs/remotes/origin/main", mergedSha);
+
+			const failures: MaintenanceFailure[] = [];
+			const notes: string[] = [];
+			const base = await integrateForkMain(repo, upstreamSha, mergedSha, failures, notes);
+			expect(base).toBe(mergedSha);
+			expect(failures).toEqual([]);
+			expect(notes).toEqual([`main already integrates upstream at ${mergedSha}`]);
+			expect((await git("rev-parse", "main").text()).trim()).toBe(mergedSha);
+			expect((await git("ls-remote", "origin", "refs/heads/main").text()).trim()).toBe(
+				`${mergedSha}\trefs/heads/main`,
+			);
+			await git("merge-base", "--is-ancestor", upstreamSha, base ?? "");
+			await git("merge-base", "--is-ancestor", forkSha, base ?? "");
+			expect((await git("show", `${base}:fork.txt`).text()).trim()).toBe("fork-only updater identity");
+			expect((await git("show", `${base}:upstream.txt`).text()).trim()).toBe("upstream change");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("parsePrivateBranches", () => {
+	it("splits on commas, newlines and spaces, strips refs/heads/, and de-duplicates", () => {
+		expect(parsePrivateBranches("feat/a, refs/heads/feat/b\nfeat/c feat/a\n\n")).toEqual([
+			"feat/a",
+			"feat/b",
+			"feat/c",
+		]);
+	});
+
+	it("drops the branches the script owns so a variable cannot redirect main/dogfood into stack planning", () => {
+		expect(parsePrivateBranches("main,dogfood,feat/x")).toEqual(["feat/x"]);
+	});
+
+	it("returns nothing when the variable is unset or blank", () => {
+		expect(parsePrivateBranches(undefined)).toEqual([]);
+		expect(parsePrivateBranches("  \n ,, ")).toEqual([]);
+	});
+});
+
+describe("findEquivalentMainBoundary", () => {
+	it("returns the last patch-equivalent commit before branch-only work starts", () => {
+		const first = "a".repeat(40);
+		const last = "b".repeat(40);
+		const branchCommit = "c".repeat(40);
+		expect(findEquivalentMainBoundary(`- ${first}\n- ${last}\n+ ${branchCommit}\n`)).toBe(last);
+	});
+
+	it("does not skip an equivalent commit after branch-only work", () => {
+		const branchCommit = "a".repeat(40);
+		const lateEquivalent = "b".repeat(40);
+		expect(findEquivalentMainBoundary(`+ ${branchCommit}\n- ${lateEquivalent}\n`)).toBeUndefined();
+	});
+});
+
+describe("planRebaseGroups", () => {
+	it("rebases only the tip of a stack and carries the intermediate refs base → tip", () => {
+		const groups = planRebaseGroups(
+			[
+				{ name: "mid", head: "bbb", ancestors: ["bottom"] },
+				{ name: "bottom", head: "aaa", ancestors: [] },
+				{ name: "top", head: "ccc", ancestors: ["bottom", "mid"] },
+			],
+			BASE,
+		);
+		expect(groups).toEqual([
+			{
+				members: ["bottom", "mid", "top"],
+				steps: [{ branch: "top", carried: ["bottom", "mid"], onto: BASE, fromOid: undefined }],
+			},
+		]);
+	});
+
+	it("replays only a branch delta when it descended from the old fork main", () => {
+		const groups = planRebaseGroups(
+			[
+				{ name: "bottom", head: "aaa", ancestors: [] },
+				{ name: "top", head: "bbb", ancestors: ["bottom"] },
+			],
+			BASE,
+			{ bottom: "old-main", top: "old-main" },
+		);
+		expect(groups).toEqual([
+			{
+				members: ["bottom", "top"],
+				steps: [{ branch: "top", carried: ["bottom"], onto: BASE, fromOid: "old-main" }],
+			},
+		]);
+	});
+
+	it("keeps branches with no shared history in separate groups so one conflict cannot block the other", () => {
+		const groups = planRebaseGroups(
+			[
+				{ name: "feat/z", head: "zzz", ancestors: [] },
+				{ name: "feat/a", head: "aaa", ancestors: [] },
+			],
+			BASE,
+		);
+		expect(groups.map(group => group.members)).toEqual([["feat/a"], ["feat/z"]]);
+		expect(groups.flatMap(group => group.steps)).toEqual([
+			{ branch: "feat/a", carried: [], onto: BASE, fromOid: undefined },
+			{ branch: "feat/z", carried: [], onto: BASE, fromOid: undefined },
+		]);
+	});
+
+	it("replays a second tip off the rewritten shared base instead of duplicating its commits", () => {
+		const groups = planRebaseGroups(
+			[
+				{ name: "shared", head: "s0", ancestors: [] },
+				{ name: "tip-b", head: "b0", ancestors: ["shared"] },
+				{ name: "tip-a", head: "a0", ancestors: ["shared"] },
+			],
+			BASE,
+		);
+		expect(groups).toHaveLength(1);
+		expect(groups[0]?.steps).toEqual([
+			{ branch: "tip-a", carried: ["shared"], onto: BASE, fromOid: undefined },
+			{ branch: "tip-b", carried: [], onto: "shared", fromOid: "s0" },
+		]);
+	});
+
+	it("ignores ancestry pointing at untracked branches", () => {
+		const groups = planRebaseGroups([{ name: "solo", head: "aaa", ancestors: ["gone", "solo"] }], BASE);
+		expect(groups).toEqual([
+			{ members: ["solo"], steps: [{ branch: "solo", carried: [], onto: BASE, fromOid: undefined }] },
+		]);
+	});
+
+	it("still plans a member that only direct-parent ancestry data leaves unreachable from a tip", () => {
+		// `low` is an ancestor of `mid` but not reported on `high`; it must not vanish.
+		const groups = planRebaseGroups(
+			[
+				{ name: "low", head: "l0", ancestors: [] },
+				{ name: "mid", head: "m0", ancestors: ["low"] },
+				{ name: "high", head: "h0", ancestors: ["mid"] },
+			],
+			BASE,
+		);
+		expect(groups).toHaveLength(1);
+		expect(groups[0]?.steps.map(step => step.branch).sort()).toEqual(["high", "low"]);
+	});
+});
+
+describe("planPush", () => {
+	it("leases each rewritten ref against the OID observed before the rebase", () => {
+		const plan = planPush([
+			{ branch: "feat/b", expected: "old-b", target: "new-b" },
+			{ branch: "feat/a", expected: "old-a", target: "new-a" },
+		]);
+		expect(plan.args).toEqual([
+			"push",
+			"--atomic",
+			"--force-with-lease=refs/heads/feat/a:old-a",
+			"--force-with-lease=refs/heads/feat/b:old-b",
+			"origin",
+			"new-a:refs/heads/feat/a",
+			"new-b:refs/heads/feat/b",
+		]);
+		expect(plan.pushed).toEqual(["feat/a", "feat/b"]);
+	});
+
+	it("skips refs the rebase left untouched instead of force-pushing them", () => {
+		const plan = planPush([{ branch: "feat/a", expected: "same", target: "same" }]);
+		expect(plan.args).toEqual([]);
+		expect(plan.pushed).toEqual([]);
+		expect(plan.skipped).toEqual(["feat/a"]);
+	});
+
+	it("leases an empty OID for a branch that does not exist on the remote yet", () => {
+		const plan = planPush([{ branch: "dogfood", expected: null, target: "new" }]);
+		// git reads the empty expectation as "the ref must not exist".
+		expect(plan.args).toContain("--force-with-lease=refs/heads/dogfood:");
+	});
+});
+
+describe("dogfoodTagFor", () => {
+	it("maps an upstream release tag and revision to its fork dogfood tag", () => {
+		expect(dogfoodTagFor("v0.12.4")).toBe("v0.12.4-dogfood.1");
+		expect(dogfoodTagFor(" 18.1.19 ", 4)).toBe("v18.1.19-dogfood.4");
+	});
+
+	it("refuses prereleases and non-release tags so canaries never trigger a dogfood release", () => {
+		expect(dogfoodTagFor("v0.12.4-canary.3")).toBeUndefined();
+		expect(dogfoodTagFor("v0.12.4-dogfood.1")).toBeUndefined();
+		expect(dogfoodTagFor("nightly")).toBeUndefined();
+	});
+});
+
+const OID_A = "a".repeat(40);
+const OID_B = "b".repeat(40);
+const OID_C = "c".repeat(40);
+
+function published(tag: string, target: string): ForkReleaseSummary {
+	return { tag_name: tag, target_commitish: target, draft: false };
+}
+
+describe("latestDogfoodRelease", () => {
+	it("picks the highest revision of the requested version and reports its build source", () => {
+		const latest = latestDogfoodRelease(
+			[
+				published("v18.2.0-dogfood.1", OID_A),
+				published("v18.2.0-dogfood.10", OID_B.toUpperCase()),
+				published("v18.2.0-dogfood.2", OID_C),
+				published("v18.3.0-dogfood.7", OID_A),
+			],
+			"v18.2.0",
+		);
+		// Revisions are numeric, not lexicographic: .10 outranks .2.
+		expect(latest).toEqual({ revision: 10, sourceSha: OID_B });
+	});
+
+	it("ignores other versions and malformed dogfood tags", () => {
+		const releases = [
+			published("v18.1.22-dogfood.3", OID_A),
+			published("v18.2.0-dogfood.0", OID_B),
+			published("v18.2.0-dogfood", OID_C),
+			published("v18.2.0", OID_A),
+		];
+		expect(latestDogfoodRelease(releases, "v18.2.0")).toBeUndefined();
+	});
+
+	it("skips drafts so an interrupted publish is not mistaken for a build", () => {
+		const releases = [
+			published("v18.2.0-dogfood.1", OID_A),
+			{ tag_name: "v18.2.0-dogfood.2", target_commitish: OID_B, draft: true },
+		];
+		expect(latestDogfoodRelease(releases, "v18.2.0")).toEqual({ revision: 1, sourceSha: OID_A });
+	});
+
+	it("reports no source when the release names a branch instead of a commit", () => {
+		const releases = [published("v18.2.0-dogfood.1", "dogfood")];
+		expect(latestDogfoodRelease(releases, "v18.2.0")).toEqual({ revision: 1, sourceSha: undefined });
+	});
+});
+
+describe("planDogfoodRelease", () => {
+	it("publishes the first revision when the fork never released this upstream version", () => {
+		expect(planDogfoodRelease("v18.2.0", OID_A, [])).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.1",
+			revision: 1,
+		});
+	});
+
+	it("respins the next revision when the dogfood head moved under an already-released version", () => {
+		const releases = [published("v18.2.0-dogfood.2", OID_A)];
+		expect(planDogfoodRelease("v18.2.0", OID_B, releases)).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.3",
+			revision: 3,
+		});
+	});
+
+	it("publishes nothing when the newest release already built this exact head", () => {
+		const releases = [published("v18.2.0-dogfood.2", OID_A.toUpperCase())];
+		const plan = planDogfoodRelease("v18.2.0", OID_A, releases);
+		expect(plan.publish).toBe(false);
+		expect(plan.dogfoodTag).toBe("v18.2.0-dogfood.2");
+	});
+
+	it("allocates above a draft revision, and still publishes the head the draft failed to ship", () => {
+		const releases = [
+			published("v18.2.0-dogfood.1", OID_A),
+			{ tag_name: "v18.2.0-dogfood.2", target_commitish: OID_B, draft: true },
+		];
+		expect(planDogfoodRelease("v18.2.0", OID_B, releases)).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.3",
+			revision: 3,
+		});
+	});
+
+	it("allocates above an orphaned tag whose release was deleted", () => {
+		const releases = [published("v18.2.0-dogfood.2", OID_A)];
+		const tags = ["v18.2.0-dogfood.1", "v18.2.0-dogfood.3", "v18.1.22-dogfood.9"];
+		expect(planDogfoodRelease("v18.2.0", OID_B, releases, tags)).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.4",
+			revision: 4,
+		});
+	});
+
+	it("publishes when the newest release cannot prove which commit it built", () => {
+		const releases = [published("v18.2.0-dogfood.1", "dogfood")];
+		expect(planDogfoodRelease("v18.2.0", OID_A, releases)).toEqual({
+			publish: true,
+			dogfoodTag: "v18.2.0-dogfood.2",
+			revision: 2,
+		});
+	});
+
+	it("refuses to publish for an upstream prerelease", () => {
+		const plan = planDogfoodRelease("v18.2.0-canary.4", OID_A, []);
+		expect(plan.publish).toBe(false);
+		expect(plan.dogfoodTag).toBeUndefined();
+	});
+});
+
+describe("hasActiveDogfoodRun", () => {
+	it("treats a queued or running build of the same upstream tag as in flight", () => {
+		const runs = [{ display_title: "Dogfood v0.12.4", status: "in_progress" }];
+		expect(hasActiveDogfoodRun(runs, "v0.12.4")).toBe(true);
+		expect(hasActiveDogfoodRun([{ display_title: "Dogfood v0.12.4", status: "queued" }], "v0.12.4")).toBe(true);
+	});
+
+	it("does not suppress a dispatch for a finished run or a different tag", () => {
+		const runs = [
+			{ display_title: "Dogfood v0.12.4", status: "completed" },
+			{ display_title: "Dogfood v0.12.3", status: "in_progress" },
+		];
+		expect(hasActiveDogfoodRun(runs, "v0.12.4")).toBe(false);
+	});
+});
+
+describe("orderIntegrationTips", () => {
+	it("integrates PR heads oldest-first, then private branches by name", () => {
+		const ordered = orderIntegrationTips([
+			{ branch: "private/z" },
+			{ branch: "feat/new", prNumber: 91 },
+			{ branch: "private/a" },
+			{ branch: "feat/old", prNumber: 12 },
+		]);
+		expect(ordered.map(tip => tip.branch)).toEqual(["feat/old", "feat/new", "private/a", "private/z"]);
+	});
+});
