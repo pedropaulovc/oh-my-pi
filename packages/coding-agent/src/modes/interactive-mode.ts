@@ -7631,8 +7631,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#working.applyPending();
 	}
 
-	showNewVersionNotification(newVersion: string): void {
-		this.#uiHelpers.showNewVersionNotification(newVersion);
+	showNewVersionNotification(newVersion: string, appName: string): void {
+		this.#uiHelpers.showNewVersionNotification(newVersion, appName);
 	}
 
 	/** Show (or with `null`, clear) background auto-update progress after the welcome banner's version. */

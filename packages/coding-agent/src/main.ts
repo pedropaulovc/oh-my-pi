@@ -48,7 +48,7 @@ import { fetchBuild } from "./cli/build-service";
 import { applyStartupCwd } from "./cli/startup-cwd";
 import { runAutoUpdate } from "./cli/auto-update";
 import { managedInstallName } from "./cli/managed-install";
-import { getLatestRelease, isSourceCheckout } from "./cli/update-cli";
+import { dogfoodUpdateSource, getLatestRelease, isSourceCheckout } from "./cli/update-cli";
 import { findConfigFile } from "./config";
 import { cfgNoJudge, cfgNoSpotlight, cfgOffline } from "./config/auxiliary-model-policy";
 import { ModelRegistry } from "./config/model-registry";
@@ -278,11 +278,12 @@ async function checkForNewVersion(currentVersion: string): Promise<string | unde
 		// "run omp update" would be wrong advice for both.
 		if (isSourceCheckout() || (await managedInstallName(process.execPath))) return;
 		const channel = cfgUpdateChannel.get(settings);
-		// A compiled binary updates from the build service; naming the running
-		// version lets the service prepare the patch `omp update` will then use.
-		const { version } = isCompiledBinary()
-			? await fetchBuild({ channel }, { timeoutMs: 5_000, fromVersion: currentVersion })
-			: await getLatestRelease({ timeoutMs: 5_000, channel });
+		// Official compiled binaries use the build service, including its patch
+		// preparation. Dogfood builds discover only their fork's releases.
+		const { version } =
+			isCompiledBinary() && !dogfoodUpdateSource()
+				? await fetchBuild({ channel }, { timeoutMs: 5_000, fromVersion: currentVersion })
+				: await getLatestRelease({ timeoutMs: 5_000, channel });
 		return Bun.semver.order(version, currentVersion) > 0 ? version : undefined;
 	} catch {
 		return undefined;
@@ -855,7 +856,9 @@ async function runInteractiveMode(
 		);
 		// A resolved version check must not insert its banner into a partial transcript.
 		const notifyNewVersion = (newVersion: string): void => {
-			if (cfgStartupCheckUpdate.get(settings)) mode.showNewVersionNotification(newVersion);
+			if (cfgStartupCheckUpdate.get(settings)) {
+				mode.showNewVersionNotification(newVersion, dogfoodUpdateSource()?.appName ?? APP_NAME);
+			}
 		};
 		if (cfgUpdateAuto.get(settings)) {
 			void runAutoUpdate(checkedVersionPromise, {

@@ -5,6 +5,11 @@
 ### Added
 
 - Dictation now works with xAI speech-to-text models such as `xai-oauth/grok-voice-transcribe-2.0` ([#19184](https://github.com/can1357/oh-my-pi/pull/19184) by [@Xytronix](https://github.com/Xytronix))
+### Changed
+
+- Kept fork dogfood updates pinned to verified `omp-dogfood` GitHub release assets while official binary updates use the build service and binary patches; dogfood updates leave official installations and update-channel settings untouched, and startup notices recommend `omp-dogfood update`.
+- Dogfood builds never run the background auto-update (`update.auto`); they update only through `omp-dogfood update`.
+
 ## [19.2.1] - 2026-11-25
 
 ### Breaking Changes
