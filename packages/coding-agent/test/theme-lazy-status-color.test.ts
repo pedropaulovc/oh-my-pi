@@ -4,6 +4,7 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
+import { APP_NAME } from "@oh-my-pi/pi-utils";
 
 /**
  * Regression for issue #6337: a status message presented while the auto-theme
@@ -70,6 +71,22 @@ describe("lazy status color re-resolves on theme switch", () => {
 		expect(out).toContain(lightPrefix);
 		expect(out).not.toContain(darkPrefix);
 	});
+	it("renders the product's update command without directing dogfood users to the official updater", () => {
+		for (const appName of [APP_NAME, `${APP_NAME}-dogfood`]) {
+			let presented: Component | undefined;
+			const context: Pick<InteractiveModeContext, "present"> = {
+				present(component) {
+					if (!isSingleComponent(component)) throw new Error("Expected one update notification block");
+					presented = component;
+				},
+			};
+			new UiHelpers(context as InteractiveModeContext).showNewVersionNotification("1.2.3", appName);
+			if (!presented) throw new Error("Update notification was not presented");
+			const output = Bun.stripANSI(presented.render(100).join("\n"));
+			expect(output).toContain(`New version 1.2.3 is available. Run: ${appName} update`);
+			if (appName !== APP_NAME) expect(output).not.toContain(`Run: ${APP_NAME} update`);
+		}
+	});
 	it("recolors the presented update notification when auto-theme resolves light", async () => {
 		themeModule.onTerminalAppearanceChange("dark");
 		await themeModule.initTheme(false, undefined, undefined, "dark-catppuccin", "light-catppuccin");
@@ -81,7 +98,7 @@ describe("lazy status color re-resolves on theme switch", () => {
 				presented = component;
 			},
 		};
-		new UiHelpers(context as InteractiveModeContext).showNewVersionNotification("1.2.3");
+		new UiHelpers(context as InteractiveModeContext).showNewVersionNotification("1.2.3", APP_NAME);
 		const notification = presented;
 		if (!notification) throw new Error("Update notification was not presented");
 
