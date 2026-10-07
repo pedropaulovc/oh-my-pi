@@ -107,6 +107,7 @@
 - Supervised service completions now include a neutral diagnostic when a process exits with a nonzero code without a reported termination reason.
 - Fixed a supervised process's progress arriving out of order after its monitor was retuned between `wake` and `ambient`: output sampled before the switch now stays ahead of later output instead of landing behind it — or on a later turn — when the process completes.
 - Clarified agent guidance for waits interrupted by background completions: account for the completion notice, then retry only if still blocked on results that will not be pushed ([#9373](https://github.com/can1357/oh-my-pi/pull/9373) by [@pedropaulovc](https://github.com/pedropaulovc)).
+- Artifact reads now preserve full requested lines within the existing byte and paging limits instead of reapplying the ordinary-file column cap, so long single-line JSON output can be recovered without `:raw`. Off-window bracket context retains the configured column cap; oversized multi-range content reports its byte-budget omission ([#13947](https://github.com/can1357/oh-my-pi/pull/13947) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
 ## [18.6.3] - 2026-10-06
 
