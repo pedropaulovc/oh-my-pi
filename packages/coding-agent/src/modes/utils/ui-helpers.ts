@@ -1110,8 +1110,8 @@ export class UiHelpers {
 		);
 	}
 
-	showNewVersionNotification(newVersion: string): void {
-		this.ctx.present(() => jsx(UpdateNotice, { version: newVersion }));
+	showNewVersionNotification(newVersion: string, appName?: string): void {
+		this.ctx.present(() => jsx(UpdateNotice, { version: newVersion, appName }));
 	}
 
 	/** Feed the queued-message band: the session's steering and follow-ups, plus the compaction queue. */

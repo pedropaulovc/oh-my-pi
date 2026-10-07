@@ -375,6 +375,10 @@
 - Fixed unsupported `ANTHROPIC_SEARCH_BASE_URL` from appearing in `omp --help`, and improved the error shown when `bun` is unavailable in compiled JavaScript evaluation.
 - Selective commits now leave HEAD and staging unchanged if the shared index stays locked. Retry once the lock is released ([#20252](https://github.com/can1357/oh-my-pi/issues/20252)).
 - Cache warming no longer sends a refresh after sleep or another timer delay leaves less than ten seconds before cache expiry ([#20366](https://github.com/can1357/oh-my-pi/issues/20366)).
+### Changed
+
+- Kept fork dogfood updates pinned to verified `omp-dogfood` GitHub release assets while official binary updates use the build service and binary patches; dogfood updates leave official installations and update-channel settings untouched, and startup notices recommend `omp-dogfood update`.
+- Dogfood builds never run the background auto-update (`update.auto`); they update only through `omp-dogfood update`.
 
 ## [19.2.1] - 2026-11-25
 

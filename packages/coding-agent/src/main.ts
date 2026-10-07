@@ -299,14 +299,14 @@ async function checkForNewVersion(currentVersion: string): Promise<string | unde
 		// "run omp update" would be wrong advice for both.
 		if (isSourceCheckout() || (await managedInstallName(process.execPath))) return;
 		const channel = cfgUpdateChannel.get(settings);
-		// A compiled binary updates from the build service; naming the running
-		// version lets the service prepare the patch `omp update` will then use.
+		// Official compiled binaries use the build service, including its patch
+		// preparation. Dogfood builds discover only their fork's releases.
+		const { dogfoodUpdateSource, getLatestRelease } = require("./cli/update-cli") as typeof UpdateCli;
 		let version: string;
-		if (isCompiledBinary()) {
+		if (isCompiledBinary() && !dogfoodUpdateSource()) {
 			const { fetchBuild } = require("./cli/build-service") as typeof BuildService;
 			({ version } = await fetchBuild({ channel }, { timeoutMs: 5_000, fromVersion: currentVersion }));
 		} else {
-			const { getLatestRelease } = require("./cli/update-cli") as typeof UpdateCli;
 			({ version } = await getLatestRelease({ timeoutMs: 5_000, channel }));
 		}
 		return Bun.semver.order(version, currentVersion) > 0 ? version : undefined;
@@ -877,7 +877,10 @@ async function runInteractiveMode(
 		);
 		// A resolved version check must not insert its banner into a partial transcript.
 		const notifyNewVersion = (newVersion: string): void => {
-			if (cfgStartupCheckUpdate.get(settings)) mode.showNewVersionNotification(newVersion);
+			if (cfgStartupCheckUpdate.get(settings)) {
+				const { dogfoodUpdateSource } = require("./cli/update-cli") as typeof UpdateCli;
+				mode.showNewVersionNotification(newVersion, dogfoodUpdateSource()?.appName ?? APP_NAME);
+			}
 		};
 		if (cfgUpdateAuto.get(settings)) {
 			const { runAutoUpdate } = require("./cli/auto-update") as typeof AutoUpdate;

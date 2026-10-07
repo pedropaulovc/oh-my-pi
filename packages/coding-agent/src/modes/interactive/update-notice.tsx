@@ -7,12 +7,12 @@
 import type { JSXNode } from "@oh-my-pi/pi-tui";
 import { currentTheme } from "@oh-my-pi/pi-tui/theme/runtime";
 import { bold } from "@oh-my-pi/pi-tui/theme/theme";
+import { APP_NAME } from "@oh-my-pi/pi-utils";
 import { AnsiText } from "../../ui/transcript/ansi-text";
 import { Notice } from "../../ui/transcript/messages/notices";
 
-const UPDATE_COMMAND = "omp update";
-
-export function UpdateNotice(props: { readonly version: string }): JSXNode {
+export function UpdateNotice(props: { readonly version: string; readonly appName?: string }): JSXNode {
+	const command = `${props.appName ?? APP_NAME} update`;
 	const prefix = `New version ${props.version} is available. Run: `;
 	const theme = currentTheme();
 	const title = bold(theme.fg("warning", "Update Available"));
@@ -26,15 +26,12 @@ export function UpdateNotice(props: { readonly version: string }): JSXNode {
 			message={[
 				{ t: "Update available", s: "strong" },
 				{ t: ` · New version ${props.version} is available. Run ` },
-				{ t: UPDATE_COMMAND, s: "code" },
+				{ t: command, s: "code" },
 			]}
 			terminal={
 				<col>
 					{rule()}
-					<AnsiText
-						text={`${title}\n${theme.fg("muted", prefix)}${theme.fg("accent", UPDATE_COMMAND)}`}
-						padX={1}
-					/>
+					<AnsiText text={`${title}\n${theme.fg("muted", prefix)}${theme.fg("accent", command)}`} padX={1} />
 					{rule()}
 				</col>
 			}

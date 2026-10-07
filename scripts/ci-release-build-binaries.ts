@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import * as fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import * as path from "node:path";
 import { COMPILED_EXTERNAL_DEPENDENCIES, compileCodingAgent } from "../packages/coding-agent/scripts/compile-binary";
 import { buildLinkedRuntime, type LinkedRuntimeTarget, linkedRuntimeTargets } from "./linked-runtime";
@@ -8,6 +9,68 @@ import { buildLinkedRuntime, type LinkedRuntimeTarget, linkedRuntimeTargets } fr
 const repoRoot = path.join(import.meta.dir, "..");
 const binariesDir = path.join(repoRoot, "packages", "coding-agent", "binaries");
 const entrypoint = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
+const packageManifest: unknown = createRequire(import.meta.url)("../packages/coding-agent/package.json");
+if (
+	typeof packageManifest !== "object" ||
+	packageManifest === null ||
+	!("version" in packageManifest) ||
+	typeof packageManifest.version !== "string"
+) {
+	throw new Error("Coding-agent package manifest has no string version");
+}
+const sourceVersion = packageManifest.version;
+
+interface DogfoodBuildSettings {
+	readonly repository: string;
+	readonly version: string;
+}
+
+const DOGFOOD_REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const DOGFOOD_VERSION_RE = /^(\d+\.\d+\.\d+)-dogfood\.[1-9]\d*$/;
+
+export function resolveDogfoodBuildSettings(env: NodeJS.ProcessEnv = Bun.env): DogfoodBuildSettings | null {
+	const repository = env.DOGFOOD_REPOSITORY?.trim() || undefined;
+	const version = env.DOGFOOD_VERSION?.trim() || undefined;
+	if ((repository === undefined) !== (version === undefined)) {
+		throw new Error("DOGFOOD_REPOSITORY and DOGFOOD_VERSION must be provided together");
+	}
+	if (repository === undefined || version === undefined) return null;
+	if (!DOGFOOD_REPOSITORY_RE.test(repository)) {
+		throw new Error(`DOGFOOD_REPOSITORY must be an owner/name repository identifier: ${repository}`);
+	}
+	const versionMatch = DOGFOOD_VERSION_RE.exec(version);
+	if (!versionMatch) {
+		throw new Error(`DOGFOOD_VERSION must match <semver>-dogfood.<positive revision>: ${version}`);
+	}
+	if (versionMatch[1] !== sourceVersion) {
+		throw new Error(`DOGFOOD_VERSION ${version} does not match source package version ${sourceVersion}`);
+	}
+	return { repository, version };
+}
+
+function resolveOutputPath(target: LinkedRuntimeTarget, dogfood: DogfoodBuildSettings | null): string {
+	if (dogfood === null) {
+		const name = target.platform === "win32" ? `omp-windows-${target.arch}.exe` : `omp-${target.id}`;
+		return `packages/coding-agent/binaries/${name}`;
+	}
+	switch (target.id) {
+		case "linux-x64":
+			return "packages/coding-agent/binaries/omp-dogfood-linux-x64";
+		case "win32-x64":
+			return "packages/coding-agent/binaries/omp-dogfood-windows-x64.exe";
+		default:
+			throw new Error(`Dogfood builds support only linux-x64 and win32-x64, not ${target.id}`);
+	}
+}
+
+function describeDogfoodDefines(dogfood: DogfoodBuildSettings | null): string {
+	if (dogfood === null) return "";
+	return ` defines=${JSON.stringify({
+		__OMP_DOGFOOD_REPOSITORY__: dogfood.repository,
+		__OMP_BUILD_VERSION__: dogfood.version,
+	})}`;
+}
+// Worker threads re-enter the binary's single CLI host entry.
 const isDryRun = process.argv.includes("--dry-run");
 
 function parseRequestedTargets(): Set<string> | null {
@@ -45,13 +108,12 @@ async function runCommand(command: string[], cwd: string): Promise<void> {
 	}
 }
 
-async function buildBinary(target: LinkedRuntimeTarget): Promise<void> {
-	const name = target.platform === "win32" ? `omp-windows-${target.arch}.exe` : `omp-${target.id}`;
-	const outfile = path.join(binariesDir, name);
+async function buildBinary(target: LinkedRuntimeTarget, dogfood: DogfoodBuildSettings | null): Promise<void> {
+	const outfile = resolveOutputPath(target, dogfood);
 	console.log(`Building ${outfile}...`);
 	if (isDryRun) {
 		console.log(
-			`DRY RUN Bun.build target=${target.target} outfile=${outfile} external=${COMPILED_EXTERNAL_DEPENDENCIES.join(",")}`,
+			`DRY RUN Bun.build target=${target.target} outfile=${outfile} external=${COMPILED_EXTERNAL_DEPENDENCIES.join(",")}${describeDogfoodDefines(dogfood)}`,
 		);
 		return;
 	}
@@ -59,10 +121,14 @@ async function buildBinary(target: LinkedRuntimeTarget): Promise<void> {
 	await compileCodingAgent({
 		repoRoot,
 		entrypoint,
-		outfile,
-		executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH ?? (await buildLinkedRuntime(target.id)),
+		outfile: path.join(repoRoot, outfile),
+		executablePath:
+			Bun.env.BUN_COMPILE_EXECUTABLE_PATH ?? (dogfood ? undefined : await buildLinkedRuntime(target.id)),
+		embeddedNative: dogfood ? target : undefined,
 		target: target.target,
 		minifyIdentifiers: true,
+		dogfoodRepository: dogfood?.repository,
+		buildVersion: dogfood?.version,
 		skipBuiltinCodesign: shouldAdhocSignDarwinBinary(target),
 	});
 	// Bun 1.3.12 emits a truncated Mach-O signature on darwin builds.
@@ -75,7 +141,7 @@ async function buildBinary(target: LinkedRuntimeTarget): Promise<void> {
 				"-",
 				"--entitlements",
 				path.join(repoRoot, "scripts", "macos-entitlements.plist"),
-				outfile,
+				path.join(repoRoot, outfile),
 			],
 			repoRoot,
 		);
@@ -101,6 +167,7 @@ async function resetArtifacts(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+	const dogfood = resolveDogfoodBuildSettings();
 	const requestedTargets = parseRequestedTargets();
 	const selectedTargets = requestedTargets
 		? linkedRuntimeTargets.filter(target => requestedTargets.has(target.id))
@@ -121,6 +188,9 @@ async function main(): Promise<void> {
 	if (selectedTargets.length === 0) {
 		throw new Error("No release targets selected.");
 	}
+	if (dogfood !== null) {
+		for (const target of selectedTargets) resolveOutputPath(target, dogfood);
+	}
 
 	await fs.mkdir(binariesDir, { recursive: true });
 	// Generate inside the try so resetArtifacts() always restores the empty
@@ -128,11 +198,11 @@ async function main(): Promise<void> {
 	try {
 		await generateBundle();
 		for (const target of selectedTargets) {
-			await buildBinary(target);
+			await buildBinary(target, dogfood);
 		}
 	} finally {
 		await resetArtifacts();
 	}
 }
 
-await main();
+if (import.meta.main) await main();

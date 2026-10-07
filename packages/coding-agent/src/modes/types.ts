@@ -812,7 +812,7 @@ export interface InteractiveModeContext {
 	showWarning(message: string, options?: { hideWithToolActivity?: boolean }): void;
 	/** The provider's `active-notice` line when the viewed session moves onto a new model of that provider. */
 	showActiveModelNotice(): void;
-	showNewVersionNotification(newVersion: string): void;
+	showNewVersionNotification(newVersion: string, appName?: string): void;
 	clearEditor(): void;
 	updatePendingMessagesDisplay(): void;
 	queueCompactionMessage(
