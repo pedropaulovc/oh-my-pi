@@ -98,11 +98,24 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build dogfood binaries
+    name: "Build dogfood binary: ${{ matrix.target_id }}"
     needs: validate
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+    # Each platform gets its own checkout: native generation resets shared files.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            target_id: linux-x64
+            binary_path: packages/coding-agent/binaries/omp-dogfood-linux-x64
+            native_targets: linux-x64-baseline linux-x64-modern
+          - platform: win32
+            target_id: win32-x64
+            binary_path: packages/coding-agent/binaries/omp-dogfood-windows-x64.exe
+            native_targets: win32-x64-baseline
     steps:
       # The workflow itself came from main. This checkout is the validated,
       # exact dogfood source and does not persist a token into its git config.
@@ -136,26 +149,28 @@ jobs:
       - name: Compose Bazel cache config
         id: bazel-cache
         uses: ./.github/actions/bazel-cache
-      - name: Build Linux and Windows x64 native addons (Bazel)
+      - name: Build ${{ matrix.target_id }} native addons (Bazel)
         env:
           OMP_BAZEL_RC: ${{ steps.bazel-cache.outputs.rc }}
+          NATIVE_TARGETS: ${{ matrix.native_targets }}
         shell: bash
         run: |
           set -euo pipefail
           if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
-          # Upstream removed bazel-natives in 915f45821f. Follow its native
-          # jobs' serial builds to avoid concurrent addon links exhausting RAM.
+          # Keep native variants serial within each runner to limit addon-link RAM.
           # The current cache action builds uncached on hosted runners.
-          for target in linux-x64-baseline linux-x64-modern win32-x64-baseline; do
+          read -r -a native_targets <<< "$NATIVE_TARGETS"
+          for target in "${native_targets[@]}"; do
             bun scripts/bazel-natives.ts "$target"
           done
-      - name: Compile exactly the dogfood x64 binaries
+      - name: Compile dogfood ${{ matrix.target_id }} binary
         env:
-          RELEASE_TARGETS: linux-x64,win32-x64
+          RELEASE_TARGETS: ${{ matrix.target_id }}
           DOGFOOD_REPOSITORY: ${{ github.repository }}
           DOGFOOD_VERSION: ${{ needs.validate.outputs.dogfood_version }}
         run: bun run ci:release:build-binaries
       - name: Smoke Linux dogfood binary
+        if: matrix.platform == 'linux'
         env:
           DOGFOOD_VERSION: ${{ needs.validate.outputs.dogfood_version }}
         shell: bash
@@ -175,15 +190,14 @@ jobs:
       - name: Upload dogfood binaries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dogfood-binaries
+          name: dogfood-binaries-${{ matrix.target_id }}
           if-no-files-found: error
-          path: |
-            packages/coding-agent/binaries/omp-dogfood-linux-x64
-            packages/coding-agent/binaries/omp-dogfood-windows-x64.exe
+          path: ${{ matrix.binary_path }}
           retention-days: 1
 
   publish:
     name: Publish dogfood release
+    # Publication requires validation and success of every platform build leg.
     needs: [validate, build]
     runs-on: ubuntu-22.04
     permissions:
@@ -195,7 +209,8 @@ jobs:
       - name: Download dogfood binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: dogfood-binaries
+          pattern: dogfood-binaries-*
+          merge-multiple: true
           path: release-assets
       - name: Generate SHA256SUMS
         working-directory: release-assets
