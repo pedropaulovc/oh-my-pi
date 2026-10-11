@@ -25,6 +25,7 @@ import { renderTerminalOutputIsolated } from "./terminal-output-worker-client";
 import type { ToolSession } from "../tools";
 import { resolveToCwd } from "../tools/path-utils";
 
+import { awaitServiceObservationBarrier } from "./diagnostic-observers";
 import { cfgLaunchEnabled } from "../tools/settings";
 
 export interface ServiceReady {
@@ -118,7 +119,7 @@ function assertOperationEpoch(session: ToolSession, epoch: number): void {
 	}
 }
 
-async function request(
+async function requestAfterObservation(
 	session: ToolSession,
 	operation: DaemonOperation,
 	signal?: AbortSignal,
@@ -154,6 +155,11 @@ async function request(
 		}
 	}
 	return result;
+}
+
+async function request(...args: Parameters<typeof requestAfterObservation>): Promise<DaemonRpcResult> {
+	await awaitServiceObservationBarrier(serviceOwner(args[0]));
+	return requestAfterObservation(...args);
 }
 
 export async function listServices(session: ToolSession, signal?: AbortSignal): Promise<DaemonSnapshot[]> {
