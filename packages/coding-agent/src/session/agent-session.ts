@@ -5561,7 +5561,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				const message: CommittableAsideMessage | null | undefined = this.#stallReminders?.takeAside()?.();
 				if (!message) return;
 				this.#resetPromptMaintenanceState();
-				this.#beginInFlight();
+				const inFlightEpoch = this.#beginInFlight();
 				try {
 					this.sessionManager.appendCustomEntry("stall_diagnostic_turn", { state: "started" });
 					this.#stallDiagnosticTurnGeneration = this.#sessionGeneration;
@@ -5577,7 +5577,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 						await this.#messageEndPersistenceTail;
 						this.#finishStallDiagnosticTurn();
 					} finally {
-						this.#endInFlight();
+						this.#endInFlight(inFlightEpoch);
 					}
 				}
 			},
