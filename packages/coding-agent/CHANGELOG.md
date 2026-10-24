@@ -16,6 +16,7 @@
 - Added Bash `async: "auto"`: potentially slow finite commands stay inline for `bash.asyncAuto.inlineGraceMs`, then promote the same process without restarting. Short deadlines stay inline; at the job cap auto completes inline with a notice while `async: true` errors. Finite async commands can request `wake` or `ambient` progress after backgrounding.
 - Backgrounded Bash and Eval results now name the command or cell in the notice (`Backgrounded as job bg_5 (uv run verify.py) (killed once …); …`), keeping parallel results attributable even when they return out of order.
 - Added collapsible async progress in the transcript: progress blocks show the latest lines (bounded by rows and bytes) behind an "… N earlier lines" marker, expand with Ctrl+O, and completion rows report exit codes with failures in red that stay visible even while tool activity is hidden.
+- Added opt-in periodic stall assessments for the main agent, with todo changes, transcript-backed agent histories and active time that remain available after parked sessions are released, preserved transcript ownership when killed agents are revived, background job completions, non-owning service completion observations, and configurable idle waking (`stallReminders`, default interval: 60 minutes) ([#15078](https://github.com/can1357/oh-my-pi/pull/15078) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
 ### Fixed
 
