@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -37,32 +37,18 @@ async function makeTempDir(): Promise<string> {
 }
 
 const TOKEN_ENV = ["GITHUB_TOKEN", "GH_TOKEN"] as const;
+let previousTokens: (readonly [string, string | undefined])[] = [];
 
-/**
- * Source tests model the build's free define without compiling an executable.
- *
- * Entry points that take no request options (`getLatestRelease`,
- * `runUpdateCommand`) resolve the metadata token from the environment and
- * otherwise run the host's `gh auth token`, an unbounded subprocess that can
- * outlive the test timeout and then fetch through a later test's mock. A pinned
- * environment token keeps them off the host CLI.
- */
+/** Source tests model the build's free define without compiling an executable. */
 async function withDogfoodRepository(fn: () => Promise<void>): Promise<void> {
 	const key = "__OMP_DOGFOOD_REPOSITORY__";
 	const previous = Object.getOwnPropertyDescriptor(globalThis, key);
-	const previousTokens = TOKEN_ENV.map(name => [name, process.env[name]] as const);
 	Object.defineProperty(globalThis, key, { configurable: true, value: FORK });
-	process.env.GITHUB_TOKEN = "dogfood-test-token";
-	delete process.env.GH_TOKEN;
 	try {
 		await fn();
 	} finally {
 		if (previous) Object.defineProperty(globalThis, key, previous);
 		else Reflect.deleteProperty(globalThis, key);
-		for (const [name, value] of previousTokens) {
-			if (value === undefined) delete process.env[name];
-			else process.env[name] = value;
-		}
 	}
 }
 
@@ -76,8 +62,24 @@ function latestRelease(overrides: Record<string, unknown> = {}): Record<string, 
 	};
 }
 
+// Paths that receive no explicit `githubToken` (`getLatestRelease`,
+// `runUpdateCommand`, `runDogfoodUpdateCommand`) resolve the metadata token
+// from the environment and otherwise run the host's `gh auth token`, an
+// unbounded subprocess that can outlive the test timeout; the abandoned body
+// then fetches through a later test's mock or writes into a removed temp dir.
+// A pinned environment token keeps every test off the host CLI.
+beforeEach(() => {
+	previousTokens = TOKEN_ENV.map(name => [name, process.env[name]] as const);
+	process.env.GITHUB_TOKEN = "dogfood-test-token";
+	delete process.env.GH_TOKEN;
+});
+
 afterEach(async () => {
 	vi.restoreAllMocks();
+	for (const [name, value] of previousTokens) {
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+	}
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
 });
 
