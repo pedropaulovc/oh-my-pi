@@ -36,16 +36,33 @@ async function makeTempDir(): Promise<string> {
 	return dir;
 }
 
-/** Source tests model the build's free define without compiling an executable. */
+const TOKEN_ENV = ["GITHUB_TOKEN", "GH_TOKEN"] as const;
+
+/**
+ * Source tests model the build's free define without compiling an executable.
+ *
+ * Entry points that take no request options (`getLatestRelease`,
+ * `runUpdateCommand`) resolve the metadata token from the environment and
+ * otherwise run the host's `gh auth token`, an unbounded subprocess that can
+ * outlive the test timeout and then fetch through a later test's mock. A pinned
+ * environment token keeps them off the host CLI.
+ */
 async function withDogfoodRepository(fn: () => Promise<void>): Promise<void> {
 	const key = "__OMP_DOGFOOD_REPOSITORY__";
 	const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+	const previousTokens = TOKEN_ENV.map(name => [name, process.env[name]] as const);
 	Object.defineProperty(globalThis, key, { configurable: true, value: FORK });
+	process.env.GITHUB_TOKEN = "dogfood-test-token";
+	delete process.env.GH_TOKEN;
 	try {
 		await fn();
 	} finally {
 		if (previous) Object.defineProperty(globalThis, key, previous);
 		else Reflect.deleteProperty(globalThis, key);
+		for (const [name, value] of previousTokens) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
 	}
 }
 
