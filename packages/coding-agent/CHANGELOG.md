@@ -34,6 +34,9 @@
 
 - Added `/context all` to show per-tool and per-skill context token estimates in terminal, native, and ACP reports; server-deferred tool catalogs are excluded from context costs.
 - Stash a prompt draft with Ctrl+S and restore or swap it without losing attachments; the composer briefly confirms when a draft is stashed. Mode prompts queued during compaction dispatch once without replaying the slash command or parking their loop continuation ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
+### Fixed
+
+- Artifact reads now preserve full requested lines within the existing byte and paging limits instead of reapplying the ordinary-file column cap, so long single-line JSON output can be recovered without `:raw`. Off-window bracket context retains the configured column cap; oversized multi-range content reports its byte-budget omission ([#13947](https://github.com/can1357/oh-my-pi/pull/13947) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
 ## [18.13.2] - 2026-10-27
 
