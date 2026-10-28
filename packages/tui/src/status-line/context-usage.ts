@@ -139,6 +139,16 @@ export const EMPTY_STRING_PARTS: string[] = [];
 const EMPTY_TOOLS: readonly ContextTool[] = [];
 const EMPTY_SKILLS: readonly ContextSkill[] = [];
 
+export interface ContextTokenDetail {
+	readonly name: string;
+	readonly tokens: number;
+}
+
+export interface ContextUsageDetails {
+	readonly tools: readonly ContextTokenDetail[];
+	readonly skills: readonly ContextTokenDetail[];
+}
+
 /**
  * Skills actually rendered into the system prompt, mirroring the filter in
  * `buildSystemPrompt` (`system-prompt.ts`): the `read` tool must be present so
@@ -155,18 +165,32 @@ function renderedSkills(skills: readonly ContextSkill[], tools: readonly Context
 export function estimateSkillsTokens(skills: readonly ContextSkill[], tokenizer: Tokenizer): number {
 	const fragments: string[] = [];
 	for (const skill of skills) {
-		// "- name: description\n" wire framing tokenizes ~identically to the
-		// concatenated form, so encode each piece separately and sum.
 		fragments.push(skill.name, skill.description ?? "");
 	}
 	return tokenizer.countTokens(fragments);
 }
 
+function estimateSkillsTokenDetails(skills: readonly ContextSkill[], tokenizer: Tokenizer): ContextTokenDetail[] {
+	return skills.map(skill => ({
+		name: skill.name,
+		// "- name: description\n" wire framing tokenizes ~identically to the
+		// concatenated form, so encode each piece separately and sum.
+		tokens: tokenizer.countTokens([skill.name, skill.description ?? ""]),
+	}));
+}
+
 type ToolSchemaSource = readonly ContextTool[];
+
+interface ToolSchemaTokenEstimate {
+	revision: number;
+	sourceRevision: number;
+	tokens: number;
+	details?: ContextTokenDetail[];
+}
 
 interface ToolSchemaTokenCache {
 	revision: number;
-	byTokenizer: WeakMap<Tokenizer, { revision: number; sourceRevision: number; tokens: number }>;
+	byTokenizer: WeakMap<Tokenizer, ToolSchemaTokenEstimate>;
 }
 
 /**
@@ -265,15 +289,42 @@ export function toolSchemaFragments(tool: ContextTool, displayIndent?: number): 
  * must either advance `sourceRevision` or call
  * {@link invalidateToolSchemaMetadata} when those inputs change.
  */
-export function estimateToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tokenizer, sourceRevision = 0): number {
+function estimateToolSchemas(
+	tools: ToolSchemaSource,
+	tokenizer: Tokenizer,
+	sourceRevision: number,
+): ToolSchemaTokenEstimate {
 	const cache = toolSchemaTokenCache(tools);
 	const cached = cache.byTokenizer.get(tokenizer);
-	if (cached?.revision === cache.revision && cached.sourceRevision === sourceRevision) return cached.tokens;
+	if (cached?.revision === cache.revision && cached.sourceRevision === sourceRevision) return cached;
 
 	const fragments = tools.flatMap(tool => toolSchemaFragments(tool).fragments);
 	const tokens = tokenizer.countTokens(fragments);
-	cache.byTokenizer.set(tokenizer, { revision: cache.revision, sourceRevision, tokens });
-	return tokens;
+	const estimate = { revision: cache.revision, sourceRevision, tokens };
+	cache.byTokenizer.set(tokenizer, estimate);
+	return estimate;
+}
+
+function estimateToolSchemaTokenDetails(
+	tools: ToolSchemaSource,
+	tokenizer: Tokenizer,
+	sourceRevision = 0,
+): readonly ContextTokenDetail[] {
+	const estimate = estimateToolSchemas(tools, tokenizer, sourceRevision);
+	if (estimate.details) return estimate.details;
+
+	const details: ContextTokenDetail[] = [];
+	for (const tool of tools) {
+		const { fragments } = toolSchemaFragments(tool);
+		const name = typeof tool.name === "string" ? tool.name : "(unnamed)";
+		details.push({ name, tokens: tokenizer.countTokens(fragments) });
+	}
+	estimate.details = details;
+	return details;
+}
+
+export function estimateToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tokenizer, sourceRevision = 0): number {
+	return estimateToolSchemas(tools, tokenizer, sourceRevision).tokens;
 }
 
 /** Count schemas carried on every request, excluding server-side deferred catalogs. */
@@ -417,6 +468,30 @@ export function computeNonMessageBreakdown(
 	entry.skillful = skillful;
 	entry.breakdown = breakdown;
 	return breakdown;
+}
+
+/** Per-tool and per-skill estimates shown by `/context all`. */
+export function computeContextUsageDetails(
+	session: ContextUsageSession,
+	options: Pick<ContextUsageOptions, "sourceRevision" | "skillful"> = {},
+): ContextUsageDetails {
+	const tokenizer = session.agent.tokenizer;
+	const tools = session.agent.state?.tools ?? EMPTY_TOOLS;
+	const skills =
+		options.skillful === false
+			? EMPTY_SKILLS
+			: renderedSkills(session.renderedSkills ?? session.skills ?? EMPTY_SKILLS, tools);
+	const byLargest = (left: ContextTokenDetail, right: ContextTokenDetail): number =>
+		right.tokens - left.tokens || left.name.localeCompare(right.name);
+	return {
+		tools:
+			session.model?.toolSchemasInContext === false
+				? []
+				: estimateToolSchemaTokenDetails(tools, tokenizer, options.sourceRevision)
+						.map(detail => ({ ...detail }))
+						.sort(byLargest),
+		skills: estimateSkillsTokenDetails(skills, tokenizer).sort(byLargest),
+	};
 }
 
 /**

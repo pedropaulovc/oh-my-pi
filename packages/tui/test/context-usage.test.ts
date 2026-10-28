@@ -18,6 +18,7 @@ import {
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import {
 	type NonMessageTokenSource,
+	computeContextUsageDetails,
 	computeNonMessageBreakdown,
 	computeNonMessageTokens,
 	estimateSkillsTokens,
@@ -27,6 +28,30 @@ import {
 } from "../src/status-line/context-usage";
 
 const tokenizer = new Tokenizer();
+
+describe("computeContextUsageDetails", () => {
+	it("omits deferred tool schemas and refreshes details when the model policy changes", () => {
+		const tools = [{ name: "read", description: "Read files.", parameters: { type: "object" } }];
+		const skills = [
+			{ name: "visible", description: "Visible skill." },
+			{ name: "hidden", hide: true },
+		];
+		const session = {
+			model: { toolSchemasInContext: false } as Model,
+			agent: { tokenizer, state: { tools } },
+			skills,
+		};
+
+		const deferred = computeContextUsageDetails(session);
+		expect(deferred.tools).toEqual([]);
+		expect(deferred.skills.map(skill => skill.name)).toEqual(["visible"]);
+
+		session.model = { toolSchemasInContext: true } as Model;
+		const inline = computeContextUsageDetails(session);
+		expect(inline.tools).toEqual([{ name: "read", tokens: estimateToolSchemaTokens(tools, tokenizer) }]);
+		expect(computeContextUsageDetails(session, { skillful: false }).skills).toEqual([]);
+	});
+});
 
 describe("estimateToolSchemaTokens", () => {
 	it("counts arktype tool schemas by their wire JSON Schema, not arktype internals", () => {
