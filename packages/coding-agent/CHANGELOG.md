@@ -33,6 +33,7 @@
 ### Added
 
 - Added `/context all` to show per-tool and per-skill context token estimates in terminal, native, and ACP reports; server-deferred tool catalogs are excluded from context costs.
+- Stash a prompt draft with Ctrl+S and restore or swap it without losing attachments; the composer briefly confirms when a draft is stashed. Mode prompts queued during compaction dispatch once without replaying the slash command or parking their loop continuation ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
 ## [18.13.2] - 2026-10-27
 
