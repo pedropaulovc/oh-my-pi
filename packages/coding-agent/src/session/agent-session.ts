@@ -8367,13 +8367,14 @@ export class AgentSession implements SettingsScope {
 	 *
 	 * @throws {AgentBusyError} while a turn runs.
 	 */
-	async resume(): Promise<void> {
+	async resume(options?: { onAccepted?: () => void }): Promise<void> {
 		const prompt = this.#recovery.prepareResume();
 		if (!prompt) {
 			await this.prompt(manualContinuePrompt, {
 				synthetic: true,
 				userInitiated: true,
 				expandPromptTemplates: false,
+				onAccepted: options?.onAccepted,
 			});
 			return;
 		}
@@ -8381,6 +8382,7 @@ export class AgentSession implements SettingsScope {
 		this.#todo.resetCycle();
 		this.#resetPromptMaintenanceState();
 		this.#scheduleAgentContinue({ source: "manual-continue", turnRecords: [prompt] });
+		options?.onAccepted?.();
 	}
 
 	/**
@@ -8522,7 +8524,9 @@ export class AgentSession implements SettingsScope {
 				promptGeneration: queueGeneration,
 			});
 			outcome.sessionClaimed = queued;
-			if (!queued && this.#promptGeneration !== queueGeneration && !options?.synthetic) {
+			if (queued) {
+				options?.onAccepted?.();
+			} else if (this.#promptGeneration !== queueGeneration && !options?.synthetic) {
 				this.#promptDropped?.({ text: typedText, images: options?.images });
 			}
 			return true;
@@ -8601,6 +8605,7 @@ export class AgentSession implements SettingsScope {
 				onPromptQueued: options?.onPromptQueued,
 			});
 			outcome.sessionClaimed = true;
+			options?.onAccepted?.();
 			return true;
 		}
 
@@ -8699,7 +8704,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	async promptCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
-		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted"> & {
+		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted" | "onAccepted"> & {
 			queueChipText?: string;
 			queueOnly?: boolean;
 			onPromptQueued?: PromptOptions["onPromptQueued"];
@@ -8710,7 +8715,7 @@ export class AgentSession implements SettingsScope {
 
 	async #promptCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
-		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted"> & {
+		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted" | "onAccepted"> & {
 			queueChipText?: string;
 			queueOnly?: boolean;
 			onPromptQueued?: PromptOptions["onPromptQueued"];
@@ -8732,7 +8737,7 @@ export class AgentSession implements SettingsScope {
 	async #dispatchCustomPrompt<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
 		options:
-			| (Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted"> & {
+			| (Pick<PromptOptions, "streamingBehavior" | "toolChoice" | "onPromptAdmitted" | "onAccepted"> & {
 					queueChipText?: string;
 					queueOnly?: boolean;
 					onPromptQueued?: PromptOptions["onPromptQueued"];
@@ -8781,6 +8786,7 @@ export class AgentSession implements SettingsScope {
 				onPromptQueued: options?.onPromptQueued,
 			});
 			outcome.sessionClaimed = true;
+			options.onAccepted?.();
 			return true;
 		}
 
@@ -8828,6 +8834,7 @@ export class AgentSession implements SettingsScope {
 				onPromptQueued: options?.onPromptQueued,
 			});
 			outcome.sessionClaimed = true;
+			options?.onAccepted?.();
 			return true;
 		}
 		outcome.sessionClaimed = await this.#promptWithMessage(preparedMessage, textContent, {
@@ -9034,7 +9041,7 @@ export class AgentSession implements SettingsScope {
 		expandedText: string,
 		options?: Pick<
 			PromptOptions,
-			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted"
+			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted" | "onAccepted"
 		> & {
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
@@ -9286,6 +9293,13 @@ export class AgentSession implements SettingsScope {
 			if (planReferenceMessage) {
 				this.#planReferenceSent = true;
 			}
+			const unsubscribeAccepted = options?.onAccepted
+				? this.agent.subscribe(event => {
+						if (event.type !== "message_start" || event.message !== message) return;
+						unsubscribeAccepted?.();
+						options?.onAccepted?.();
+					})
+				: undefined;
 			try {
 				const run = this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions, () => {
 					// `agent.prompt` claims streaming synchronously before its
@@ -9297,6 +9311,7 @@ export class AgentSession implements SettingsScope {
 				});
 				await run;
 			} finally {
+				unsubscribeAccepted?.();
 				this.#stats.setPendingSnapshot(undefined);
 			}
 			if (!options?.skipPostPromptRecoveryWait) {
@@ -9528,6 +9543,7 @@ export class AgentSession implements SettingsScope {
 				rawText: text,
 				onPromptQueued: options?.onPromptQueued,
 			});
+			options?.onAccepted?.();
 			return;
 		}
 		// Synthetic branch: agent-initiated hidden developer message. Bypass
@@ -9556,6 +9572,7 @@ export class AgentSession implements SettingsScope {
 		};
 		this.agent.followUp(directive);
 		options.onPromptQueued?.(imageDescriptionNotice ? [imageDescriptionNotice, directive] : [directive]);
+		options.onAccepted?.();
 		this.#scheduleIdleQueueDrain();
 	}
 
