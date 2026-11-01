@@ -22,6 +22,10 @@
 - `/debug` now includes an opt-in prompt-cache view and includes bounded derived cache diagnostics plus dropped-record metadata in report bundles when `PI_PROMPT_CACHE_DEBUG=1` ([#11938](https://github.com/can1357/oh-my-pi/pull/11938) by [@pedropaulovc](https://github.com/pedropaulovc)).
 - Added `/context all` to show per-tool and per-skill context token estimates in terminal, native, and ACP reports; server-deferred tool catalogs are excluded from context costs.
 
+### Changed
+
+- Stash a prompt draft with Ctrl+S and restore or swap it without losing attachments; the composer briefly confirms when a draft is stashed. Mode prompts queued during compaction dispatch once without replaying the slash command or parking their loop continuation ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
 ### Fixed
 
 - `omp -p` text mode now prints each automatic retry with its error (for example "Couldn't reach api.anthropic.com … check your network") instead of showing only `Working...` while a turn retries ([#17529](https://github.com/can1357/oh-my-pi/pull/17529) by [@Mannan-Goyal](https://github.com/Mannan-Goyal))
@@ -36,6 +40,7 @@
 - Completed asynchronous jobs now show their terminal result text in the TUI, including failures.
 - Supervised service completions now include a neutral diagnostic when a process exits with a nonzero code without a reported termination reason.
 - Fixed auth-broker startup reporting a rejected bearer token (401/403) as an unreachable broker; it now explains that the reachable broker rejected the token and provides guidance for updating it ([#11073](https://github.com/can1357/oh-my-pi/pull/11073) by [@pedropaulovc](https://github.com/pedropaulovc)).
+- Preserve restored rich drafts when a submitted prompt fails after acceptance, and return mode-command attachments when an input hook fails before admission.
 
 ## [18.15.0] - 2026-11-01
 
