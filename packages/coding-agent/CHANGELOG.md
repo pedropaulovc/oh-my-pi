@@ -11,6 +11,10 @@
 - Added a `:level` suffix to `^` model tags, such as `^openai-codex/gpt-6-astra:high`, that sets the tagged subagent's initial effort. Typing `:` after a mention lists the model's supported levels. The task tool's `effort` hint and `task.maxEffort` do not override the tagged level, and a per-call `model` for that agent fails as a conflict ([#17574](https://github.com/can1357/oh-my-pi/pull/17574) by [@a-glapinski](https://github.com/a-glapinski))
 - RPC `bash` results now say when the output was cut: `elidedBytes`/`elidedLines` for a dropped middle, and `columnTruncatedLines`, `columnTruncatedRange`, `columnDroppedBytes` and `columnMax` for lines cut to the column cap. The Go, Python and Rust SDKs decode them ([#17957](https://github.com/can1357/oh-my-pi/pull/17957) by [@H4vC](https://github.com/H4vC))
 
+### Changed
+
+- Kept fork dogfood updates pinned to verified `omp-dogfood` GitHub release assets while official binary updates use the build service and binary patches; dogfood updates leave official installations and update-channel settings untouched, and startup notices recommend `omp-dogfood update`.
+
 ### Fixed
 
 - Long bash output cut in the middle no longer splits a line at the `[…N ln elided…]` marker, and its "Showing lines …" notice now names the lines actually shown, ending at the output's real last line ([#17957](https://github.com/can1357/oh-my-pi/pull/17957) by [@H4vC](https://github.com/H4vC))
@@ -210,9 +214,6 @@
 - Fixed `read` of a whole URL returning no content when the page's first line is over the 50 KB output budget, as on minified pages read with `:raw`; it now shows that line's first 50 KB ([#17500](https://github.com/can1357/oh-my-pi/pull/17500) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed an advisor whose usage-limited account kept being reported as switchable retrying the same capped account thousands of times; it now tries each sibling account at most once per provider per failing review, then falls back, waits, or pauses on the quota ([#17472](https://github.com/can1357/oh-my-pi/issues/17472))
 - Fixed LSP definition, type definition, implementation and reference results carrying a stray carriage return on every source context line from files with Windows (CRLF) line endings ([#17549](https://github.com/can1357/oh-my-pi/pull/17549) by [@JustasMasiulis](https://github.com/JustasMasiulis))
-### Changed
-
-- Kept fork dogfood updates pinned to verified `omp-dogfood` GitHub release assets while official binary updates use the build service and binary patches; dogfood updates leave official installations and update-channel settings untouched, and startup notices recommend `omp-dogfood update`.
 
 ## [18.14.1] - 2026-10-31
 
