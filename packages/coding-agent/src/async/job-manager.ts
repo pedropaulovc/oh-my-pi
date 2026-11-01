@@ -87,6 +87,8 @@ export interface AsyncJob {
 	startTime: number;
 	/** When the job's run settled; `endTime - startTime` is its frozen run duration. */
 	endTime?: number;
+	/** When the job most recently reported progress, even without a progress sink. */
+	progressAt?: number;
 	label: string;
 	/**
 	 * What the job is for, in the model's words: the `i` intent on the call
@@ -459,6 +461,7 @@ export class AsyncJobManager {
 		AsyncJobManager.#instance = value;
 	}
 
+	readonly #settledListeners = new Set<(job: AsyncJob) => void>();
 	/** Reset the process-global instance. Test-only. */
 	static resetForTests(): void {
 		AsyncJobManager.#instance = undefined;
@@ -542,6 +545,39 @@ export class AsyncJobManager {
 		);
 	}
 
+	/**
+	 * Observe each job once, after its body returns or throws (not merely on
+	 * cancellation), before delivery or row eviction. Includes suppressed and
+	 * foreground jobs. Listeners must copy any metadata they retain; this is
+	 * the live job row, not an immutable snapshot. Listener errors are isolated.
+	 */
+	onSettled(listener: (job: AsyncJob) => void): () => void {
+		this.#settledListeners.add(listener);
+		return () => {
+			this.#settledListeners.delete(listener);
+		};
+	}
+
+	#notifySettled(job: AsyncJob): void {
+		if (this.#settledListeners.size === 0) return;
+		const warn = (error: unknown): void => {
+			logger.warn("Async job settled observer failed", {
+				jobId: job.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		};
+		for (const listener of this.#settledListeners) {
+			try {
+				// Async functions are assignable to void callbacks too. Do not
+				// await observers, but isolate their rejected promises as well.
+				const result = listener(job) as void | Promise<void>;
+				if (result) void Promise.resolve(result).catch(warn);
+			} catch (error) {
+				warn(error);
+			}
+		}
+	}
+
 	/** Effective running-job cap (at least 1), resolved at check time. */
 	get #maxRunningJobs(): number {
 		const option = this.#maxRunningJobsOption;
@@ -618,6 +654,7 @@ export class AsyncJobManager {
 
 		const reportProgress = async (text: string, details?: AsyncJobDetails): Promise<void> => {
 			job.progressText = text;
+			job.progressAt = Date.now();
 			if (details) job.latestDetails = details;
 			if (!options?.onProgress) return;
 			try {
@@ -629,6 +666,7 @@ export class AsyncJobManager {
 				});
 			}
 		};
+		this.#jobs.set(id, job);
 		job.promise = (async () => {
 			try {
 				const outcome = await run({
@@ -659,10 +697,12 @@ export class AsyncJobManager {
 				// enqueue a completion after cancel() returned true.
 				if (this.#isCancelled(job)) {
 					job.resultText = text;
+					this.#notifySettled(job);
 				} else {
 					job.status = "completed";
 					job.resultText = text;
 					this.#recordAgentReply(job);
+					this.#notifySettled(job);
 					this.#enqueueDelivery(id, text);
 				}
 			} catch (error) {
@@ -685,7 +725,10 @@ export class AsyncJobManager {
 				if (!this.#isCancelled(job)) {
 					job.status = "failed";
 					this.#recordAgentReply(job);
+					this.#notifySettled(job);
 					this.#enqueueDelivery(id, errorText);
+				} else {
+					this.#notifySettled(job);
 				}
 			}
 			if (this.#releasedForegroundJobs.has(id)) this.#discardForegroundJob(job);
@@ -702,7 +745,6 @@ export class AsyncJobManager {
 			}
 		})();
 
-		this.#jobs.set(id, job);
 		return id;
 	}
 
@@ -749,6 +791,7 @@ export class AsyncJobManager {
 		};
 		this.#jobs.set(id, job);
 		this.#recordAgentReply(job);
+		this.#notifySettled(job);
 		this.#enqueueDelivery(id, result.text);
 		this.#scheduleEviction(job);
 		return id;

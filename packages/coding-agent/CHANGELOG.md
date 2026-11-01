@@ -25,6 +25,7 @@
 ### Changed
 
 - Stash a prompt draft with Ctrl+S and restore or swap it without losing attachments; the composer briefly confirms when a draft is stashed. Mode prompts queued during compaction dispatch once without replaying the slash command or parking their loop continuation ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
+- Added opt-in periodic stall assessments for the main agent, with todo changes, transcript-backed agent histories and active time that remain available after parked sessions are released, preserved transcript ownership when killed agents are revived, background job completions, non-owning service completion observations, and configurable idle waking (`stallReminders`, default interval: 60 minutes) ([#15078](https://github.com/can1357/oh-my-pi/pull/15078) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
 ### Fixed
 
