@@ -17,6 +17,10 @@
 
 - Kept fork dogfood updates pinned to verified `omp-dogfood` GitHub release assets while official binary updates use the build service and binary patches; dogfood updates leave official installations and update-channel settings untouched, and startup notices recommend `omp-dogfood update`.
 
+### Changed
+
+- `/debug` now includes an opt-in prompt-cache view and includes bounded derived cache diagnostics plus dropped-record metadata in report bundles when `PI_PROMPT_CACHE_DEBUG=1` ([#11938](https://github.com/can1357/oh-my-pi/pull/11938) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
 ### Fixed
 
 - `omp -p` text mode now prints each automatic retry with its error (for example "Couldn't reach api.anthropic.com … check your network") instead of showing only `Working...` while a turn retries ([#17529](https://github.com/can1357/oh-my-pi/pull/17529) by [@Mannan-Goyal](https://github.com/Mannan-Goyal))
