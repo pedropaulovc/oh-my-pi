@@ -20,6 +20,7 @@
 ### Changed
 
 - `/debug` now includes an opt-in prompt-cache view and includes bounded derived cache diagnostics plus dropped-record metadata in report bundles when `PI_PROMPT_CACHE_DEBUG=1` ([#11938](https://github.com/can1357/oh-my-pi/pull/11938) by [@pedropaulovc](https://github.com/pedropaulovc)).
+- Added `/context all` to show per-tool and per-skill context token estimates in terminal, native, and ACP reports; server-deferred tool catalogs are excluded from context costs.
 
 ### Fixed
 
