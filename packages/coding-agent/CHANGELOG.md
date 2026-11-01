@@ -41,6 +41,7 @@
 - Supervised service completions now include a neutral diagnostic when a process exits with a nonzero code without a reported termination reason.
 - Fixed auth-broker startup reporting a rejected bearer token (401/403) as an unreachable broker; it now explains that the reachable broker rejected the token and provides guidance for updating it ([#11073](https://github.com/can1357/oh-my-pi/pull/11073) by [@pedropaulovc](https://github.com/pedropaulovc)).
 - Preserve restored rich drafts when a submitted prompt fails after acceptance, and return mode-command attachments when an input hook fails before admission.
+- Artifact reads now preserve full requested lines within the existing byte and paging limits instead of reapplying the ordinary-file column cap, so long single-line JSON output can be recovered without `:raw`. Off-window bracket context retains the configured column cap; oversized multi-range content reports its byte-budget omission ([#13947](https://github.com/can1357/oh-my-pi/pull/13947) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
 ## [18.15.0] - 2026-11-01
 
