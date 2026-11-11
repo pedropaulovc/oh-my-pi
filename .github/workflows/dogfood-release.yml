@@ -134,6 +134,15 @@ jobs:
           # "import.meta is only valid inside modules".)
           bun-version: "1.4.4"
       - name: Install dependencies
+        # Temporary workaround: upstream main's committed export-viewer
+        # manifest has been stale since 54f3265997 (upstream's own CI fails
+        # `bun install` there). Under `CI=true` the `prepare` script verifies
+        # that manifest and fails the install; otherwise it rewrites the
+        # manifest for this exact source, which the build's
+        # `gen:export-viewer --check` then validates. Drop this `env` once
+        # upstream regenerates the manifest.
+        env:
+          CI: "false"
         run: bun install --frozen-lockfile
       - name: Install Bazel native build prerequisites
         shell: bash
