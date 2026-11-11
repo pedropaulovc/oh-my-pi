@@ -49,6 +49,7 @@
 - Failed asynchronous Bash results no longer repeat output already shown through progress updates.
 - Completed asynchronous jobs now show their terminal result text in the TUI, including failures.
 - Supervised service completions now include a neutral diagnostic when a process exits with a nonzero code without a reported termination reason.
+- Fixed auth-broker startup reporting a rejected bearer token (401/403) as an unreachable broker; it now explains that the reachable broker rejected the token and provides guidance for updating it ([#11073](https://github.com/can1357/oh-my-pi/pull/11073) by [@pedropaulovc](https://github.com/pedropaulovc)).
 ### Changed
 
 - `curl -fsSL https://omp.sh/install | sh` and `install.ps1` now install the standalone binary by default, even when bun is present, so installs get delta updates; pass `--source`/`-Source` for a bun package install
