@@ -15,6 +15,7 @@
 - Added Bash `async: "auto"`: potentially slow finite commands stay inline for `bash.asyncAuto.inlineGraceMs`, then promote the same process without restarting. Short deadlines stay inline; at the job cap auto completes inline with a notice while `async: true` errors. Finite async commands can request `wake` or `ambient` progress after backgrounding.
 - Backgrounded Bash and Eval results now name the command or cell in the notice (`Backgrounded as job bg_5 (uv run verify.py) (killed once …); …`), keeping parallel results attributable even when they return out of order.
 - Added collapsible async progress in the transcript: progress blocks show the latest lines (bounded by rows and bytes) behind an "… N earlier lines" marker, expand with Ctrl+O, and completion rows report exit codes with failures in red that stay visible even while tool activity is hidden. Completion rows preserve native notice semantics and truncate to the terminal viewport without wrapping.
+- `/debug` now includes an opt-in prompt-cache view and includes bounded derived cache diagnostics plus dropped-record metadata in report bundles when `PI_PROMPT_CACHE_DEBUG=1` ([#11938](https://github.com/can1357/oh-my-pi/pull/11938) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
 ### Fixed
 
