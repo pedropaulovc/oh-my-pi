@@ -280,7 +280,15 @@ llvm_msvc_tools(name = "llvm_msvc_tools")
 
 xwin_sysroot = use_repo_rule("//bazel/toolchains/msvc:sysroot.bzl", "xwin_sysroot_repository")
 
-xwin_sysroot(name = "xwin_sysroot")
+# Fork-only temporary workaround: the pinned xwin 0.6.5 can no longer resolve
+# the VS 17 channel's newest SDK for x64 on a cold fetch ("unable to find
+# x86_64 headers for Win11SDK_10.0.26100"), which every hosted dogfood build
+# is. Pin the SDK the arm64 splat already uses; drop this once upstream's
+# default x64 splat fetches cold again.
+xwin_sysroot(
+    name = "xwin_sysroot",
+    sdk_version = "10.0.22621",
+)
 
 xwin_sysroot(
     name = "xwin_sysroot_arm64",
