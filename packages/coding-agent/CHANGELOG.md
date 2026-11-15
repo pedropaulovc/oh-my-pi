@@ -27,6 +27,9 @@
 - Failed asynchronous Bash results no longer repeat output already shown through progress updates.
 - Completed asynchronous jobs now show their terminal result text in the TUI, including failures.
 - Supervised service completions now include a neutral diagnostic when a process exits with a nonzero code without a reported termination reason.
+### Added
+
+- Added `/context all` to show per-tool and per-skill context token estimates in terminal, native, and ACP reports; server-deferred tool catalogs are excluded from context costs.
 
 ## [18.20.2] - 2026-11-14
 
