@@ -14,6 +14,21 @@
 - Fixed auth-broker startup reporting a rejected bearer token (401/403) as an unreachable broker; it now explains that the reachable broker rejected the token and provides guidance for updating it ([#11073](https://github.com/can1357/oh-my-pi/pull/11073) by [@pedropaulovc](https://github.com/pedropaulovc)).
 - `/debug` now includes an opt-in prompt-cache view and includes bounded derived cache diagnostics plus dropped-record metadata in report bundles when `PI_PROMPT_CACHE_DEBUG=1` ([#11938](https://github.com/can1357/oh-my-pi/pull/11938) by [@pedropaulovc](https://github.com/pedropaulovc)).
 - Added `/context all` to show per-tool and per-skill context token estimates in terminal, native, and ACP reports; server-deferred tool catalogs are excluded from context costs.
+### Breaking Changes
+
+- Replaced the `app.session.observe` keybinding action with `app.agents.hub`; saved observer shortcuts migrate automatically, and API consumers must use the new action ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
+### Added
+
+- Added the `app.editor.stash` (`Ctrl+S`) shortcut and composer draft snapshot APIs to stash, restore, or swap rich drafts (text, cursor position, Vim mode, collapsed pastes, and image attachments), with a brief muted confirmation in the empty composer ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
+### Changed
+
+- `Ctrl+S` now stashes or restores a prompt draft instead of opening Agent Hub; `Alt+A` still opens the Hub, and explicit Hub remaps to `Ctrl+S` take precedence over the stash default. Mode prompts queued during compaction dispatch once without replaying the slash command or parking their loop continuation ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
+### Fixed
+
+- Preserve restored rich drafts when a submitted prompt fails after acceptance, and return mode-command attachments when an input hook fails before admission.
 
 ## [19.2.1] - 2026-11-25
 
