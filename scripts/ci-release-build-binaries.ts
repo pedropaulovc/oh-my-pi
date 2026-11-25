@@ -42,8 +42,8 @@ export function resolveDogfoodBuildSettings(env: NodeJS.ProcessEnv = Bun.env): D
 	if (!versionMatch) {
 		throw new Error(`DOGFOOD_VERSION must match <semver>-dogfood.<positive revision>: ${version}`);
 	}
-	if (versionMatch[1] !== sourceVersion) {
-		throw new Error(`DOGFOOD_VERSION ${version} does not match source package version ${sourceVersion}`);
+	if (Bun.semver.order(versionMatch[1], sourceVersion) > 0) {
+		throw new Error(`DOGFOOD_VERSION ${version} exceeds source package version ${sourceVersion}`);
 	}
 	return { repository, version };
 }

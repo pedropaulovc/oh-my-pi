@@ -31,6 +31,18 @@ describe("dogfood release binary build", () => {
 		expect(output).not.toContain("outfile=packages/coding-agent/binaries/omp-windows-x64.exe ");
 	});
 
+	it("allows building a published upstream dogfood version when source package version is already bumped ahead", () => {
+		expect(
+			resolveDogfoodBuildSettings({
+				DOGFOOD_REPOSITORY: "pedropaulovc/oh-my-pi",
+				DOGFOOD_VERSION: "0.0.1-dogfood.1",
+			}),
+		).toEqual({
+			repository: "pedropaulovc/oh-my-pi",
+			version: "0.0.1-dogfood.1",
+		});
+	});
+
 	it("rejects partial and non-dogfood build environments", () => {
 		expect(() => resolveDogfoodBuildSettings({ DOGFOOD_REPOSITORY: "pedropaulovc/oh-my-pi" })).toThrow(
 			"provided together",
@@ -46,6 +58,6 @@ describe("dogfood release binary build", () => {
 				DOGFOOD_REPOSITORY: "pedropaulovc/oh-my-pi",
 				DOGFOOD_VERSION: "999.0.0-dogfood.1",
 			}),
-		).toThrow("does not match source package version");
+		).toThrow("exceeds source package version");
 	});
 });
