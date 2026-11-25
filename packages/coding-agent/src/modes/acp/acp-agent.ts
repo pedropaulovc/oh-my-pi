@@ -1172,6 +1172,7 @@ export class AcpAgent implements Agent {
 
 	async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
 		const record = this.#getSessionRecord(params.sessionId);
+		using _stallReminderDelivery = record.session.holdStallReminderDelivery();
 		this.#applyModeChange(record, params.modeId);
 		await this.#connection.sessionUpdate({
 			sessionId: record.protocolSessionId,
@@ -1186,6 +1187,8 @@ export class AcpAgent implements Agent {
 		if (typeof params.value === "boolean") {
 			throw new Error(`Unsupported boolean ACP config option: ${params.configId}`);
 		}
+		using _stallReminderDelivery =
+			params.configId === MODE_CONFIG_ID ? record.session.holdStallReminderDelivery() : undefined;
 
 		switch (params.configId) {
 			case MODE_CONFIG_ID:
@@ -2628,6 +2631,7 @@ export class AcpAgent implements Agent {
 				details,
 			};
 		}
+		using _stallReminderDelivery = session.holdStallReminderDelivery();
 		// Approved. Set the plan reference so the next turn injects the plan
 		// content as context (the file keeps its agent-chosen name — no rename),
 		session.setPlanReferencePath(planFilePath);
