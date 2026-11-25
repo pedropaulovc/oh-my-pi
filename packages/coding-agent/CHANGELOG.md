@@ -5,6 +5,22 @@
 ### Added
 
 - Dictation now works with xAI speech-to-text models such as `xai-oauth/grok-voice-transcribe-2.0` ([#19184](https://github.com/can1357/oh-my-pi/pull/19184) by [@Xytronix](https://github.com/Xytronix))
+### Breaking Changes
+
+- Replaced the `app.session.observe` keybinding action with `app.agents.hub`; saved observer shortcuts migrate automatically, and API consumers must use the new action ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
+### Added
+
+- Added the `app.editor.stash` (`Ctrl+S`) shortcut and composer draft snapshot APIs to stash, restore, or swap rich drafts (text, cursor position, Vim mode, collapsed pastes, and image attachments), with a brief muted confirmation in the empty composer ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
+### Changed
+
+- `Ctrl+S` now stashes or restores a prompt draft instead of opening Agent Hub; `Alt+A` still opens the Hub, and explicit Hub remaps to `Ctrl+S` take precedence over the stash default. Mode prompts queued during compaction dispatch once without replaying the slash command or parking their loop continuation ([#13468](https://github.com/can1357/oh-my-pi/pull/13468) by [@pedropaulovc](https://github.com/pedropaulovc)).
+
+### Fixed
+
+- Preserve restored rich drafts when a submitted prompt fails after acceptance, and return mode-command attachments when an input hook fails before admission.
+
 ## [19.2.1] - 2026-11-25
 
 ### Breaking Changes
