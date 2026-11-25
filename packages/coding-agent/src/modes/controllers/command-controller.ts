@@ -45,6 +45,8 @@ import type { InteractiveModeContext } from "../../modes/types";
 import { continuesConversation } from "../utils/conversation-position";
 import { computeSessionContextBreakdown } from "../../session/context-usage-runtime";
 import { buildSessionContextView } from "../../session/context-view";
+import { buildContextReportText } from "../../slash-commands/helpers/context-report";
+import { markdownFenceFor } from "../../utils/markdown-fence";
 import { buildToolsMarkdown } from "../../slash-commands/helpers/tools-markdown";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import { buildJobTree, jobTreeGuide, jobTreeIndent } from "../view-model/overlays/job-tree";
@@ -1020,8 +1022,15 @@ export class CommandController {
 		this.#showMarkdownPanel("Available Tools", tools);
 	}
 
-	handleContextCommand(): void {
+	handleContextCommand(showAll = false): void {
 		const session = this.ctx.session;
+		if (showAll) {
+			// Keep the detailed text report without restoring the superseded static context view.
+			const report = buildContextReportText({ session }, true);
+			const fence = markdownFenceFor(report);
+			this.#showMarkdownPanel("Context Usage", `${fence}text\n${report}\n${fence}`);
+			return;
+		}
 		if (!session.model) {
 			this.ctx.showWarning("Context usage is unavailable: no model is selected for this session.");
 			return;
