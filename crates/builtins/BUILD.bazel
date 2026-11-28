@@ -15,8 +15,9 @@ rust_library(
         "src/*.txt",
         # The `file` magic database and rule order.
         "src/file/magic*",
-        # Embedded Perl modules.
+        # Embedded Perl modules and compressed Unicode character name table.
         "src/perl/**/*.pm",
+        "src/perl/*.zst",
         # `include_bytes!` wire captures for the rsync sender tests.
         "src/rsync/sender/testdata/*",
     ]),
