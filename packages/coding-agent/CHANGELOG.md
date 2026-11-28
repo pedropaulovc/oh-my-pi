@@ -385,6 +385,9 @@
 
 - Kept fork dogfood updates pinned to verified `omp-dogfood` GitHub release assets while official binary updates use the build service and binary patches; dogfood updates leave official installations and update-channel settings untouched, and startup notices recommend `omp-dogfood update`.
 - Dogfood builds never run the background auto-update (`update.auto`); they update only through `omp-dogfood update`.
+### Fixed
+
+- Spill reads (`local://<N>.log`) now preserve full requested lines within the existing byte and paging limits instead of reapplying the ordinary-file column cap, so long single-line JSON output can be recovered without `:raw`. Off-window bracket context retains the configured column cap; oversized multi-range content reports its byte-budget omission ([#13947](https://github.com/can1357/oh-my-pi/pull/13947) by [@pedropaulovc](https://github.com/pedropaulovc)).
 
 ## [19.2.1] - 2026-11-25
 
