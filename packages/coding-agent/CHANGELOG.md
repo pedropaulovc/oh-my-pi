@@ -390,6 +390,7 @@
 ### Fixed
 
 - Spill reads (`local://<N>.log`) now preserve full requested lines within the existing byte and paging limits instead of reapplying the ordinary-file column cap, so long single-line JSON output can be recovered without `:raw`. Off-window bracket context retains the configured column cap; oversized multi-range content reports its byte-budget omission ([#13947](https://github.com/can1357/oh-my-pi/pull/13947) by [@pedropaulovc](https://github.com/pedropaulovc)).
+- Debug logs now record which OAuth account each subagent request used, and how usage-limit retries rotated accounts or spent saved resets ([#19312](https://github.com/can1357/oh-my-pi/pull/19312) by [@pedropaulovc](https://github.com/pedropaulovc))
 
 ## [19.2.1] - 2026-11-25
 
