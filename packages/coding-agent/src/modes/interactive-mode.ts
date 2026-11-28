@@ -4582,6 +4582,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		vibeScopeAlreadySuspended?: boolean;
 		restorePlanModel?: boolean;
 	}): Promise<void> {
+		using _stallReminderDelivery = this.session.holdStallReminderDelivery();
 		if (this.planModeEnabled || this.planModePaused) {
 			const previousModel = this.#planModePreviousModelState;
 			this.session.setPlanModeState(undefined);
@@ -4646,6 +4647,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Reconcile mode state from session entries on resume/switch. */
 	async #reconcileModeFromSession(options?: { preserveActiveGoal?: boolean }): Promise<void> {
+		using _stallReminderDelivery = this.session.holdStallReminderDelivery();
 		// Report only the restored result, not the cleared state in between.
 		using _hold = this.#holdModeChanges();
 		const vibeScopeAlreadySuspended = this.#vibeScopeSuspendedForSwitch;
@@ -4799,6 +4801,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Plan mode is unavailable in a --no-tools session.");
 			return;
 		}
+		using _stallReminderDelivery = this.session.holdStallReminderDelivery();
 
 		this.planModePaused = false;
 
@@ -4935,6 +4938,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.planModeEnabled) {
 			return;
 		}
+		using _stallReminderDelivery = this.session.holdStallReminderDelivery();
 		// A mid-turn exit must interrupt the currently streaming turn.
 		// The plan-mode prompt instructs the model to keep planning until it
 		// submits the plan with `propose`, so the live turn must be aborted inside
@@ -5657,6 +5661,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			reviewOwner: object;
 		},
 	): Promise<boolean> {
+		// The nested plan exit must not wake a reminder before approval's remaining
+		// tool/model restoration, persistence, and execution prompt preparation.
+		using _stallReminderDelivery = this.session.holdStallReminderDelivery();
 		const previousPresentation = this.#planModePreviousToolPresentation ?? {
 			enabled: this.session.getEnabledToolNames().filter(name => !isMCPToolName(name)),
 			mounted: this.session.getMountedToolCommandNames().filter(name => !isMCPToolName(name)),
